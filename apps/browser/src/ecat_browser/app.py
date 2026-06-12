@@ -14,7 +14,8 @@ def create_app(config: BrowserAppConfig | None = None):
         from dash import Dash
     except ModuleNotFoundError as exc:
         raise RuntimeError(
-            "The eCAT browser app requires Dash. Install with `pip install -e .[app]`."
+            "The eCAT browser app requires Dash. Reinstall or upgrade eCAT with "
+            '`python -m pip install --upgrade "git+https://github.com/ljelissiry/eCAT.git@v0.1.0b2"`.'
         ) from exc
 
     config = config or BrowserAppConfig.from_env()

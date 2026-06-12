@@ -13,6 +13,12 @@ python -m pip install -U pip
 python -m pip install -e .
 ```
 
+For the public beta tag, users can install directly from GitHub:
+
+```bash
+python -m pip install --upgrade "git+https://github.com/ljelissiry/eCAT.git@v0.1.0b2"
+```
+
 Then verify the install:
 
 ```bash
@@ -21,6 +27,30 @@ pytest -q
 ```
 
 The beta version is `0.1.0b2`.
+
+## Browser App
+
+The browser app is installed with the main package. From a terminal, run:
+
+```bash
+ecat-browser
+```
+
+From a notebook, launch the same local app with:
+
+```python
+import ecat as e
+
+e.open_app()
+```
+
+To embed the app in a notebook cell when supported:
+
+```python
+e.open_app(inline=True)
+```
+
+The app runs locally at `http://127.0.0.1:8050` by default and automatically uses the next available port if `8050` is busy.
 
 ## Quickstart
 

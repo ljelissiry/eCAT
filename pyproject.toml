@@ -20,6 +20,8 @@ dependencies = [
     "pandas",
     "scikit-learn",
     "scipy",
+    "dash",
+    "dash-ag-grid",
 ]
 
 classifiers = [
@@ -31,10 +33,7 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-app = [
-    "dash",
-    "dash-ag-grid",
-]
+app = []
 simulation = [
     "electrokitty",
 ]

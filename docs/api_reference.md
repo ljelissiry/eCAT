@@ -39,6 +39,7 @@ The top-level API remains the stable notebook-facing surface. The package also e
 | `ecat.analysis_cv` | CV normalization and current-scaling helpers |
 | `ecat.analysis_batch` | Batch and advanced analysis workflows |
 | `ecat.export` | Data/table export helpers |
+| `ecat.app` | Notebook-friendly launcher for the local browser app |
 | `ecat.metadata` | Metadata and label-formatting helpers |
 | `ecat.options` | Option dataclasses, defaults, and option discovery |
 | `ecat.utils` | Shared internal numeric, unit, and display helpers |
@@ -67,6 +68,28 @@ Public function names, argument names, and return shapes should match the top-le
 | `create_cv_objects_from_excel(file_path, options=None)` | Compatibility name for Excel CV import. Prefer `get_CVs_from_excel` in new notebooks. | `describe_options("get_data")` |
 
 `get_data()` and `echem.from_file()` now support a `custom parser` hook for filename-derived metadata and a `parser settings` dictionary for parser behavior. Use `custom parser mode="merge"` to fill only missing filename metadata, or `custom parser mode="override"` to replace the built-in filename parser result. File-derived metadata still wins by default; set `parser settings={"prefer file metadata": False}` only when you explicitly want the custom parser to replace file metadata such as scan rate. Parser settings also accept canonical `gases` and `solvents` lists plus `compound stopwords`.
+
+## Browser App
+
+| Name | Purpose |
+|---|---|
+| `open_app(host="127.0.0.1", port=8050, inline=False)` | Start the local eCAT browser app from Python or a notebook and return the local URL. |
+
+Terminal users can also run:
+
+```bash
+ecat-browser
+```
+
+Notebook users can run:
+
+```python
+import ecat as e
+
+url = e.open_app()
+```
+
+Use `e.open_app(inline=True)` to display the app in a notebook iframe when the notebook environment supports it. The launcher uses `8050` by default and automatically chooses the next available port if that port is busy.
 
 ### Filename Parsing And Recommended Names
 

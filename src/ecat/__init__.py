@@ -5,6 +5,7 @@ Common starting points:
     get_data({"folder path": path})
     get_CVs({"folder path": path})
     multiplot(objects)
+    open_app()
     describe_options()
 
 Core objects:
@@ -53,6 +54,7 @@ from .analysis_batch import (
     trumpet_analysis,
 )
 from .analysis_cv import normalize, normalize_current, scale_current
+from .app import open_app
 from .collection import (
     filter,
     get_available_filter_values,
@@ -131,6 +133,7 @@ __all__ = [
     "show_groups",
     "show_objects",
     "save_data",
+    "open_app",
     "fowa",
     "sevcik_analysis",
     "trumpet_analysis",

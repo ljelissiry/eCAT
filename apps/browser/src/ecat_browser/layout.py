@@ -12,7 +12,8 @@ def _dash():
         from dash import dcc, html
     except ModuleNotFoundError as exc:
         raise RuntimeError(
-            "The eCAT browser app requires Dash and dash-ag-grid. Install with `pip install -e .[app]`."
+            "The eCAT browser app requires Dash and dash-ag-grid. Reinstall or upgrade eCAT with "
+            '`python -m pip install --upgrade "git+https://github.com/ljelissiry/eCAT.git@v0.1.0b2"`.'
         ) from exc
     return dag, dcc, html
 

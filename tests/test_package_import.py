@@ -42,6 +42,7 @@ def test_package_import_exposes_public_api():
         "normalize_current",
         "scale_current",
         "plotting_style",
+        "open_app",
         "describe_options",
         "get_defaults",
         "set_defaults",
