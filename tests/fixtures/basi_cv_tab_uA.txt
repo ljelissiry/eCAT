@@ -1,0 +1,13 @@
+BASI
+Experiment Type: Cyclic Voltammetry
+Initial Potential : -250 mV
+Switching Potential 1 : 250 mV
+Final Potential : -250 mV
+Scan Rate : 50 mV/s
+Number of segments : 2
+Sample Interval : 50 mV
+[Begin Data]
+Potential/V	Current/uA
+-0.25	-0.10
+0.00	0.20
+0.25	0.30

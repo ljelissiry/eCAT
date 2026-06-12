@@ -1,0 +1,22 @@
+EC-Lab ASCII FILE
+Nb header lines : 19
+
+Galvanostatic Cycling with Potential Limitation
+
+Run on channel : 1
+Acquisition started on : 04/17/2025 12:47:42.264
+Technique started on : 04/17/2025 12:47:42.312
+Cycle Definition : Charge/Discharge alternance
+Ns                  0                   1                   2
+Set I/C             I                   I                   I
+Is                  0.000               25.000              -25.000
+unit Is             mA                  mA                  mA
+t1 (h:m:s)          0:00:0.0000         10:00:0.0000        10:00:0.0000
+dt1 (s)             0.0000              2.0000              2.0000
+EM (V)              0.000               1.918               0.595
+nc cycles           0                   0                   499
+
+mode	Ns	time/s	Ewe/V	<I>/mA	cycle number
+1	1	0.0000	0.700	25.0	1
+1	1	2.0000	0.750	25.0	1
+1	2	4.0000	0.690	-25.0	1

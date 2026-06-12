@@ -1,0 +1,17 @@
+EC-Lab ASCII FILE
+Metadata
+Metadata
+Cyclic Voltammetry
+Nb header lines : 13
+Ei (V) -0.25
+E1 (V) 0.25
+E2 (V) -0.25
+Ef (V) -0.25
+dE/dt 50
+mV/s
+N 2
+Ewe/V	<I>/mA
+-0.25	-0.10
+-0.10	0.20
+0.10	0.60
+0.25	0.30

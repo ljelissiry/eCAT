@@ -1,0 +1,15 @@
+Aug. 27, 2023   16:05:21
+Cyclic Voltammetry
+Instrument Model: CHI760E
+Init E = -0.25
+High E = 0.25
+Low E = -0.25
+Scan Rate = 0.05
+Segment = 2
+Sample Interval = 0.05
+Sensitivity = 1e-6
+Potential/V,Current/A
+-0.25,-1.0e-7
+-0.10,2.0e-7
+0.10,6.0e-7
+0.25,3.0e-7

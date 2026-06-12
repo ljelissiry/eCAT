@@ -1,0 +1,24 @@
+Jan. 27, 2022   13:43:22
+Chronopotentiometry
+File: cp_sanitized_example
+Data Source:  Experiment
+Instrument Model:  CHI760E
+Header:
+Note:
+
+Cathodic Current (A) = 0.005
+Anodic Current (A) = 0.005
+Init P/N = N
+Data Storage Interval (s) = 0.5
+High E Limit (V) = 1.08
+Low E Limit (V) = 0.38
+Cathodic Time (s) = 482
+Anodic Time (s) = 482
+Current Switching Polarity = Potential
+Segment = 201
+
+Time/sec, Potential/V
+
+5.000e-1, 7.180e-1
+1.000e+0, 7.173e-1
+1.500e+0, 7.169e-1
