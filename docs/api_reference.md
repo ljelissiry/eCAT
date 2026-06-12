@@ -66,6 +66,57 @@ Public function names, argument names, and return shapes should match the top-le
 | `get_CVs_from_excel(file_path, options=None)` | Create CV objects from a curated Excel workbook. | `describe_options("get_data")` |
 | `create_cv_objects_from_excel(file_path, options=None)` | Compatibility name for Excel CV import. Prefer `get_CVs_from_excel` in new notebooks. | `describe_options("get_data")` |
 
+`get_data()` and `echem.from_file()` now support a `custom parser` hook for filename-derived metadata and a `parser settings` dictionary for parser behavior. Use `custom parser mode="merge"` to fill only missing filename metadata, or `custom parser mode="override"` to replace the built-in filename parser result. File-derived metadata still wins by default; set `parser settings={"prefer file metadata": False}` only when you explicitly want the custom parser to replace file metadata such as scan rate. Parser settings also accept canonical `gases` and `solvents` lists plus `compound stopwords`.
+
+### Filename Parsing And Recommended Names
+
+For text imports, eCAT tries to recover useful metadata from filenames when the file itself does not provide it cleanly. The built-in filename parser looks for:
+
+- `gas`, such as `Ar`, `N2`, `CO`, or `CO2`
+- `solvent`, such as `MeCN`, `DMF`, `DMSO`, `DCM`, `THF`, or `H2O`
+- `compounds` and paired `concentrations`
+- `scan rate`
+
+Recognized filename concentration units include:
+
+- `M`
+- `mM`
+- `uM` or `μM`
+- `nM`
+- `L`
+- `%`
+- `equiv`
+- `x`
+
+Recognized scan-rate patterns include compact and spaced forms such as:
+
+- `100mVs`
+- `100 mV/s`
+- `0.1Vs`
+- `500uV/s`
+
+Recommended filename style is compact, ordered, and explicit:
+
+```text
+100mVs_CO2_MeCN_1mMFe-tpyPY2Me_100mMPhOH_run01
+CV_MeCN_Ar_0.1MTBAPF6_3mMFc_1mMFe_100mVs
+```
+
+Practical recommendations:
+
+- use explicit concentration units in every concentration token
+- keep each concentration immediately attached to its species when possible, for example `100mMPhOH`
+- use canonical gas and solvent names consistently across a project
+- prefer underscores or similarly clean separators over long free-text filenames
+- treat human-readable space-delimited names as a fallback, not the primary naming convention
+
+Important parser rules:
+
+- bare lowercase `m` is not treated as molar because it is too ambiguous
+- gas-fraction tokens such as `0.1CO2` are converted to `%`-style metadata
+- mole-fraction tokens such as `0.8xD2O` are supported
+- if the built-in parser is not enough, use `compounds`, `custom parser`, and `parser settings`
+
 ## Inspecting Objects
 
 These methods are available on eCAT objects unless a technique-specific object documents otherwise.

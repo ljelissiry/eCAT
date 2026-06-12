@@ -164,10 +164,18 @@ These are specific beta-risk areas to test or debug before inviting broad lab us
 | Unit storage, `df` vs `.units` | Unit confusion can silently corrupt interpretation | Confirm loaded/exported objects keep unit metadata consistent with DataFrame columns and printed summaries | Pending |
 | Plateau current | Advanced benchmarking workflow should not silently mislead users | Run existing tests, run one example workflow, document limitations | Pending |
 | Animation | Previously de-emphasized; decide whether it works or stays non-public | Smoke-test existing animation helpers or explicitly document as out of beta scope | Pending |
+| Excel loading | Spreadsheet-assembled datasets matter for real workflows | Smoke-test `get_CVs_from_excel(...)` with a small workbook; document required workbook layout, units, metadata, and limitations | Pending |
+| Excel saving/export | Users may want processed tables and summaries in spreadsheet form | Review current Excel save/export support; decide what is beta-ready, what needs updating, and what should stay CSV-only for now | Pending |
 | Deprecated aliases in API docs | Users should learn current names only | Remove old aliases from API reference and notebooks | Completed |
 | FOWA tangent diagnostics | Tangent-baseline failures should be actionable | Confirm `describe_options("fowa")` shows tangent controls and errors report current settings | Completed |
 | Reference shifting with printed summaries | This recently regressed after module split | Confirm `get_data(..., reference mode=..., print=True)` works | Completed |
 | CV wave and half-wave plotting | Recent fix should stay covered | Keep regression tests passing | Completed |
+
+## Spreadsheet And Excel Items To Add
+
+- Improve and document Excel/spreadsheet loading for curated CV workbooks, including `get_CVs_from_excel(...)`, expected sheet/header layout, unit handling, metadata expectations, and current limitations.
+- Update Excel saving/export workflows so processed data, summary tables, and metadata can be written to `.xlsx` files with useful sheet names and clear units where feasible.
+- Decide whether Excel support is part of the lab beta core workflow or a documented limited workflow for users with spreadsheet-organized datasets.
 
 ## Simulation Feature Suggestions
 

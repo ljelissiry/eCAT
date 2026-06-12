@@ -126,3 +126,42 @@ def test_extract_compounds_and_concentrations_ignores_bare_lowercase_m_and_ag_re
 
     assert compounds == ["TBAPF6"]
     assert concentrations == ["100 mM"]
+
+
+def test_extract_compounds_and_concentrations_space_delimited_fallback_parses_human_names(
+    ecat_module,
+    blank_echem_factory,
+):
+    obj = blank_echem_factory(ecat_module.echem)
+    obj.name = "JS benzene 5 mM TBAPF6 0.5 M 0 to 3 V - Jay Sharma"
+
+    compounds, concentrations = obj.extract_compounds_and_concentrations()
+
+    assert compounds == ["benzene", "TBAPF6"]
+    assert concentrations == ["5 mM", "0.5 M"]
+
+
+def test_get_data_from_name_uses_case_insensitive_default_aliases(
+    ecat_module,
+    blank_echem_factory,
+):
+    obj = blank_echem_factory(ecat_module.echem)
+    obj.name = "sample_co2_acn_run01"
+
+    obj.get_data_from_name()
+
+    assert obj.gas == "CO2"
+    assert obj.solvent == "MeCN"
+
+
+def test_get_data_from_name_uses_case_insensitive_custom_gases_and_solvents(
+    ecat_module,
+    blank_echem_factory,
+):
+    obj = blank_echem_factory(ecat_module.echem)
+    obj.name = "sample_co2_mecn_run01"
+
+    obj.get_data_from_name({"gases": ["CO2"], "solvents": ["MeCN"]})
+
+    assert obj.gas == "CO2"
+    assert obj.solvent == "MeCN"

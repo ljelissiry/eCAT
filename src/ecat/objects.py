@@ -71,6 +71,326 @@ def _symbolized_axis_name(axis_name):
     return f"${symbol}$"
 
 
+_DEFAULT_GASES = ["Ar", "N2", "CO", "CO2", "O2"]
+
+_DEFAULT_SOLVENTS = [
+    "H2O",
+    "water",
+    "THF",
+    "DME",
+    "MeCN",
+    "ACN",
+    "acetonitrile",
+    "DCM",
+    "DMF",
+    "DMSO",
+    "TEGDME",
+]
+
+_PARSER_TOKEN_CANONICAL = {
+    "gases": {
+        "ar": "Ar",
+        "n2": "N2",
+        "co": "CO",
+        "co2": "CO2",
+        "o2": "O2",
+    },
+    "solvents": {
+        "h2o": "H2O",
+        "water": "H2O",
+        "thf": "THF",
+        "dme": "DME",
+        "mecn": "MeCN",
+        "acn": "MeCN",
+        "acetonitrile": "MeCN",
+        "dcm": "DCM",
+        "dmf": "DMF",
+        "dmso": "DMSO",
+        "tegdme": "TEGDME",
+    },
+}
+
+_DEFAULT_COMPOUND_STOPWORDS = {
+    "post",
+    "we",
+    "gcwe",
+    "ptce",
+    "ssmeshlfpre",
+    "integration",
+    "sensitivity",
+    "polished",
+}
+
+_PHRASE_STOPWORDS = {
+    "cv",
+    "ca",
+    "cp",
+    "cpe",
+    "gcpl",
+    "integration",
+    "sensitivity",
+    "cart",
+    "post",
+    "we",
+    "gcwe",
+    "ptce",
+    "ssmeshlfpre",
+    "run",
+}
+
+
+def _parse_scan_rate_from_name_text(name):
+    text = str(name)
+    match = re.search(
+        r"(\d+(?:\.\d+)?)\s*([numμm]?)\s*V\s*/?\s*s",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if not match:
+        return None
+    value = float(match.group(1))
+    prefix = match.group(2).lower()
+    factor = {
+        "": 1.0,
+        "m": 1e-3,
+        "u": 1e-6,
+        "μ": 1e-6,
+        "n": 1e-9,
+    }.get(prefix, 1.0)
+    return value * factor
+
+
+def _normalize_parser_settings(parser_settings=None):
+    settings = {} if parser_settings is None else dict(parser_settings)
+    normalized = {
+        "prefer file metadata": bool(settings.get("prefer file metadata", True)),
+        "compound stopwords": set(_DEFAULT_COMPOUND_STOPWORDS),
+        "solvents": list(_DEFAULT_SOLVENTS),
+        "gases": list(_DEFAULT_GASES),
+    }
+
+    for key in settings.get("compound stopwords", []) or []:
+        normalized["compound stopwords"].add(str(key).strip().lower())
+
+    solvents = settings.get("solvents")
+    if solvents is not None:
+        normalized["solvents"] = [str(value) for value in solvents]
+
+    gases = settings.get("gases")
+    if gases is not None:
+        normalized["gases"] = [str(value) for value in gases]
+
+    return normalized
+
+
+def _canonicalize_parser_token(kind, value):
+    text = str(value)
+    canonical_map = _PARSER_TOKEN_CANONICAL.get(str(kind), {})
+    return canonical_map.get(text.strip().lower(), text)
+
+
+def _detect_parser_tokens(name, values, kind):
+    text = str(name)
+    found = []
+    for value in values:
+        token = str(value)
+        canonical = _canonicalize_parser_token(kind, token)
+        pattern = rf"(?<![A-Za-z0-9]){re.escape(token)}(?![A-Za-z0-9])"
+        for match in re.finditer(pattern, text, flags=re.IGNORECASE):
+            found.append((match.start(), canonical))
+    found.sort(key=lambda item: item[0])
+    ordered = []
+    for _position, canonical in found:
+        if canonical not in ordered:
+            ordered.append(canonical)
+    return ordered
+
+
+def _normalize_concentration_unit(unit):
+    unit_text = str(unit)
+    lower = unit_text.lower()
+    if lower == "m":
+        return "M"
+    if lower == "mm":
+        return "mM"
+    if lower in ("um", "μm"):
+        return "μM" if "μ" in unit_text else "uM"
+    if lower == "nm":
+        return "nM"
+    if lower == "l":
+        return "L"
+    if lower == "%":
+        return "%"
+    if lower == "equiv":
+        return "equiv"
+    if lower == "x":
+        return "x"
+    return unit_text
+
+
+def _extract_concentration_tokens(tokens, idx, allow_lowercase_m_boundary=True):
+    token = str(tokens[idx]).strip()
+    compact = re.fullmatch(r"(\d+(?:\.\d+)?|\.\d+)\s*([A-Za-zμ%]+)", token)
+    if compact:
+        raw_unit = compact.group(2)
+        lower_unit = raw_unit.lower()
+        if lower_unit in {"mm", "um", "μm", "nm", "m", "l", "%", "equiv", "x"}:
+            if raw_unit == "m" and not allow_lowercase_m_boundary:
+                return None
+            if raw_unit == "m":
+                return None
+            return compact.group(1), _normalize_concentration_unit(raw_unit), idx + 1
+
+    if idx + 1 >= len(tokens):
+        return None
+    number = re.fullmatch(r"(\d+(?:\.\d+)?|\.\d+)", token)
+    if not number:
+        return None
+    raw_unit = str(tokens[idx + 1]).strip()
+    lower_unit = raw_unit.lower()
+    if lower_unit not in {"m", "mm", "um", "μm", "nm", "l", "%", "equiv", "x"}:
+        return None
+    if raw_unit == "m":
+        return None
+    return number.group(1), _normalize_concentration_unit(raw_unit), idx + 2
+
+
+def _looks_like_concentration_boundary(tokens, idx):
+    token = str(tokens[idx]).strip()
+    if re.fullmatch(r"(\d+(?:\.\d+)?|\.\d+)\s*([A-Za-zμ%]+)", token):
+        return True
+    if idx + 1 < len(tokens) and re.fullmatch(r"(\d+(?:\.\d+)?|\.\d+)", token):
+        return bool(re.fullmatch(r"[A-Za-zμ%]+", str(tokens[idx + 1]).strip()))
+    return False
+
+
+def _is_phrase_stop(tokens, idx, stopwords):
+    token = str(tokens[idx]).strip()
+    lower = token.lower()
+    if not token:
+        return True
+    if lower in stopwords:
+        return True
+    if token in {"-", "–", "—"}:
+        return True
+    if re.fullmatch(r"\d+(?:\.\d+)?v", lower):
+        return True
+    if re.fullmatch(r"\d+(?:\.\d+)?(?:mv|mvs|vs|s)", lower):
+        return True
+    if re.fullmatch(r"\d+\^?-?\d*", lower):
+        return True
+    if lower in {"to", "vs", "v"}:
+        return True
+    return False
+
+
+def _clean_phrase_tokens(tokens, stopwords):
+    cleaned = [str(token).strip(" ,;:_") for token in tokens if str(token).strip(" ,;:_")]
+    while cleaned and cleaned[0].lower() in {"sample"}:
+        cleaned.pop(0)
+    while cleaned and re.fullmatch(r"[A-Z]{2,}", cleaned[0]):
+        cleaned.pop(0)
+    while cleaned and re.fullmatch(r"[A-Za-z]+-\d[\w-]*", cleaned[0]):
+        cleaned.pop(0)
+    while cleaned and cleaned[0].lower() in stopwords:
+        cleaned.pop(0)
+    while cleaned and cleaned[-1].lower() in stopwords:
+        cleaned.pop()
+    return cleaned
+
+
+def _parse_space_delimited_compounds_and_concentrations(name, parser_settings=None):
+    settings = _normalize_parser_settings(parser_settings)
+    stopwords = set(_PHRASE_STOPWORDS) | set(settings["compound stopwords"])
+    text = str(name).replace("_", " ")
+    if " - " in text:
+        text = text.split(" - ", 1)[0]
+    tokens = [token for token in re.split(r"\s+", text.strip()) if token]
+    results = []
+    idx = 0
+    while idx < len(tokens):
+        parsed = _extract_concentration_tokens(tokens, idx)
+        if parsed is None:
+            idx += 1
+            continue
+        value, unit, next_idx = parsed
+        forward_tokens = []
+        cursor = next_idx
+        forward_hit_boundary = False
+        while cursor < len(tokens):
+            if _looks_like_concentration_boundary(tokens, cursor):
+                forward_hit_boundary = True
+                break
+            if _is_phrase_stop(tokens, cursor, stopwords):
+                break
+            forward_tokens.append(tokens[cursor])
+            cursor += 1
+
+        backward_tokens = []
+        cursor = idx - 1
+        while cursor >= 0:
+            if cursor > 0:
+                prev_parsed = _extract_concentration_tokens(tokens, cursor - 1)
+                if prev_parsed is not None and prev_parsed[2] == cursor + 1:
+                    break
+            if _looks_like_concentration_boundary(tokens, cursor):
+                break
+            if _is_phrase_stop(tokens, cursor, stopwords):
+                break
+            backward_tokens.append(tokens[cursor])
+            cursor -= 1
+        backward_compound_tokens = _clean_phrase_tokens(list(reversed(backward_tokens)), stopwords)
+        forward_compound_tokens = _clean_phrase_tokens(forward_tokens, stopwords) if forward_tokens else []
+        if backward_compound_tokens and forward_hit_boundary:
+            compound_tokens = backward_compound_tokens
+        elif forward_compound_tokens:
+            compound_tokens = forward_compound_tokens
+        else:
+            compound_tokens = backward_compound_tokens
+
+        compound = " ".join(compound_tokens).strip()
+        if compound and compound.lower() not in settings["compound stopwords"]:
+            results.append((compound, f"{value} {unit}"))
+        idx = next_idx
+    return results
+
+
+def _normalize_custom_parser_result(result):
+    if result is None:
+        return {}
+    if not isinstance(result, dict):
+        raise ValueError("custom parser must return a dictionary or None.")
+
+    normalized = {}
+    for key, value in result.items():
+        norm = str(key).strip().lower().replace("_", " ")
+        if norm in {"gas", "solvent", "scan rate"}:
+            normalized[norm] = value
+        elif norm == "compounds":
+            normalized["compounds"] = [value] if isinstance(value, str) else list(value)
+        elif norm == "concentrations":
+            normalized["concentrations"] = [value] if isinstance(value, str) else list(value)
+
+    if ("compounds" in normalized) ^ ("concentrations" in normalized):
+        raise ValueError("custom parser must return both 'compounds' and 'concentrations' together.")
+
+    return normalized
+
+
+def _call_custom_parser(parser, name, path=None, options=None):
+    return parser(name=name, path=path, options=options)
+
+
+def _custom_parser_scan_rate(name, path, options):
+    custom_parser = options.get("custom parser")
+    if not callable(custom_parser):
+        return None
+    custom = _normalize_custom_parser_result(
+        _call_custom_parser(custom_parser, name, path=path, options=options)
+    )
+    return custom.get("scan rate")
+
+
 class ChronoAnalysisResult(dict):
     """Dictionary-compatible container for CA/CP analysis outputs."""
 
@@ -468,19 +788,16 @@ class echem:
             self.get_data_from_name()
             self.modify_by_options(self.options)
 
-    def get_data_from_name(self):
-        temp_name = '_' + self.name + '_'
+    def get_data_from_name(self, parser_settings=None):
+        settings = _normalize_parser_settings(parser_settings)
 
-        gases = ['Ar', 'N2', 'CO', 'CO2']
-        temp_name_lower = temp_name.lower()
-        found_gases = [gas for gas in gases if f'_{gas.lower()}_' in temp_name_lower]
+        found_gases = _detect_parser_tokens(self.name, settings["gases"], "gases")
         if found_gases:
             self.gas = '/'.join(found_gases)
 
-        solvents = ['H2O', 'THF', 'DME', 'MeCN', 'DCM', 'DMF', 'DMSO']
-        for solvent in solvents:
-            if f'_{solvent.lower()}_' in temp_name_lower:
-                self.solvent = solvent
+        found_solvents = _detect_parser_tokens(self.name, settings["solvents"], "solvents")
+        if found_solvents:
+            self.solvent = found_solvents[-1]
 
     def _parse_ir_compensation_from_lines(self, lines):
         def get_resistance(label):
@@ -634,7 +951,31 @@ class echem:
         delimiter = self.infer_delimiter(data_sample_line)
 
         df = pd.read_csv(filepath, sep=delimiter, skiprows=data_start_idx, engine='python', header=None)
-        df = df.dropna(how='all', axis=1).dropna().reset_index(drop=True)
+        df = df.dropna(how='all', axis=1)
+
+        # Some CH exports use a comma-delimited header followed by tab-delimited
+        # numeric rows. Retry with a mixed delimiter before giving up.
+        has_tabbed_data = any('\t' in line for line in lines[data_start_idx + 1:])
+        parsed_numeric_rows = df.iloc[1:] if len(df) > 1 else df.iloc[0:0]
+        numeric_rows_need_retry = (
+            df.shape[1] <= 1
+            or (
+                not parsed_numeric_rows.empty
+                and df.shape[1] > 1
+                and parsed_numeric_rows.iloc[:, 1:].isna().all().all()
+            )
+        )
+        if has_tabbed_data and numeric_rows_need_retry:
+            df = pd.read_csv(
+                filepath,
+                sep=r'[,\t]+',
+                skiprows=data_start_idx,
+                engine='python',
+                header=None,
+            )
+            df = df.dropna(how='all', axis=1)
+
+        df = df.dropna().reset_index(drop=True)
 
         # Use first row as header
         df.columns = df.iloc[0]
@@ -801,7 +1142,7 @@ class echem:
 
         return df
 
-    def extract_compounds_and_concentrations(self, extra_compounds=None):
+    def extract_compounds_and_concentrations(self, extra_compounds=None, parser_settings=None):
         """
         Extracts compounds and concentrations from the data.
 
@@ -812,6 +1153,7 @@ class echem:
             tuple: A tuple containing the compounds (list) and concentrations (list).
         """
         # Create a temporary name with '_' prefix and suffix to facilitate regular expression matching
+        settings = _normalize_parser_settings(parser_settings)
         temp_name = '_' + self.name + '_'
         
         # Regular expression pattern to extract compounds and concentrations from the temporary name
@@ -836,33 +1178,17 @@ class echem:
             if valid_concentration_match(item)
         ]
 
-        def normalize_concentration_unit(unit):
-            unit_text = str(unit)
-            lower = unit_text.lower()
-            if lower == "m":
-                return "M"
-            if lower == "mm":
-                return "mM"
-            if lower in ("um", "μm"):
-                return "μM" if "μ" in unit_text else "uM"
-            if lower == "nm":
-                return "nM"
-            if lower == "l":
-                return "L"
-            if lower == "%":
-                return "%"
-            if lower == "equiv":
-                return "equiv"
-            if lower == "x":
-                return "x"
-            return unit_text
-
         # Format the extracted compounds and concentrations into separate lists
         compounds = [compound[-1].strip("_") for compound in combined]
         concentrations = [
-            f"{compound[0]} {normalize_concentration_unit(compound[1])}"
+            f"{compound[0]} {_normalize_concentration_unit(compound[1])}"
             for compound in combined
         ]
+
+        if not compounds:
+            fallback = _parse_space_delimited_compounds_and_concentrations(self.name, settings)
+            compounds = [compound for compound, _concentration in fallback]
+            concentrations = [concentration for _compound, concentration in fallback]
 
         # Additional support for fraction-style gas tokens like _0.1CO2_
         fraction_gas_pattern = r'_(0?\.\d+)(CO2|CO|N2|Ar)_'
@@ -886,15 +1212,74 @@ class echem:
         # Return the resulting compounds and concentrations as a tuple
         return compounds, concentrations
 
+    def _apply_custom_parser_metadata(self, metadata, options):
+        custom_parser = options.get("custom parser")
+        if not callable(custom_parser):
+            return metadata
+
+        custom = _normalize_custom_parser_result(
+            _call_custom_parser(custom_parser, self.name, path=self.filepath, options=options)
+        )
+        if not custom:
+            return metadata
+
+        mode = str(options.get("custom parser mode", "merge")).strip().lower().replace("_", " ").replace("-", " ")
+        updated = dict(metadata)
+
+        for key in ("gas", "solvent"):
+            if key not in custom or custom[key] in (None, ""):
+                continue
+            if mode == "override" or updated.get(key) in (None, ""):
+                updated[key] = custom[key]
+
+        if "compounds" in custom and "concentrations" in custom:
+            if mode == "override" or (not updated.get("compounds") and not updated.get("concentrations")):
+                updated["compounds"] = list(custom["compounds"])
+                updated["concentrations"] = list(custom["concentrations"])
+
+        if "scan rate" in custom and custom["scan rate"] is not None:
+            updated["scan rate"] = custom["scan rate"]
+
+        return updated
+
+    def _apply_custom_parser_scan_rate(self, options):
+        options = import_options_to_legacy_dict(options)
+        parser_settings = options.get("parser settings")
+        custom_scan_rate = _custom_parser_scan_rate(self.name, self.filepath, options)
+        prefer_file_metadata = _normalize_parser_settings(parser_settings)["prefer file metadata"]
+        if custom_scan_rate is not None and (getattr(self, "scan_rate", None) is None or not prefer_file_metadata):
+            self.scan_rate = float(custom_scan_rate)
+
     def modify_by_options(self,options):
 
         # setup options
         options = import_options_to_legacy_dict(options)
 
-        # Extract compounds and concentrations from options, and assign them to the object's attributes
-        self.compounds, self.concentrations = self.extract_compounds_and_concentrations(options['compounds'])
-        #if self.compounds == []:
-        #    self.compounds = ''
+        parser_settings = options.get("parser settings")
+
+        self.get_data_from_name(parser_settings)
+        compounds, concentrations = self.extract_compounds_and_concentrations(
+            options['compounds'],
+            parser_settings=parser_settings,
+        )
+        metadata = {
+            "gas": self.gas,
+            "solvent": self.solvent,
+            "compounds": compounds,
+            "concentrations": concentrations,
+            "scan rate": getattr(self, "scan_rate", None),
+        }
+        metadata = self._apply_custom_parser_metadata(metadata, options)
+
+        self.gas = metadata.get("gas", self.gas)
+        self.solvent = metadata.get("solvent", self.solvent)
+        self.compounds = metadata.get("compounds", [])
+        self.concentrations = metadata.get("concentrations", [])
+
+        prefer_file_metadata = _normalize_parser_settings(parser_settings)["prefer file metadata"]
+        custom_scan_rate = metadata.get("scan rate", None)
+        if custom_scan_rate is not None and (getattr(self, "scan_rate", None) is None or not prefer_file_metadata):
+            self.scan_rate = float(custom_scan_rate)
 
         options["electrode area"] = resolve_electrode_area_option(options)
         
@@ -1612,6 +1997,7 @@ class cv(echem):
         super().__init__(filepath, options)
         self.type = "Cyclic Voltammetry"
         self.get_data_from_file(filepath, options)  # parse scan rate, potentials, etc.
+        self._apply_custom_parser_scan_rate(options)
 
     def remove_parentheses_and_replace_last_space(self, input_string):
             # Remove all open and closing parentheses

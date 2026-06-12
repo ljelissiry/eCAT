@@ -17,7 +17,7 @@ from .utils import (
     resolve_electrode_area_option,
     round_sigfigs,
 )
-from .objects import cv, echem
+from .objects import _normalize_parser_settings, cv, echem
 from .plotting import _coerce_display_columns, show_objects
 from .collection import sort
 from .reference import (
@@ -337,16 +337,33 @@ def _make_cv_object_from_text_file(filepath, options=None, root_abs=None):
 
     obj.folderpath = _relative_folderpath(os.path.dirname(filepath), root_abs)
 
-    obj.get_data_from_name()
-    obj.compounds, obj.concentrations = obj.extract_compounds_and_concentrations(
-        options.get("compounds")
+    parser_settings = options.get("parser settings")
+    obj.get_data_from_name(parser_settings)
+    compounds, concentrations = obj.extract_compounds_and_concentrations(
+        options.get("compounds"),
+        parser_settings=parser_settings,
     )
+    metadata = {
+        "gas": obj.gas,
+        "solvent": obj.solvent,
+        "compounds": compounds,
+        "concentrations": concentrations,
+    }
+    metadata = obj._apply_custom_parser_metadata(metadata, options)
+    obj.gas = metadata.get("gas", obj.gas)
+    obj.solvent = metadata.get("solvent", obj.solvent)
+    obj.compounds = metadata.get("compounds", [])
+    obj.concentrations = metadata.get("concentrations", [])
 
     scan_rate = _parse_scan_rate_from_text_lines(lines)
     if scan_rate is None:
         scan_rate = _parse_scan_rate_from_name(obj.name)
     if scan_rate is None:
         scan_rate = options.get("scan rate")
+    prefer_file_metadata = _normalize_parser_settings(parser_settings)["prefer file metadata"]
+    custom_scan_rate = metadata.get("scan rate", None)
+    if custom_scan_rate is not None and (scan_rate is None or not prefer_file_metadata):
+        scan_rate = float(custom_scan_rate)
     obj.scan_rate = scan_rate
 
     x = obj.data["Potential"].to_numpy(dtype=float)
@@ -483,6 +500,7 @@ def _make_cv_object_from_dataframe(
     metadata = _extract_excel_name_metadata(
         metadata_name if metadata_name is not None else display_name,
         options.get("compounds"),
+        options,
     )
 
     if metadata["gas"] is not None:
@@ -510,7 +528,7 @@ def _make_cv_object_from_dataframe(
 
     return obj
 
-def _extract_excel_name_metadata(name, extra_compounds=None):
+def _extract_excel_name_metadata(name, extra_compounds=None, options=None):
     """
     Reuse the existing filename-style metadata parsing on an Excel header.
     """
@@ -521,18 +539,30 @@ def _extract_excel_name_metadata(name, extra_compounds=None):
     probe.gas = None
     probe.solvent = None
 
-    probe.get_data_from_name()
+    parser_settings = options.get("parser settings") if isinstance(options, dict) else None
+    probe.get_data_from_name(parser_settings)
     compounds, concentrations = probe.extract_compounds_and_concentrations(
-        extra_compounds
+        extra_compounds,
+        parser_settings=parser_settings,
     )
 
-    return {
+    metadata = {
         "name": parsed_name,
         "gas": probe.gas,
         "solvent": probe.solvent,
         "compounds": compounds,
         "concentrations": concentrations,
-        "scan_rate": _parse_scan_rate_from_name(parsed_name),
+        "scan rate": _parse_scan_rate_from_name(parsed_name),
+    }
+    metadata = probe._apply_custom_parser_metadata(metadata, options if isinstance(options, dict) else {})
+
+    return {
+        "name": parsed_name,
+        "gas": metadata.get("gas"),
+        "solvent": metadata.get("solvent"),
+        "compounds": metadata.get("compounds", []),
+        "concentrations": metadata.get("concentrations", []),
+        "scan_rate": metadata.get("scan rate"),
     }
 
 def create_cv_objects_from_excel(file_path, options={}):

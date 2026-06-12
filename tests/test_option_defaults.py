@@ -299,6 +299,9 @@ def test_describe_options_documents_auto_retrieval_and_algorithmic_auto_behavior
 
     assert "uses each CV's scan_rate" in _option_row(nicholson_schema, "scan rate")["Description"]
     assert "uses each CV's temperature" in _option_row(trumpet_schema, "temperature")["Description"]
+    assert "filename metadata parser" in _option_row(get_data_schema, "custom parser")["Description"]
+    assert "built-in filename parser" in _option_row(get_data_schema, "custom parser mode")["Description"]
+    assert "prefer file metadata" in _option_row(get_data_schema, "parser settings")["Description"]
 
 
 def test_describe_options_documents_not_inferred_scientific_inputs(ecat_module):

@@ -135,6 +135,144 @@ def test_get_cvs_uses_default_scan_rate_option_when_filename_has_none(
     assert objects[0].scan_rate == pytest.approx(0.05)
 
 
+def test_get_data_custom_parser_merge_fills_missing_name_metadata(
+    ecat_module,
+    tmp_path,
+):
+    from ecat import io as ecat_io
+
+    data = "\n".join(
+        [
+            "WE(1).Potential (V)\tWE(1).Current (A)",
+            "0.00\t0.0",
+            "0.10\t1.0e-6",
+            "0.00\t0.0",
+        ]
+    )
+    (tmp_path / "GOx_FcMeth.txt").write_text(data, encoding="utf-8")
+
+    def parser(name, path=None, options=None):
+        assert name == "GOx_FcMeth"
+        assert str(path).endswith("GOx_FcMeth.txt")
+        assert options["custom parser mode"] == "merge"
+        return {
+            "solvent": "MeCN",
+            "compounds": ["GOx", "FcMeth"],
+            "concentrations": ["5 mM", "1 mM"],
+            "scan rate": 0.2,
+        }
+
+    objects = ecat_io.get_data(
+        {
+            "folder path": str(tmp_path),
+            "recursive search": False,
+            "reference mode": "none",
+            "custom parser": parser,
+            "custom parser mode": "merge",
+            "print": False,
+        }
+    )
+
+    assert len(objects) == 1
+    obj = objects[0]
+    assert obj.solvent == "MeCN"
+    assert obj.compounds == ["GOx", "FcMeth"]
+    assert obj.concentrations == ["5 mM", "1 mM"]
+    assert obj.scan_rate == pytest.approx(0.2)
+
+
+def test_get_data_custom_parser_override_replaces_name_metadata_but_not_file_metadata(
+    ecat_module,
+    tmp_path,
+):
+    from ecat import io as ecat_io
+
+    data = "\n".join(
+        [
+            "June 21, 2023   16:01:40",
+            "Cyclic Voltammetry",
+            "Instrument Model:  CHI660D",
+            "Scan Rate (V/s) = 1",
+            "",
+            "Potential/V, Current/A",
+            "",
+            "-0.700\t-6.114e-6",
+            "-0.701\t-6.786e-6",
+            "-0.702\t-7.061e-6",
+        ]
+    )
+    (tmp_path / "1000mv_co2_100mmphoh.txt").write_text(data, encoding="utf-8")
+
+    def parser(name, path=None, options=None):
+        return {
+            "gas": "Ar",
+            "compounds": ["Fc"],
+            "concentrations": ["1 mM"],
+            "scan rate": 0.2,
+        }
+
+    objects = ecat_io.get_data(
+        {
+            "folder path": str(tmp_path),
+            "recursive search": False,
+            "reference mode": "none",
+            "custom parser": parser,
+            "custom parser mode": "override",
+            "print": False,
+        }
+    )
+
+    assert len(objects) == 1
+    obj = objects[0]
+    assert obj.gas == "Ar"
+    assert obj.compounds == ["Fc"]
+    assert obj.concentrations == ["1 mM"]
+    assert obj.scan_rate == pytest.approx(1.0)
+
+
+def test_get_data_custom_parser_can_override_file_metadata_when_enabled(
+    ecat_module,
+    tmp_path,
+):
+    from ecat import io as ecat_io
+
+    data = "\n".join(
+        [
+            "June 21, 2023   16:01:40",
+            "Cyclic Voltammetry",
+            "Instrument Model:  CHI660D",
+            "Scan Rate (V/s) = 1",
+            "",
+            "Potential/V, Current/A",
+            "",
+            "-0.700\t-6.114e-6",
+            "-0.701\t-6.786e-6",
+            "-0.702\t-7.061e-6",
+        ]
+    )
+    (tmp_path / "1000mv_co2_100mmphoh.txt").write_text(data, encoding="utf-8")
+
+    def parser(name, path=None, options=None):
+        return {
+            "scan rate": 0.2,
+        }
+
+    objects = ecat_io.get_data(
+        {
+            "folder path": str(tmp_path),
+            "recursive search": False,
+            "reference mode": "none",
+            "custom parser": parser,
+            "custom parser mode": "override",
+            "parser settings": {"prefer file metadata": False},
+            "print": False,
+        }
+    )
+
+    assert len(objects) == 1
+    assert objects[0].scan_rate == pytest.approx(0.2)
+
+
 def test_import_eCAT_alias_exposes_get_cvs(repo_root):
     import sys
 

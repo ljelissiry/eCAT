@@ -149,6 +149,9 @@ _OPTION_CATEGORY_BY_KEY = {
     "software": "Data/input",
     "experiment_type": "Data/input",
     "custom_reader": "Data/input",
+    "custom_parser": "Data/input",
+    "custom_parser_mode": "Data/input",
+    "parser_settings": "Data/input",
     "recursive_search": "Data/input",
     "name_alterations": "Data/input",
     "sort_keys": "Data/input",
@@ -481,6 +484,8 @@ OPTION_DESCRIPTIONS = {
     "current_density": "Normalize current by electrode area to report current density.",
     "custom_formula": "Callable custom kinetic formula used instead of the built-in formula.",
     "custom_reader": "User-provided file reader for custom import formats.",
+    "custom_parser": "User-provided filename metadata parser.",
+    "custom_parser_mode": "How a custom filename metadata parser combines with the built-in filename metadata parser.",
     "d": "Diffusion coefficient in cm^2/s.",
     "data_mode": "Whether multi_scatterplot uses automatic, raw, adjusted, or transformed result-table columns.",
     "decimal": "Decimal separator used in imported text files.",
@@ -594,6 +599,7 @@ OPTION_DESCRIPTIONS = {
     "peak_potential": "Manual peak potential.",
     "peak_fallback": "Fallback used by peak_current when peak_potential cannot find a local extremum.",
     "peak_prominence": "Minimum peak prominence for automatic peak detection.",
+    "parser_settings": "Advanced settings for filename metadata parsing such as prefer file metadata, compound stopwords, and recognized gases/solvents.",
     "percent_threshold": "Percent threshold used in peak or tangent selection.",
     "plateau_average_method": "Average method used to combine accepted plateau currents.",
     "plateau_min_cvs": "Minimum number of CVs required in a plateau-validation subset.",
@@ -835,6 +841,16 @@ def _build_option_metadata():
         },
         "experiment_type": {
             "description": "Experiment type to require or assign. If omitted, eCAT promotes objects from parser/file metadata when possible.",
+        },
+        "custom_parser": {
+            "description": "Callable filename metadata parser. It can return gas, solvent, compounds, concentrations, or scan rate metadata from the object name and optional path/options context.",
+        },
+        "custom_parser_mode": {
+            "choices": ["merge", "override"],
+            "description": "How the custom filename metadata parser combines with the built-in filename parser: 'merge' fills only missing filename-derived metadata, while 'override' replaces built-in filename parser values without overriding file-derived metadata unless parser settings disable that preference.",
+        },
+        "parser_settings": {
+            "description": "Filename parser settings dictionary. Supported keys include 'prefer file metadata', 'compound stopwords', 'solvents', and 'gases'.",
         },
     })
 
@@ -1745,6 +1761,9 @@ class ImportOptions:
     software: str | None = None
     experiment_type: str | None = None
     custom_reader: object | None = None
+    custom_parser: object | None = None
+    custom_parser_mode: str = "merge"
+    parser_settings: dict | None = None
     print: bool = False
     troubleshoot: bool = False
     recursive_search: bool = True
@@ -1789,6 +1808,13 @@ class ImportOptions:
             raise OptionError("'recursive search' must be True or False.")
         if self.sort_keys is not None and not isinstance(self.sort_keys, (str, list, tuple)):
             raise OptionError("'sort keys' must be a string, list, tuple, or None.")
+        if self.custom_parser is not None and not callable(self.custom_parser):
+            raise OptionError("'custom parser' must be callable or None.")
+        custom_parser_mode = str(self.custom_parser_mode).strip().lower().replace("_", " ").replace("-", " ")
+        if custom_parser_mode not in {"merge", "override"}:
+            raise OptionError("'custom parser mode' must be 'merge' or 'override'.")
+        if self.parser_settings is not None and not isinstance(self.parser_settings, dict):
+            raise OptionError("'parser settings' must be a dictionary or None.")
         allowed_modes = {"none", "off", "false", "manual", "keyword", "auto", "file"}
         if str(self.reference_mode).strip().lower() not in allowed_modes:
             raise OptionError("'reference mode' must be 'auto', 'manual', 'keyword', 'file', or 'none'.")
@@ -1810,6 +1836,9 @@ class ImportOptions:
         data["folder path"] = self.folder_path
         data["experiment type"] = self.experiment_type
         data["custom reader"] = self.custom_reader
+        data["custom parser"] = self.custom_parser
+        data["custom parser mode"] = self.custom_parser_mode
+        data["parser settings"] = self.parser_settings
         data["recursive search"] = self.recursive_search
         data["name alterations"] = self.name_alterations
         data["pretty print"] = self.pretty_print
