@@ -3,6 +3,16 @@ from datetime import datetime, timedelta
 import pytest
 
 
+PRIVATE_DPV_FILENAME = "DPV_MeCN_CO2_0.1MTBAPF6_3mMFc_1mMFe-tpyPY2Me_-0.7_to_-1.2V.txt"
+
+
+def _private_dpv_path(repo_root):
+    filepath = repo_root / "tests" / "tmp_real_examples" / PRIVATE_DPV_FILENAME
+    if not filepath.exists():
+        pytest.skip("Private DPV regression file is not present in this checkout.")
+    return filepath
+
+
 def test_filter_supports_last_replicate_lookup(ecat_module, cv_factory):
     base_time = datetime(2026, 4, 16, 12, 0, 0)
 
@@ -486,12 +496,7 @@ def test_build_object_table_labels_replicates_before_reference_columns(
 
 
 def test_build_object_table_places_txt_stats_before_replicate(ecat_module, repo_root):
-    filepath = (
-        repo_root
-        / "tests"
-        / "tmp_real_examples"
-        / "DPV_MeCN_CO2_0.1MTBAPF6_3mMFc_1mMFe-tpyPY2Me_-0.7_to_-1.2V.txt"
-    )
+    filepath = _private_dpv_path(repo_root)
     rep1 = ecat_module.echem.from_file(str(filepath), {})
     rep2 = ecat_module.echem.from_file(str(filepath), {})
 
@@ -505,12 +510,7 @@ def test_build_object_table_places_txt_stats_before_replicate(ecat_module, repo_
 
 
 def test_build_object_table_rounds_scalar_numeric_txt_stats(ecat_module, repo_root):
-    filepath = (
-        repo_root
-        / "tests"
-        / "tmp_real_examples"
-        / "DPV_MeCN_CO2_0.1MTBAPF6_3mMFc_1mMFe-tpyPY2Me_-0.7_to_-1.2V.txt"
-    )
+    filepath = _private_dpv_path(repo_root)
     obj = ecat_module.echem.from_file(str(filepath), {})
 
     table, _meta = ecat_module.build_object_table(

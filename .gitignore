@@ -11,13 +11,17 @@ dist/
 .compat-results/
 .compat-venvs/
 .ecat-browser-sessions/
+docs/app_todo.md
+docs/app_ui_design_criteria.md
+docs/assets/
+docs/github_image_assets.md
+docs/google_form_response_sheet_columns.csv
+docs/todo.md
+eCAT Logo v1.png
 tmp_docx_render/
 tmp_docx_*.docx
 pytest-cache-files-*/
 notebooks/*.ek
 notebooks/_outputs/
 notebooks/_scratch/
-tests/tmp_real_examples/*
-!tests/tmp_real_examples/CPE_MeCN_Ar_0.1MTBAPF6_1mMDiipThzOAc_50mMPhAc_100mMPhOH_-1.4V.txt
-!tests/tmp_real_examples/CV_post_MeCN_Ar_0.1MTBAPF6_1mMDiipThzOAc_50mMPhAc_100mMPhOH_0_to_-1.6V_100mVs.txt
-!tests/tmp_real_examples/DPV_MeCN_CO2_0.1MTBAPF6_3mMFc_1mMFe-tpyPY2Me_-0.7_to_-1.2V.txt
+tests/tmp_real_examples/

@@ -136,11 +136,15 @@ def test_get_data_root_files_store_empty_folderpath(
         "ch_cv.txt": fixtures_dir / "ch_cv.txt",
         "ch_ca_tiny.txt": fixtures_dir / "ch_ca_tiny.txt",
         "ch_cp_tiny.txt": fixtures_dir / "ch_cp_tiny.txt",
-        "ch_dpv.txt": repo_root
+    }
+    private_dpv = (
+        repo_root
         / "tests"
         / "tmp_real_examples"
-        / "DPV_MeCN_CO2_0.1MTBAPF6_3mMFc_1mMFe-tpyPY2Me_-0.7_to_-1.2V.txt",
-    }
+        / "DPV_MeCN_CO2_0.1MTBAPF6_3mMFc_1mMFe-tpyPY2Me_-0.7_to_-1.2V.txt"
+    )
+    if private_dpv.exists():
+        sources["ch_dpv.txt"] = private_dpv
     for name, source in sources.items():
         (tmp_path / name).write_text(
             source.read_text(encoding="ISO-8859-1"),
@@ -158,12 +162,14 @@ def test_get_data_root_files_store_empty_folderpath(
     )
 
     assert {Path(obj.filepath).name for obj in objects} == set(sources)
-    assert {getattr(obj, "type", None) for obj in objects} >= {
+    expected_types = {
         "Cyclic Voltammetry",
-        "Differential Pulse Voltammetry",
         "Chronoamperometry",
         "Chronopotentiometry",
     }
+    if private_dpv.exists():
+        expected_types.add("Differential Pulse Voltammetry")
+    assert {getattr(obj, "type", None) for obj in objects} >= expected_types
     assert all(obj.folderpath == "" for obj in objects)
 
 

@@ -4,6 +4,20 @@ from datetime import datetime
 import pytest
 
 
+PRIVATE_EXAMPLE_FILENAMES = {
+    "cv": "CV_post_MeCN_Ar_0.1MTBAPF6_1mMDiipThzOAc_50mMPhAc_100mMPhOH_0_to_-1.6V_100mVs.txt",
+    "dpv": "DPV_MeCN_CO2_0.1MTBAPF6_3mMFc_1mMFe-tpyPY2Me_-0.7_to_-1.2V.txt",
+    "cpe": "CPE_MeCN_Ar_0.1MTBAPF6_1mMDiipThzOAc_50mMPhAc_100mMPhOH_-1.4V.txt",
+}
+
+
+def _private_example_path(repo_root, key):
+    filepath = repo_root / "tests" / "tmp_real_examples" / PRIVATE_EXAMPLE_FILENAMES[key]
+    if not filepath.exists():
+        pytest.skip("Private real-example regression files are not present in this checkout.")
+    return filepath
+
+
 def test_ch_parser_handles_tab_delimiter_uA_units_and_raw_timestamp(ecat_module, fixtures_dir):
     obj = ecat_module.echem.from_file(
         str(fixtures_dir / "ch_cv_tab_uA_bad_timestamp.txt"),
@@ -372,10 +386,7 @@ def test_parse_file_returns_standard_parse_result_without_exposing_object(ecat_m
 
 
 def test_ch_dpv_parser_exposes_expected_public_axis_contract(ecat_module, repo_root):
-    obj = ecat_module.echem.from_file(
-        str(repo_root / "tests" / "tmp_real_examples" / "DPV_MeCN_CO2_0.1MTBAPF6_3mMFc_1mMFe-tpyPY2Me_-0.7_to_-1.2V.txt"),
-        {},
-    )
+    obj = ecat_module.echem.from_file(str(_private_example_path(repo_root, "dpv")), {})
 
     assert type(obj).__name__ == "dpv"
     assert obj.software == "CH"
@@ -575,20 +586,11 @@ def test_ch_ca_parser_reads_small_realistic_header_fields(ecat_module, fixtures_
 
 
 def test_real_ch_exports_parse_ir_compensation_for_cv_dpv_and_cpe(ecat_module):
-    examples_dir = Path(__file__).resolve().parents[1] / "tests" / "tmp_real_examples"
+    repo_root = Path(__file__).resolve().parents[1]
 
-    cv_obj = ecat_module.echem.from_file(
-        str(examples_dir / "CV_post_MeCN_Ar_0.1MTBAPF6_1mMDiipThzOAc_50mMPhAc_100mMPhOH_0_to_-1.6V_100mVs.txt"),
-        {},
-    )
-    dpv_obj = ecat_module.echem.from_file(
-        str(examples_dir / "DPV_MeCN_CO2_0.1MTBAPF6_3mMFc_1mMFe-tpyPY2Me_-0.7_to_-1.2V.txt"),
-        {},
-    )
-    cpe_obj = ecat_module.echem.from_file(
-        str(examples_dir / "CPE_MeCN_Ar_0.1MTBAPF6_1mMDiipThzOAc_50mMPhAc_100mMPhOH_-1.4V.txt"),
-        {},
-    )
+    cv_obj = ecat_module.echem.from_file(str(_private_example_path(repo_root, "cv")), {})
+    dpv_obj = ecat_module.echem.from_file(str(_private_example_path(repo_root, "dpv")), {})
+    cpe_obj = ecat_module.echem.from_file(str(_private_example_path(repo_root, "cpe")), {})
 
     assert cv_obj.ir_comp_resistance == pytest.approx(49.0)
     assert cv_obj.ir_uncomp_resistance == pytest.approx(12.3)
@@ -631,25 +633,12 @@ def test_real_ch_exports_parse_ir_compensation_for_cv_dpv_and_cpe(ecat_module):
     assert sorted_names == [cv_obj.name, cpe_obj.name, dpv_obj.name]
 
 
-def test_show_formats_ir_compensation_values_with_units(ecat_module, fixtures_dir):
-    examples_dir = Path("tests/tmp_real_examples")
+def test_show_formats_ir_compensation_values_with_units(ecat_module, fixtures_dir, repo_root):
     objects = [
         ecat_module.echem.from_file(str(fixtures_dir / "ch_ca_tiny.txt"), {}),
-        ecat_module.echem.from_file(
-            str(
-                examples_dir
-                / "CV_post_MeCN_Ar_0.1MTBAPF6_1mMDiipThzOAc_50mMPhAc_100mMPhOH_0_to_-1.6V_100mVs.txt"
-            ),
-            {},
-        ),
-        ecat_module.echem.from_file(
-            str(examples_dir / "DPV_MeCN_CO2_0.1MTBAPF6_3mMFc_1mMFe-tpyPY2Me_-0.7_to_-1.2V.txt"),
-            {},
-        ),
-        ecat_module.echem.from_file(
-            str(examples_dir / "CPE_MeCN_Ar_0.1MTBAPF6_1mMDiipThzOAc_50mMPhAc_100mMPhOH_-1.4V.txt"),
-            {},
-        ),
+        ecat_module.echem.from_file(str(_private_example_path(repo_root, "cv")), {}),
+        ecat_module.echem.from_file(str(_private_example_path(repo_root, "dpv")), {}),
+        ecat_module.echem.from_file(str(_private_example_path(repo_root, "cpe")), {}),
     ]
 
     for obj in objects:

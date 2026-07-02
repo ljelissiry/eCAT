@@ -4,6 +4,16 @@ import pytest
 import matplotlib.pyplot as plt
 
 
+PRIVATE_DPV_FILENAME = "DPV_MeCN_CO2_0.1MTBAPF6_3mMFc_1mMFe-tpyPY2Me_-0.7_to_-1.2V.txt"
+
+
+def _private_dpv_path(repo_root):
+    filepath = repo_root / "tests" / "tmp_real_examples" / PRIVATE_DPV_FILENAME
+    if not filepath.exists():
+        pytest.skip("Private DPV regression file is not present in this checkout.")
+    return filepath
+
+
 def _synthetic_dpv(
     ecat_module,
     blank_echem_factory,
@@ -31,12 +41,7 @@ def _synthetic_dpv(
 
 
 def test_from_file_promotes_ch_dpv_export_to_dpv(ecat_module, repo_root):
-    filepath = (
-        repo_root
-        / "tests"
-        / "tmp_real_examples"
-        / "DPV_MeCN_CO2_0.1MTBAPF6_3mMFc_1mMFe-tpyPY2Me_-0.7_to_-1.2V.txt"
-    )
+    filepath = _private_dpv_path(repo_root)
 
     obj = ecat_module.echem.from_file(str(filepath), {})
 
@@ -51,12 +56,7 @@ def test_from_file_promotes_ch_dpv_export_to_dpv(ecat_module, repo_root):
 
 
 def test_ch_dpv_parser_reads_header_fields_without_saving_reported_peak_fields(ecat_module, repo_root):
-    filepath = (
-        repo_root
-        / "tests"
-        / "tmp_real_examples"
-        / "DPV_MeCN_CO2_0.1MTBAPF6_3mMFc_1mMFe-tpyPY2Me_-0.7_to_-1.2V.txt"
-    )
+    filepath = _private_dpv_path(repo_root)
 
     obj = ecat_module.echem.from_file(str(filepath), {})
 
@@ -79,12 +79,7 @@ def test_ch_dpv_parser_reads_header_fields_without_saving_reported_peak_fields(e
 
 
 def test_dpv_stats_include_common_name_metadata_and_dpv_fields(ecat_module, repo_root):
-    filepath = (
-        repo_root
-        / "tests"
-        / "tmp_real_examples"
-        / "DPV_MeCN_CO2_0.1MTBAPF6_3mMFc_1mMFe-tpyPY2Me_-0.7_to_-1.2V.txt"
-    )
+    filepath = _private_dpv_path(repo_root)
 
     obj = ecat_module.echem.from_file(str(filepath), {})
     stats = obj.stats()
@@ -104,12 +99,7 @@ def test_dpv_stats_include_common_name_metadata_and_dpv_fields(ecat_module, repo
 
 
 def test_dpv_txt_stats_uses_cv_style_scan_window_without_verbose_fields(ecat_module, repo_root):
-    filepath = (
-        repo_root
-        / "tests"
-        / "tmp_real_examples"
-        / "DPV_MeCN_CO2_0.1MTBAPF6_3mMFc_1mMFe-tpyPY2Me_-0.7_to_-1.2V.txt"
-    )
+    filepath = _private_dpv_path(repo_root)
 
     obj = ecat_module.echem.from_file(str(filepath), {})
     stats = obj.txt_stats({})
@@ -145,12 +135,7 @@ def test_dpv_txt_stats_uses_cv_style_scan_window_without_verbose_fields(ecat_mod
 
 
 def test_dpv_show_formats_unitless_pulse_metadata_with_units(ecat_module, repo_root):
-    filepath = (
-        repo_root
-        / "tests"
-        / "tmp_real_examples"
-        / "DPV_MeCN_CO2_0.1MTBAPF6_3mMFc_1mMFe-tpyPY2Me_-0.7_to_-1.2V.txt"
-    )
+    filepath = _private_dpv_path(repo_root)
 
     obj = ecat_module.echem.from_file(str(filepath), {})
 
@@ -166,12 +151,7 @@ def test_dpv_show_formats_unitless_pulse_metadata_with_units(ecat_module, repo_r
 
 
 def test_dpv_plot_subtitle_uses_symbolic_pulse_context(ecat_module, repo_root):
-    filepath = (
-        repo_root
-        / "tests"
-        / "tmp_real_examples"
-        / "DPV_MeCN_CO2_0.1MTBAPF6_3mMFc_1mMFe-tpyPY2Me_-0.7_to_-1.2V.txt"
-    )
+    filepath = _private_dpv_path(repo_root)
 
     obj = ecat_module.echem.from_file(str(filepath), {})
 
