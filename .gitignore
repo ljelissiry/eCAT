@@ -8,6 +8,16 @@ dist/
 .DS_Store
 .idea/
 .ipynb_checkpoints/
+.env
+.env.*
+*.log
+.coverage
+coverage.xml
+htmlcov/
+*.tmp
+*.bak
+*.orig
+*.rej
 .compat-results/
 .compat-venvs/
 .ecat-browser-sessions/
@@ -18,6 +28,7 @@ docs/github_image_assets.md
 docs/google_form_response_sheet_columns.csv
 docs/todo.md
 eCAT Logo v1.png
+eCAT Guide.docx
 tmp_docx_render/
 tmp_docx_*.docx
 pytest-cache-files-*/
