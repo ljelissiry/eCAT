@@ -1,4 +1,6 @@
 import time
+import os
+import stat
 
 import pytest
 
@@ -137,3 +139,17 @@ def test_app_dependencies_are_installed_with_base_package(repo_root):
     assert '"dash"' in dependencies_block
     assert '"dash-ag-grid"' in dependencies_block
     assert '"pywebview"' in dependencies_block
+
+
+@pytest.mark.skipif(os.name != "posix", reason="macOS launcher permissions are POSIX-specific")
+def test_macos_double_click_launchers_are_executable(repo_root):
+    launcher_dir = repo_root / "apps" / "workbench" / "launchers"
+    launcher_paths = [
+        launcher_dir / "eCAT Workbench.app" / "Contents" / "MacOS" / "ecat-workbench",
+        launcher_dir / "ecat-workbench-launcher.sh",
+        launcher_dir / "eCAT Workbench.command",
+    ]
+
+    for launcher_path in launcher_paths:
+        mode = launcher_path.stat().st_mode
+        assert mode & stat.S_IXUSR, f"{launcher_path} must be executable for double-click launch"
