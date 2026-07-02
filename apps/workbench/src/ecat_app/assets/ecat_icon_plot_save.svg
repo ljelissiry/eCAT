@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg id="Layer_1" xmlns="http://www.w3.org/2000/svg" version="1.1" viewBox="0 0 186 186">
+  <!-- floppy disk save icon -->
+  <path d="M34 25h93l25 25v111H34z" fill="none" stroke="#231f20" stroke-linecap="round" stroke-linejoin="round" stroke-width="14"/>
+  <path d="M61 25v49h67V25" fill="none" stroke="#231f20" stroke-linecap="round" stroke-linejoin="round" stroke-width="14"/>
+  <path d="M64 118h58v43H64z" fill="none" stroke="#231f20" stroke-linecap="round" stroke-linejoin="round" stroke-width="14"/>
+  <path d="M82 47h25" fill="none" stroke="#231f20" stroke-linecap="round" stroke-linejoin="round" stroke-width="10"/>
+</svg>

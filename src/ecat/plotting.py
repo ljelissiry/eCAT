@@ -7,7 +7,10 @@ from matplotlib.font_manager import FontProperties
 
 from .utils import *  # noqa: F401,F403
 from .options import *  # noqa: F401,F403
+from .options import _canonical_option_key, _drop_legacy_alias_mirrors
+from .results import AnalysisResult
 from ._plot_helpers import (
+    _add_directional_arrows,
     _add_scale_bar,
     _apply_ecat_axis_style,
     _apply_plot_titles,
@@ -157,10 +160,9 @@ def _align_multiline_legend_handles_to_first_line(legend):
     return legend
 
 
-class ScatterFitResult:
+class ScatterFitResult(AnalysisResult):
     """
     Novice-friendly container returned by the standardized scatter-fit names.
-    Legacy functions keep their historical tuple returns.
     """
     def __init__(
         self,
@@ -173,25 +175,23 @@ class ScatterFitResult:
         figure=None,
         axes=None,
         summary=None,
-        legacy_return=None,
     ):
-        self.table = table
-        self.fits = fits
-        self.fit_table = fit_table
-        self.fit_model_results = {} if fit_model_results is None else fit_model_results
-        self.raw_table = raw_table if raw_table is not None else table
-        self.transformed_table = transformed_table
-        self.figure = figure
-        self.axes = axes
-        self.summary = {} if summary is None else summary
-        self._legacy_return = legacy_return
+        super().__init__(
+            table=table,
+            fits=fits,
+            fit_table=fit_table,
+            fit_model_results=fit_model_results,
+            raw_table=raw_table,
+            transformed_table=transformed_table,
+            figure=figure,
+            axes=axes,
+            summary=summary,
+        )
 
     def __iter__(self):
-        if self._legacy_return is None:
-            yield self.table
-            yield self.fits
-            return
-        yield from self._legacy_return
+        raise TypeError(
+            "ScatterFitResult is not tuple-iterable; use .table, .fits, or .fit_table."
+        )
 
     def show(self, options=None):
         options = {} if options is None else dict(options)
@@ -246,16 +246,16 @@ def _fit_table_from_fits(fits):
     return pd.DataFrame([row])
 
 
-def _scatter_result_from_legacy(legacy_return, summary=None):
-    if not isinstance(legacy_return, tuple):
-        return ScatterFitResult(table=legacy_return, summary=summary, legacy_return=(legacy_return,))
+def _scatter_result_from_payload(payload, summary=None):
+    if not isinstance(payload, tuple):
+        return ScatterFitResult(table=payload, summary=summary)
 
-    table = legacy_return[0] if len(legacy_return) > 0 else None
-    fits = legacy_return[1] if len(legacy_return) > 1 else None
+    table = payload[0] if len(payload) > 0 else None
+    fits = payload[1] if len(payload) > 1 else None
 
-    if len(legacy_return) == 3 and isinstance(legacy_return[1], pd.DataFrame):
-        table = legacy_return[1]
-        fits = legacy_return[2]
+    if len(payload) == 3 and isinstance(payload[1], pd.DataFrame):
+        table = payload[1]
+        fits = payload[2]
 
     fit_table = None
     fit_model_results = {}
@@ -271,7 +271,6 @@ def _scatter_result_from_legacy(legacy_return, summary=None):
         fit_table=fit_table,
         fit_model_results=fit_model_results,
         summary=summary,
-        legacy_return=legacy_return,
     )
 
 
@@ -357,15 +356,6 @@ def _resolve_multi_scatter_x_column(df, options):
     requested = options.get("x column", "auto")
     if requested not in (None, "auto"):
         return _multi_scatter_exact_column(df, requested)
-    data_mode = str(options.get("data mode", "auto")).strip().lower()
-    if data_mode in {"raw", "adjusted"}:
-        raw_col = _multi_scatter_exact_column(df, "x raw", required=False)
-        if raw_col is not None:
-            return raw_col
-    if data_mode == "transformed":
-        transformed_col = _multi_scatter_exact_column(df, "x transformed", required=False)
-        if transformed_col is not None:
-            return transformed_col
     return _multi_scatter_find_preferred_column(
         df,
         ["x transformed", "x raw"],
@@ -378,17 +368,8 @@ def _resolve_multi_scatter_y_columns(df, options):
     if requested_columns is None:
         requested_column = options.get("y column", "auto")
         if requested_column in (None, "auto"):
-            data_mode = str(options.get("data mode", "auto")).strip().lower()
-            if data_mode == "adjusted":
-                adjusted_col = _multi_scatter_exact_column(df, "y adjusted", required=False)
-                if adjusted_col is not None:
-                    return [adjusted_col]
-            if data_mode == "transformed":
-                transformed_col = _multi_scatter_exact_column(df, "y transformed", required=False)
-                if transformed_col is not None:
-                    return [transformed_col]
             metric = options.get("metric")
-            preferred = [] if data_mode == "raw" else ["y transformed"]
+            preferred = ["y transformed"]
             if metric not in (None, "auto", ""):
                 preferred.append(metric)
             preferred.extend(["kobs", "TOFmax", "ip", "Ep"])
@@ -400,111 +381,17 @@ def _resolve_multi_scatter_y_columns(df, options):
     return [_multi_scatter_exact_column(df, col) for col in requested_columns]
 
 
-def _coerce_multi_scatter_dataset(value):
-    if isinstance(value, ScatterFitResult):
-        if value.table is None:
-            raise ValueError("ScatterFitResult inputs must have a table.")
-        return value.table.copy(), value
+def _coerce_multi_scatter_dataset(value, options=None):
+    if isinstance(value, AnalysisResult):
+        if isinstance(value.raw_table, pd.DataFrame) and not value.raw_table.empty:
+            return value.raw_table.copy(), value
+        if isinstance(value.table, pd.DataFrame) and not value.table.empty:
+            return value.table.copy(), value
+        raise ValueError("AnalysisResult inputs must have plottable point data.")
     if isinstance(value, pd.DataFrame):
         return value.copy(), None
     raise TypeError(
-        "multi_scatterplot datasets values must be pandas DataFrames or ScatterFitResult objects."
-    )
-
-
-def _resolve_multi_scatter_fit_coeffs(fits, y_col):
-    if fits is None:
-        return None
-
-    if isinstance(fits, dict):
-        if y_col in fits:
-            return np.asarray(fits[y_col], dtype=float)
-
-        y_key = str(y_col).strip().lower()
-        matches = [
-            coeffs for key, coeffs in fits.items()
-            if str(key).strip().lower() == y_key or str(key).strip().lower() in y_key
-        ]
-        if len(matches) == 1:
-            return np.asarray(matches[0], dtype=float)
-        if len(fits) == 1:
-            return np.asarray(next(iter(fits.values())), dtype=float)
-        return None
-
-    try:
-        coeffs = np.asarray(fits, dtype=float)
-    except (TypeError, ValueError):
-        return None
-
-    if coeffs.ndim == 1 and len(coeffs) >= 2:
-        return coeffs
-    return None
-
-
-def _multi_scatter_fit_rows(result, y_col):
-    if result is None:
-        return []
-
-    fit_table = getattr(result, "fit_table", None)
-    rows = []
-
-    seen = set()
-    if isinstance(fit_table, pd.DataFrame) and not fit_table.empty:
-        for _, fit_row in fit_table.iterrows():
-            coeffs = None
-            if "coefficients" in fit_row and fit_row["coefficients"] is not None:
-                try:
-                    coeffs = np.asarray(fit_row["coefficients"], dtype=float)
-                except (TypeError, ValueError):
-                    coeffs = None
-
-            if coeffs is None and {"slope", "intercept"}.issubset(fit_row.index):
-                coeffs = np.asarray([fit_row["slope"], fit_row["intercept"]], dtype=float)
-
-            if coeffs is None or len(coeffs) < 2:
-                continue
-
-            key = (
-                tuple(np.asarray(coeffs, dtype=float).round(15).tolist()),
-                fit_row.get("fit x min", None),
-                fit_row.get("fit x max", None),
-                fit_row.get("series", None),
-            )
-            if key in seen:
-                continue
-            seen.add(key)
-            rows.append({"coefficients": coeffs, "fit row": fit_row})
-
-    if rows:
-        return rows
-
-    coeffs = _resolve_multi_scatter_fit_coeffs(getattr(result, "fits", None), y_col)
-    if coeffs is None:
-        return []
-    return [{"coefficients": coeffs, "fit row": None}]
-
-
-def _multi_scatter_fit_is_compatible_with_columns(df, x_col, y_col, options):
-    y_key = _multi_scatter_column_key(y_col)
-    if y_key in {"y transformed", "y adjusted"}:
-        return True
-
-    y_mode = _multi_scatter_constant_value(df, "y mode", "raw")
-    y_mode_key = str(y_mode).strip().lower().replace("_", " ").replace("-", " ")
-    raw_modes = {"", "none", "raw", "identity", "direct"}
-    if y_mode is None or y_mode_key in raw_modes:
-        return True
-
-    return False
-
-
-def _multi_scatter_incompatible_fit_message(label, x_col, y_col):
-    return (
-        "Stored fit for "
-        f"'{label}' does not match the selected multi_scatterplot columns "
-        f"(x column={x_col!r}, y column={y_col!r}). "
-        "Create a matching upstream fit, choose a compatible data mode/column, "
-        "or set 'plot fit': False to plot only the selected points."
+        "multi_scatterplot datasets values must be pandas DataFrames or AnalysisResult objects."
     )
 
 
@@ -567,15 +454,80 @@ def _infer_multi_scatter_metric_column(df, y_col, options):
     return y_col
 
 
+def _multi_scatter_option_is_active(value):
+    return value not in (None, "", False, "none", "None", "auto")
+
+
+def _multi_scatter_requested_transforms(options):
+    if not any(
+        _multi_scatter_option_is_active(options.get(key))
+        for key in ("transform mode", "x transform", "y transform")
+    ):
+        return None, None
+    from .analysis_batch import _resolve_xy_transforms
+
+    x_transform, y_transform, _mode_label = _resolve_xy_transforms(
+        options,
+        default_x="identity",
+        default_y="identity",
+    )
+    return x_transform, y_transform
+
+
+def _multi_scatter_x_metadata(df, column):
+    key = _multi_scatter_column_key(column)
+    if key in {"x raw", "x transformed"}:
+        base_label = _multi_scatter_constant_value(df, "x label", column)
+        unit = _multi_scatter_constant_value(df, "x unit", "")
+        x_kind = _multi_scatter_constant_value(df, "x kind", "custom")
+        return base_label, unit, x_kind
+    return str(column), "", "custom"
+
+
+def _multi_scatter_metric_metadata(df, column, options):
+    key = _multi_scatter_column_key(column)
+    if key not in {"y raw", "y adjusted", "y transformed"}:
+        units = getattr(df, "attrs", {}).get("units", {}) or {}
+        unit = units.get(column) or units.get(str(column).lower())
+        return str(column), unit
+
+    metric = _multi_scatter_constant_value(df, "y label", None)
+    if metric is None:
+        metric = _infer_multi_scatter_metric_column(df, column, options)
+    unit = _multi_scatter_constant_value(df, "y unit", None)
+    if unit is None:
+        units = getattr(df, "attrs", {}).get("units", {}) or {}
+        unit = units.get(metric) or units.get(str(metric).lower()) or units.get(column)
+    return str(metric), unit
+
+
+def _multi_scatter_effective_y_mode(df, column, options):
+    mode = options.get("y mode")
+    if not _multi_scatter_option_is_active(mode):
+        key = _multi_scatter_column_key(column)
+        if key in {"y adjusted", "y transformed"}:
+            mode = _multi_scatter_constant_value(df, "y mode", "raw")
+        else:
+            mode = "raw"
+    return _normalize_y_mode(mode)
+
+
 def _multi_scatter_axis_label(df, column, axis, options):
     key = _multi_scatter_column_key(column)
+    requested_x_transform, requested_y_transform = _multi_scatter_requested_transforms(options)
 
     if axis == "x":
+        base_label, unit, x_kind = _multi_scatter_x_metadata(df, column)
+        if requested_x_transform is not None:
+            return _format_fit_rate_x_label(
+                base_label,
+                unit=unit,
+                x_kind=x_kind,
+                transform=requested_x_transform,
+                log=str(requested_x_transform).strip().lower() == "log10",
+            )
         if key == "x transformed":
             transform = _multi_scatter_constant_value(df, "x transform", "identity")
-            base_label = _multi_scatter_constant_value(df, "x label", "x")
-            unit = _multi_scatter_constant_value(df, "x unit", "")
-            x_kind = _multi_scatter_constant_value(df, "x kind", "custom")
             return _format_fit_rate_x_label(
                 base_label,
                 unit=unit,
@@ -584,53 +536,30 @@ def _multi_scatter_axis_label(df, column, axis, options):
                 log=str(transform).strip().lower() == "log10",
             )
         if key == "x raw":
-            base_label = _multi_scatter_constant_value(df, "x label", column)
-            unit = _multi_scatter_constant_value(df, "x unit", "")
-            x_kind = _multi_scatter_constant_value(df, "x kind", "custom")
             return _format_fit_rate_x_label(base_label, unit=unit, x_kind=x_kind)
 
-    if axis == "y" and key == "y transformed":
-        transform = _multi_scatter_constant_value(df, "y transform", "identity")
-        metric = _multi_scatter_constant_value(df, "y label", None)
-        transform_is_log10 = str(transform).strip().lower() == "log10"
-        if metric is not None:
-            metric = str(metric)
-            metric_key = metric.strip().lower().replace(" ", "")
-            mode = _normalize_y_mode(_multi_scatter_constant_value(df, "y mode", "raw"))
-            if metric_key in {"kobs", "tofmax", "r2"}:
-                if mode == "raw":
-                    return _format_fit_rate_metric_label(
-                        metric,
-                        log=transform_is_log10,
-                    )
-                metric_label = _format_fit_rate_metric_label(
-                    metric,
-                    log=False,
-                )
-            else:
-                metric_label = metric
-                if mode == "raw":
-                    return _format_y_transform_axis_label(metric_label, transform)
-            y_mode_label = _format_y_mode_axis_label(
-                metric_label,
-                mode,
-            )
-            return _format_y_transform_axis_label(y_mode_label, transform)
-        else:
-            metric = _infer_multi_scatter_metric_column(df, column, options)
-        return _format_fit_rate_metric_label(
-            metric,
-            log=transform_is_log10,
-        )
-
-    if axis == "y" and key == "y adjusted":
-        metric = _multi_scatter_constant_value(df, "y label", None)
-        mode = _normalize_y_mode(_multi_scatter_constant_value(df, "y mode", "raw"))
-        metric = str(metric) if metric is not None else "y"
-        return _format_y_mode_axis_label(metric, mode)
-
     if axis == "y":
-        return _format_fit_rate_metric_label(column)
+        transform = requested_y_transform
+        if transform is None and key == "y transformed":
+            transform = _multi_scatter_constant_value(df, "y transform", "identity")
+        if transform is None:
+            transform = "identity"
+        transform_is_log10 = str(transform).strip().lower() == "log10"
+        metric, unit = _multi_scatter_metric_metadata(df, column, options)
+        mode = _multi_scatter_effective_y_mode(df, column, options)
+
+        if mode == "raw":
+            return _format_fit_rate_metric_label(
+                metric,
+                log=transform_is_log10,
+                unit=unit,
+            )
+
+        y_mode_label = _format_y_mode_axis_label(
+            _format_fit_rate_metric_label(metric),
+            mode,
+        )
+        return _format_y_transform_axis_label(y_mode_label, transform)
 
     if axis == "x":
         return format_chemical_formulas(str(column), mode="mathtext")
@@ -689,61 +618,70 @@ def _apply_matplotlib_axis_scales(ax, options):
     return ax
 
 
-def _multi_scatter_fit_curve(df, x_values, y_col, coeffs, options, fit_row_source=None):
+def _multi_scatter_fit_curve(x_values, model_result):
     x_values = np.asarray(x_values, dtype=float)
     if len(x_values) < 2:
         raise ValueError("At least two x values are required for a fit overlay.")
 
-    data_mode = str(options.get("data mode", "auto")).strip().lower()
-    y_key = _multi_scatter_column_key(y_col)
-    x_transform = _multi_scatter_constant_value(df, "x transform", "identity")
-    y_transform = _multi_scatter_constant_value(df, "y transform", "identity")
-
     x_min = float(np.nanmin(x_values))
     x_max = float(np.nanmax(x_values))
-    if fit_row_source is not None:
-        row_x_min = fit_row_source.get("fit x min", np.nan)
-        row_x_max = fit_row_source.get("fit x max", np.nan)
-        if pd.notna(row_x_min) and pd.notna(row_x_max):
-            if data_mode in {"raw", "adjusted"}:
-                raw_limits = _inverse_transform_values([row_x_min, row_x_max], x_transform)
-                raw_limits = raw_limits[np.isfinite(raw_limits)]
-                if len(raw_limits) > 0:
-                    x_min = float(np.nanmin(raw_limits))
-                    x_max = float(np.nanmax(raw_limits))
-            else:
-                x_min = float(row_x_min)
-                x_max = float(row_x_max)
 
     x_curve = np.linspace(x_min, x_max, 100)
 
-    if data_mode in {"auto", "transformed"} and y_key == "y transformed":
-        return x_curve, np.poly1d(coeffs)(x_curve)
+    model_result = model_result or {}
+    function = model_result.get("function")
+    popt = model_result.get("popt")
+    if function is None or popt is None:
+        raise ValueError("Fit overlay is unavailable for this dataset.")
 
-    x_op, x_value = _normalize_transform_token(x_transform)
-    keep = _transform_valid_mask(x_curve, x_op, x_value)
-    if not np.any(keep):
-        raise ValueError("Selected x range cannot be transformed for the stored fit overlay.")
-
-    x_curve = x_curve[keep]
-    fit_x, _label, _meta = _transform_values(x_curve, x_transform)
-    fit_y = np.poly1d(coeffs)(fit_x)
-    y_adjusted = _inverse_transform_values(fit_y, y_transform)
-
-    if y_key == "y adjusted":
-        y_curve = y_adjusted
-    else:
-        y_mode = _multi_scatter_constant_value(df, "y mode", "raw")
-        y0 = _multi_scatter_constant_value(df, "y0", None)
-        y_curve = _inverse_y_mode_values(y_adjusted, y_mode, y0)
-
+    y_curve = function(np.asarray(x_curve, dtype=float), *np.asarray(popt, dtype=float))
     finite = np.isfinite(x_curve) & np.isfinite(y_curve)
     if not np.any(finite):
-        raise ValueError("Stored fit overlay could not be back-transformed into finite values.")
+        raise ValueError("Fit overlay could not be evaluated on finite points.")
     return x_curve[finite], y_curve[finite]
 
 
-def multi_scatterplot(datasets, options={}):
+def _multi_scatter_fit_mode(options):
+    fit_value = options.get("fit", True)
+    if fit_value in (False, None, "none", "None", "off", "Off"):
+        return "none"
+    if str(fit_value).strip().lower() == "stored":
+        return "stored"
+    return "refit"
+
+
+def _multi_scatter_transform_xy(x_values, y_values, options, series_keys=None):
+    if not any(
+        options.get(key) not in (None, "", False, "none", "None")
+        for key in ("y mode", "transform mode", "x transform", "y transform", "floor", "x floor", "y floor", "y0")
+    ):
+        return np.asarray(x_values, dtype=float), np.asarray(y_values, dtype=float)
+
+    try:
+        from .analysis_batch import _apply_scatter_transforms, _apply_y_mode, _resolve_xy_transforms
+    except Exception as exc:  # pragma: no cover - import path safety
+        raise RuntimeError(
+            "multi_scatterplot scatterfit modes require internal analysis helpers "
+            "for the current install."
+        ) from exc
+
+    y_adjustment = _apply_y_mode(y_values, options, series_keys=series_keys)
+    x_transform, y_transform, _mode_label = _resolve_xy_transforms(
+        options,
+        default_x="identity",
+        default_y="identity",
+    )
+    transformed = _apply_scatter_transforms(
+        x_values,
+        y_adjustment["adjusted"],
+        x_transform,
+        y_transform,
+        options,
+    )
+    return transformed["x"], transformed["y"]
+
+
+def multi_scatterplot(datasets, options=None):
     """Overlay multiple scatter-fit result tables or dataframes on one plot.
     
     Parameters
@@ -765,6 +703,7 @@ def multi_scatterplot(datasets, options={}):
     options = MultiScatterplotOptions.from_options(options).to_legacy_dict()
     options.setdefault("legend", True)
     plot_fit = bool(options.get("plot fit", True))
+    fit_mode = _multi_scatter_fit_mode(options)
 
     if not isinstance(datasets, dict) or len(datasets) == 0:
         raise ValueError("multi_scatterplot requires a non-empty dict of labeled datasets.")
@@ -784,9 +723,10 @@ def multi_scatterplot(datasets, options={}):
     first_y_col = None
     first_x_label = None
     first_y_label = None
+    _multi_scatter_fit_series = None
 
     for i, (label, value) in enumerate(dataset_items):
-        df, result = _coerce_multi_scatter_dataset(value)
+        df, result = _coerce_multi_scatter_dataset(value, options)
         x_col = _resolve_multi_scatter_x_column(df, options)
         y_cols = _resolve_multi_scatter_y_columns(df, options)
 
@@ -815,6 +755,14 @@ def multi_scatterplot(datasets, options={}):
             order = np.argsort(x_values)
             x_values = x_values[order]
             y_values = y_values[order]
+            raw_x_values = np.asarray(x_values, dtype=float)
+            raw_y_values = np.asarray(y_values, dtype=float)
+            x_values, y_values = _multi_scatter_transform_xy(
+                x_values,
+                y_values,
+                options,
+                series_keys=[label, y_col, "y", "default"],
+            )
 
             _plot_multi_scatter_trace(
                 ax,
@@ -825,73 +773,66 @@ def multi_scatterplot(datasets, options={}):
                 trace_label,
             )
 
-            for x_value, y_value in zip(x_values, y_values):
+            for raw_x, raw_y, x_value, y_value in zip(raw_x_values, raw_y_values, x_values, y_values):
                 plotted_rows.append({
                     "series": label,
                     "x column": x_col,
                     "y column": y_col,
+                    "x raw": raw_x,
+                    "y raw": raw_y,
+                    "x plotted": x_value,
+                    "y plotted": y_value,
+                    "x transformed": x_value,
+                    "y transformed": y_value,
                     "x": x_value,
                     "y": y_value,
                 })
 
-            if result is not None:
-                fit_compatible = _multi_scatter_fit_is_compatible_with_columns(
-                    df,
-                    x_col,
-                    y_col,
-                    options,
-                )
-                if not fit_compatible:
-                    message = _multi_scatter_incompatible_fit_message(label, x_col, y_col)
-                    if plot_fit:
-                        raise ValueError(message)
-                    continue
-                for fit_info in _multi_scatter_fit_rows(result, y_col):
-                    coeffs = fit_info["coefficients"]
-                    fit_row_source = fit_info.get("fit row")
-                    if coeffs is None or len(coeffs) < 2 or len(x_values) < 2:
-                        continue
-
+            if fit_mode == "refit":
+                if _multi_scatter_fit_series is None:
                     try:
-                        fit_x, fit_y = _multi_scatter_fit_curve(
-                            df,
-                            x_values,
-                            y_col,
-                            coeffs,
-                            options,
-                            fit_row_source=fit_row_source,
-                        )
-                    except ValueError as exc:
-                        warnings.warn(str(exc))
-                        continue
+                        from .analysis_batch import _fit_series_xy
+                    except Exception as exc:  # pragma: no cover - import path safety
+                        raise RuntimeError(
+                            "multi_scatterplot fit overlays currently require internal analysis helpers "
+                            "for the current install."
+                        ) from exc
+                    _multi_scatter_fit_series = _fit_series_xy
 
-                    fit_label = f"{trace_label} fit"
+                try:
+                    series_fit = _multi_scatter_fit_series(
+                        x_values,
+                        y_values,
+                        options={**options, "print": False},
+                        label=trace_label,
+                    )
+                except Exception as exc:
+                    warnings.warn(f"Could not fit curve for {trace_label} / {y_col}: {exc}")
+                    continue
+
+                model_result = series_fit.get("model_result", {})
+                if model_result:
                     if plot_fit:
-                        ax.plot(
-                            fit_x,
-                            fit_y,
-                            color=color,
-                            linestyle=options.get("fit linestyle", "--"),
-                            linewidth=options.get("fit linewidth", 1),
-                            alpha=options.get("fit alpha", 1),
-                            label=fit_label,
-                        )
+                        try:
+                            fit_x, fit_y = _multi_scatter_fit_curve(x_values, model_result)
+                        except ValueError as exc:
+                            warnings.warn(str(exc))
+                        else:
+                            ax.plot(
+                                fit_x,
+                                fit_y,
+                                color=color,
+                                linestyle=options.get("fit linestyle", "--"),
+                                linewidth=options.get("fit linewidth", 1),
+                                alpha=options.get("fit alpha", 1),
+                                label=f"{trace_label} fit",
+                            )
 
-                    fit_row = {"series": label, "y column": y_col}
-                    if len(coeffs) >= 2:
-                        fit_row["slope"] = float(coeffs[-2])
-                        fit_row["intercept"] = float(coeffs[-1])
-                    fit_row["coefficients"] = coeffs
-                    if fit_row_source is not None:
-                        fit_name = fit_row_source.get("Fit", None)
-                        if fit_name is not None:
-                            fit_row["Fit"] = fit_name
-                        row_x_min = fit_row_source.get("fit x min", np.nan)
-                        row_x_max = fit_row_source.get("fit x max", np.nan)
-                        if pd.notna(row_x_min) and pd.notna(row_x_max):
-                            fit_row["fit x min"] = float(row_x_min)
-                            fit_row["fit x max"] = float(row_x_max)
-                    fit_rows.append(fit_row)
+                    for fit_row in series_fit.get("fit_rows", []):
+                        fit_row = dict(fit_row)
+                        fit_row["series"] = label
+                        fit_row["y column"] = y_col
+                        fit_rows.append(fit_row)
 
     if first_x_col is not None:
         ax.set_xlabel(options.get("xlabel") or first_x_label or str(first_x_col))
@@ -905,9 +846,12 @@ def multi_scatterplot(datasets, options={}):
     if options.get("print", False):
         _print_scatter_fit_statistics("Multi Scatterplot", fit_table)
 
+    plotted_table = pd.DataFrame(plotted_rows)
     return ScatterFitResult(
-        table=pd.DataFrame(plotted_rows),
+        table=plotted_table,
         fit_table=fit_table,
+        raw_table=plotted_table,
+        transformed_table=plotted_table,
         figure=ax.figure,
         axes=ax,
         summary={
@@ -1042,6 +986,34 @@ def _object_info_table(echem_object, options=None):
             return True
         return False
 
+    def combined_compounds_display():
+        compounds = info.get("compounds")
+        if is_empty_info_value("compounds", compounds):
+            return None
+
+        concentrations = info.get("concentrations", [])
+        if isinstance(compounds, str):
+            compounds = [compounds]
+        else:
+            compounds = list(compounds)
+        if isinstance(concentrations, str):
+            concentrations = [concentrations]
+        else:
+            concentrations = list(concentrations or [])
+
+        combine = getattr(echem_object, "combine_concs_chems", None)
+        if callable(combine):
+            combined = combine(concentrations, compounds, options)
+        else:
+            padded = concentrations + [""] * len(compounds)
+            combined = [
+                f"{conc + ' ' if conc else ''}{compound}"
+                for conc, compound in zip(padded, compounds)
+            ]
+        if isinstance(combined, str):
+            return combined
+        return ", ".join(str(entry) for entry in combined if entry not in (None, ""))
+
     def format_info_value(key, value):
         _metric_key, unit = split_metric_unit(key)
         if key == "reference source file":
@@ -1074,6 +1046,11 @@ def _object_info_table(echem_object, options=None):
                 return int(value)
             return f"{round_sigfigs(float(value), sig_figs):g}"
         return value
+
+    combined_compounds = combined_compounds_display()
+    if combined_compounds is not None:
+        info["compounds"] = combined_compounds
+        info.pop("concentrations", None)
 
     rows = [
         {
@@ -1900,7 +1877,7 @@ def build_object_table(object_list, options=None):
             visible_columns.insert(0, "replicate")
 
     # Add name only if requested explicitly or still needed after Rep
-    if "name" in requested_columns:
+    if "name" in requested_columns and "name" in df.columns:
         if "name" not in visible_columns:
             visible_columns.insert(0, "name")
     else:
@@ -1910,7 +1887,7 @@ def build_object_table(object_list, options=None):
         else:
             keep_name = df[compare_without_name].duplicated(keep=False).any()
 
-        if keep_name and "name" not in visible_columns:
+        if keep_name and "name" in df.columns and "name" not in visible_columns:
             visible_columns.insert(0, "name")
 
     # If nothing remains, just return empty display df after Conditions
@@ -2223,7 +2200,7 @@ def echem_similar_different(echem_list, options=None, ignore=None, return_values
 ### Package Functions ###
 ###===================###
 
-def multimultiplot(echem_groups,options={}):
+def multimultiplot(echem_groups,options=None):
     # configure options
     """Plot multiple groups of electrochemistry objects as coordinated multiplots.
     
@@ -3193,7 +3170,9 @@ def _estimate_custom_legend_panel_width(ax, entries, options, legend_fs, layout_
 
     if has_any_text:
         width = left_pad_axes + sample_len_axes + text_gap_axes + max_text_w + right_pad_axes
-        return float(np.clip(width, 0.09, 0.55))
+        legend_pad = float(options.get("legend pad", 0.02))
+        max_width = max(0.12, 1.0 - 2.0 * legend_pad)
+        return float(np.clip(width, 0.09, max_width))
 
     # bar-only legend
     width = left_pad_axes + sample_len_axes + right_pad_axes
@@ -4004,11 +3983,16 @@ def _draw_multiplot_legend_and_colorbars(ax, color_spec, options, legend_fs):
                 cb.set_ticks(group.get("ticks", []))
                 if tick_label_mode == "all":
                     cb.set_ticklabels(group.get("ticklabels", []))
+                elif text_x is None:
+                    cb.set_ticklabels(group.get("ticklabels", []))
                 else:
                     cb.set_ticklabels([""] * len(group.get("ticks", [])))
             else:
                 cb.set_ticks(group.get("endpoint ticks", []))
-                cb.set_ticklabels([""] * len(group.get("endpoint ticks", [])))
+                if text_x is None:
+                    cb.set_ticklabels(group.get("endpoint ticklabels", []))
+                else:
+                    cb.set_ticklabels([""] * len(group.get("endpoint ticks", [])))
 
             cb.ax.minorticks_off()
             cb.ax.tick_params(
@@ -4210,7 +4194,7 @@ def _ordered_common_disambiguator_parts(group_labels):
     return common_parts
 
 
-def _attach_gradient_legend_text(color_spec, labels, label_alterations=None):
+def _attach_gradient_legend_text(color_spec, labels, label_alterations=None, user_labels_explicit=False):
     """
     Use the already-generated multiplot labels for the entries that are being
     consolidated into each colorbar.
@@ -4229,6 +4213,21 @@ def _attach_gradient_legend_text(color_spec, labels, label_alterations=None):
             labels[i] for i in indices
             if isinstance(i, int) and 0 <= i < len(labels)
         ]
+
+        if user_labels_explicit:
+            explicit_labels = [
+                _format_already_or_chemical(apply_text_alterations(lbl, label_alterations))
+                for lbl in group_labels
+            ]
+            group["legend context line"] = ""
+            group["ticklabels"] = explicit_labels
+            if len(explicit_labels) == 1:
+                group["endpoint ticklabels"] = [explicit_labels[0]]
+            elif len(explicit_labels) >= 2:
+                group["endpoint ticklabels"] = [explicit_labels[0], explicit_labels[-1]]
+            else:
+                group["endpoint ticklabels"] = []
+            continue
 
         common_parts = _ordered_common_label_parts(group_labels)
 
@@ -4773,6 +4772,9 @@ def _prepare_multiplot_style(echem_list, options):
         color_spec,
         display_labels,
         label_alterations=label_alterations,
+        user_labels_explicit=(
+            options.get("labels") is not None or options.get("plot labels") is not None
+        ),
     )
 
     return {
@@ -4842,6 +4844,7 @@ def _plot_multiplot_series(echem_list, options, series_getter):
             color=color_spec["line colors"][i],
             label=color_spec["plot labels"][i],
         )
+        _add_directional_arrows(ax, options, x, y, line_color=line.get_color())
         plots.append((line.figure, ax))
 
     _finish_multiplot_style(echem_list, options, style)
@@ -4861,8 +4864,13 @@ def _plot_options_from_mapping(options):
 
 def _multiplot_options_from_mapping(options):
     routed = {}
+    canonical_option_keys = {_canonical_option_key(key) for key in options}
     for field in fields(MultiplotOptions):
         option_key = field.name.replace("_", " ")
+        if field.name == "plot_labels" and (
+            "labels" in routed or "labels" in options or "labels" in canonical_option_keys
+        ):
+            continue
         if option_key in options:
             routed[option_key] = options[option_key]
         elif field.name in options:
@@ -4874,6 +4882,7 @@ def _coerce_multiplot_options(options):
     internal_flags = {}
     public_options = options
     if isinstance(options, dict):
+        is_legacy_option_dict = any(str(key).startswith("_") for key in options)
         internal_flags = {
             key: value
             for key, value in options.items()
@@ -4884,13 +4893,15 @@ def _coerce_multiplot_options(options):
             for key, value in options.items()
             if not str(key).startswith("_")
         }
+        if is_legacy_option_dict:
+            public_options = _drop_legacy_alias_mirrors(public_options)
 
     coerced = MultiplotOptions.from_options(public_options).to_legacy_dict()
     coerced.update(internal_flags)
     return coerced
 
 
-def multiplot(echem_list, options={}):
+def multiplot(echem_list, options=None):
     """Plot a list of electrochemistry objects on one shared axes.
     
     Parameters
@@ -4938,11 +4949,6 @@ def multiplot(echem_list, options={}):
 
     style = _prepare_multiplot_style(echem_list, options)
     color_spec = style["color spec"]
-
-    if options.get("animate"):
-        scan_rates = [obj.scan_rate for obj in echem_list if hasattr(obj, "scan_rate")]
-        if len(scan_rates) > 0:
-            options['animate minrate'] = np.min(scan_rates)
 
     for i, echem_object in enumerate(echem_list):
         plot_options = options.copy()
@@ -5050,6 +5056,7 @@ from .objects import cv, dpv
 from .reference import _format_reference_display
 
 __all__ = [
+    "ScatterFitResult",
     "multiplot",
     "multimultiplot",
     "multi_scatterplot",

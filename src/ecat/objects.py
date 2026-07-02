@@ -5,8 +5,9 @@ This module exposes the object classes used by the public eCAT API.
 
 from .utils import *  # noqa: F401,F403
 from .options import *  # noqa: F401,F403
-from .parsers import exp_type_short as _exp_type_short
+from .parsers import ParseResult, exp_type_short as _exp_type_short
 from ._plot_style import _active_plot_style_value
+from .results import AnalysisResult
 
 
 def _integrate_trapezoid(y, x):
@@ -195,7 +196,7 @@ def _detect_parser_tokens(name, values, kind):
     for value in values:
         token = str(value)
         canonical = _canonicalize_parser_token(kind, token)
-        pattern = rf"(?<![A-Za-z0-9]){re.escape(token)}(?![A-Za-z0-9])"
+        pattern = rf"(?<![A-Za-z0-9\[\]]){re.escape(token)}(?![A-Za-z0-9\[\]])"
         for match in re.finditer(pattern, text, flags=re.IGNORECASE):
             found.append((match.start(), canonical))
     found.sort(key=lambda item: item[0])
@@ -391,15 +392,14 @@ def _custom_parser_scan_rate(name, path, options):
     return custom.get("scan rate")
 
 
-class ChronoAnalysisResult(dict):
+class ChronoAnalysisResult(AnalysisResult):
     """Dictionary-compatible container for CA/CP analysis outputs."""
 
     def __init__(self, values=None, *, axes=None):
-        super().__init__({} if values is None else values)
-        self.axes = axes
+        super().__init__(values, axes=axes)
 
 
-class CVAnalysisResult(dict):
+class CVAnalysisResult(AnalysisResult):
     """Dictionary-compatible container for single-CV analysis outputs."""
 
     def __init__(
@@ -413,13 +413,15 @@ class CVAnalysisResult(dict):
         figure=None,
         axes=None,
     ):
-        super().__init__({} if values is None else values)
+        super().__init__(
+            values,
+            table=table if table is not None else pd.DataFrame(columns=["Metric", "Value"]),
+            summary=summary,
+            diagnostics=diagnostics,
+            figure=figure,
+            axes=axes,
+        )
         self.primary = primary
-        self.table = table if table is not None else pd.DataFrame(columns=["Metric", "Value"])
-        self.summary = {} if summary is None else summary
-        self.diagnostics = {} if diagnostics is None else diagnostics
-        self.figure = figure
-        self.axes = axes
 
     def show(self, options=None):
         """Display or print the human-readable analysis table."""
@@ -486,6 +488,62 @@ def _cv_analysis_pretty_table(table):
     if "Metric" in display_table.columns:
         display_table["Metric"] = display_table["Metric"].map(_cv_analysis_metric_label)
     return display_table
+
+
+def _segment_contains_potential(cv_obj, segment, potential):
+    if segment is None or potential is None:
+        return False
+    try:
+        x, _y = cv_obj.analysis_segment_data({"segment": int(segment)})
+    except Exception:
+        return False
+    if len(x) == 0:
+        return False
+    try:
+        lo = float(np.nanmin(x))
+        hi = float(np.nanmax(x))
+        target = float(potential)
+    except (TypeError, ValueError):
+        return False
+    return lo <= target <= hi
+
+
+def _resolve_half_wave_segments(cv_obj, options):
+    segs = options.get("segments", None)
+    if segs is not None:
+        if isinstance(segs, int):
+            return segs, segs + 1
+        if len(segs) == 2:
+            return segs[0], segs[1]
+        raise ValueError("'segments' for half_wave_potential must be an int or a 2-element sequence.")
+
+    seg1 = options.get("segment", 1)
+    if seg1 is None:
+        seg1 = 1
+    seg1 = int(seg1)
+    seg2 = seg1 + 1
+
+    guess = options.get("guess potential", None)
+    if isinstance(guess, (tuple, list)):
+        return seg1, seg2
+
+    total_segments = getattr(cv_obj, "segments", None)
+    try:
+        total_segments = int(total_segments)
+    except (TypeError, ValueError):
+        total_segments = None
+
+    candidates = []
+    for candidate in (seg1 - 1, seg1 + 1):
+        if candidate < 1:
+            continue
+        if total_segments is not None and candidate > total_segments:
+            continue
+        if _segment_contains_potential(cv_obj, candidate, guess):
+            candidates.append(candidate)
+    if len(candidates) == 1:
+        seg2 = candidates[0]
+    return seg1, seg2
 
 
 def _cv_analysis_unit_text(unit):
@@ -773,6 +831,7 @@ class echem:
         self.reference_mode = getattr(self, "reference_mode", "none")
         self.reference_source_file = getattr(self, "reference_source_file", None)
         self.reference_failure_message = getattr(self, "reference_failure_message", None)
+        self.parse_result = getattr(self, "parse_result", None)
 
         # Load data only if a filepath was provided
         if filepath is not None:
@@ -787,6 +846,39 @@ class echem:
 
             self.get_data_from_name()
             self.modify_by_options(self.options)
+            self._refresh_parse_result()
+
+    def _refresh_parse_result(self, parser=None, warnings=None, raw_metadata=None):
+        """Attach the standardized parser contract for this object."""
+        self.parse_result = ParseResult.from_object(
+            self,
+            parser=parser,
+            warnings=warnings,
+            raw_metadata=raw_metadata,
+        )
+        return self.parse_result
+
+    def animate(self, options=None):
+        """Animate this electrochemistry object.
+
+        Parameters
+        ----------
+        options : dict or PlotOptions, optional
+            Animation timing, scheduling, and plotting options. See ``e.describe_options("animate")``.
+
+        Returns
+        -------
+        AnimationResult
+            Wrapper containing the Matplotlib animation, figure, axes, and resolved settings summary.
+
+        Examples
+        --------
+        >>> result = cv_obj.animate({"trace mode": "draw"})
+        >>> result.show()
+        """
+        from .animation import animate as animation_impl
+
+        return animation_impl(self, options)
 
     def get_data_from_name(self, parser_settings=None):
         settings = _normalize_parser_settings(parser_settings)
@@ -1399,7 +1491,7 @@ class echem:
         if "Potential" in self.units and axis_name not in self.units:
             self.units[axis_name] = self.units["Potential"]
 
-    def x(self, options={}):
+    def x(self, options=None):
         """Return the selected x-axis data series.
         
         Parameters
@@ -1493,7 +1585,7 @@ class echem:
 
         return x_data
 
-    def y(self, options={}):
+    def y(self, options=None):
         """Return the selected y-axis data series.
         
         Parameters
@@ -1563,7 +1655,7 @@ class echem:
 
         return y_data
 
-    def xy(self, options={}):
+    def xy(self, options=None):
         """Return selected x and y data series using one options dictionary.
         
         Parameters
@@ -1582,7 +1674,7 @@ class echem:
         """
         return self.x(options), self.y(options)
 
-    def xy_scale(self, options={}):
+    def xy_scale(self, options=None):
         x = self.x(options)
         x_name = x.name
         x_unit = self.units.get(x_name, '')
@@ -1824,17 +1916,11 @@ class echem:
 
         _apply_ecat_axis_style(ax, options)
         _add_scale_bar(ax, options, unit=y_unit)
-
-        # animate if requested
-        if options.get('animate'):
-            return animate(plot_obj[0],
-                           rate=options.get('scan_rate') or getattr(self, 'scan_rate', None),
-                           minrate=options.get('animate minrate'),
-                           repeat=options.get('animate repeat'))
+        _add_directional_arrows(ax, options, x, y, line_color=plot_obj[0].get_color())
 
         return ax1
 
-    def plot(self, options={}, **mpl_kwargs):
+    def plot(self, options=None, **mpl_kwargs):
         """Plot one electrochemistry object.
         
         Parameters
@@ -1871,7 +1957,7 @@ class echem:
         return x[index], y[index], index
 
 
-    def stats(self,options={}):
+    def stats(self,options=None):
         """Return basic metadata and numeric ranges for one electrochemistry object.
         
         Parameters
@@ -1888,6 +1974,7 @@ class echem:
         --------
         >>> cv_obj.stats()
         """
+        options = {} if options is None else dict(options)
         name = self.name
         options['one column'] = True
         x = self.x(options)
@@ -1993,11 +2080,12 @@ class cv(echem):
     --------
     >>> cv_obj = e.cv(path, {"software": "CH"})
     """
-    def __init__(self, filepath=None, options={}):
+    def __init__(self, filepath=None, options=None):
         super().__init__(filepath, options)
         self.type = "Cyclic Voltammetry"
         self.get_data_from_file(filepath, options)  # parse scan rate, potentials, etc.
         self._apply_custom_parser_scan_rate(options)
+        self._refresh_parse_result()
 
     def remove_parentheses_and_replace_last_space(self, input_string):
             # Remove all open and closing parentheses
@@ -2013,7 +2101,7 @@ class cv(echem):
             return cleaned_string
         
     # manual init
-    def manual_init(self, name, data, options={}):
+    def manual_init(self, name, data, options=None):
         # set values
         self.name = str(name)
         self.data = data
@@ -2068,6 +2156,7 @@ class cv(echem):
                 self.scan_rate = value * conversion_dict.get(prefix, 1)
 
         self.modify_by_options(options)
+        self._refresh_parse_result(parser="manual")
 
     def get_data_from_file(self, filepath, options):
         software_parsers = {
@@ -2193,7 +2282,7 @@ class cv(echem):
                     self.scan_rate = scanrate_value  # fallback
 
 
-    def x(self, options={}):
+    def x(self, options=None):
         """Return selected CV x-axis data, usually potential.
         
         Parameters
@@ -2239,7 +2328,7 @@ class cv(echem):
         x = super().x(options)
         return x
 
-    def y(self, options={}):
+    def y(self, options=None):
         """Return selected CV y-axis data, usually current.
         
         Parameters
@@ -2309,7 +2398,7 @@ class cv(echem):
 
         return y
 
-    def xy(self, options={}):
+    def xy(self, options=None):
         """Return selected CV x and y data series.
         
         Parameters
@@ -2391,7 +2480,7 @@ class cv(echem):
         self.segments = count_segments(x)
         self.delta_x = float(abs(x.iloc[1] - x.iloc[0])) if len(x) > 1 else np.nan
 
-    def plot(self, options={}):
+    def plot(self, options=None):
         """Plot a cyclic voltammogram.
         
         Parameters
@@ -2722,9 +2811,6 @@ class cv(echem):
         return fig, ax
 
     def _plot_colored_segments(self, x, y, options, segment_color_mode):
-        if options.get("animate"):
-            raise ValueError("Segment-colored cv.plot does not support animation.")
-
         all_segments = self._split_segment_arrays(x, y)
         available_numbers = [segment["number"] for segment in all_segments]
         selection = options.get('plot segments') or options.get('plot segment')
@@ -2758,10 +2844,17 @@ class cv(echem):
 
         if segment_color_mode == "continuous gradient":
             legend_info = self._plot_continuous_segment_gradient(ax, selected, options)
+            segment_colors = {}
         else:
-            legend_info = self._plot_grouped_colored_segments(ax, selected, options, segment_color_mode)
+            legend_info, segment_colors = self._plot_grouped_colored_segments(
+                ax,
+                selected,
+                options,
+                segment_color_mode,
+            )
 
         fig, ax = self._finish_segment_colored_plot(fig, ax, options)
+        self._apply_directional_arrows_for_segmented_plot(ax, selected, options, segment_colors)
         self._draw_segment_legend_after_finish(ax, legend_info, options)
         _apply_ecat_axis_style(ax, options)
         return ax
@@ -2774,6 +2867,7 @@ class cv(echem):
             options.get("segment color groups", 2),
         )
         labels = [self._format_segment_group_label(group) for group in groups]
+        segment_colors = {}
 
         if segment_color_mode == "discrete":
             colors = self._segment_discrete_colors(len(groups), options)
@@ -2794,6 +2888,7 @@ class cv(echem):
                 if segment is None:
                     continue
                 plot_label = "_nolegend_" if use_colorbar else (label if first else "_nolegend_")
+                segment_colors[segment_number] = color
                 ax.plot(
                     segment["x"],
                     segment["y"],
@@ -2811,9 +2906,57 @@ class cv(echem):
                     "colors": colors,
                     "labels": labels,
                     "segment color mode": segment_color_mode,
-                }
+                }, segment_colors
             elif legend_mode in {"auto", "discrete"}:
-                return {"type": "discrete"}
+                return {"type": "discrete"}, segment_colors
+        return None, segment_colors
+
+    def _apply_directional_arrows_for_segmented_plot(self, ax, segments, options, segment_colors=None):
+        if not segments:
+            return None
+        # Import lazily to avoid hard import cycles.
+        from ._plot_helpers import _normalize_directional_arrows_options
+
+        try:
+            specs = _normalize_directional_arrows_options(options)
+        except Exception:
+            specs = []
+        if not specs:
+            return None
+
+        if segment_colors is None:
+            segment_colors = {}
+
+        for spec in specs:
+            potential = float(spec["potential"])
+            explicit_segments = spec.get("segment")
+            for segment in segments:
+                segment_number = int(segment["number"])
+                if explicit_segments is not None and segment_number not in explicit_segments:
+                    continue
+
+                xs = np.asarray(segment["x"], dtype=float)
+                ys = np.asarray(segment["y"], dtype=float)
+                if xs.size == 0 or ys.size == 0:
+                    continue
+
+                x_min = np.nanmin(xs)
+                x_max = np.nanmax(xs)
+                low = min(x_min, x_max)
+                high = max(x_min, x_max)
+                if potential < low or potential > high:
+                    continue
+
+                trace_spec = {key: value for key, value in spec.items() if key != "segment"}
+                line_color = segment_colors.get(segment_number, options.get("color", "k"))
+                _add_directional_arrows(
+                    ax,
+                    {"directional arrows": trace_spec},
+                    xs,
+                    ys,
+                    line_color=line_color,
+                )
+
         return None
 
     def _plot_continuous_segment_gradient(self, ax, selected, options):
@@ -2925,7 +3068,7 @@ class cv(echem):
 
         raise TypeError("segments must be int, list[int], or None")
 
-    def xy_scale(self, options={}):
+    def xy_scale(self, options=None):
         x = self.x(options)
         x_name = x.name
         x_unit = self.units.get(x_name, '')
@@ -2939,7 +3082,7 @@ class cv(echem):
         y_scale, y_unit = self.scale_axis(y, y_name, y_unit, y_selected_unit)
         return x_scale, y_scale
 
-    def normalize(self, options={}):
+    def normalize(self, options=None):
         """Add physical dimensionless CV axes to this object and return ``self``.
         
         Parameters
@@ -2961,7 +3104,7 @@ class cv(echem):
         self.__dict__.update(normalized.__dict__)
         return self
 
-    def normalize_current(self, ip0, options={}):
+    def normalize_current(self, ip0, options=None):
         """Add or update the ``i/ip0`` column on this CV and return ``self``.
         
         Parameters
@@ -2983,7 +3126,7 @@ class cv(echem):
         _apply_normalized_current_axis(self, ip0, options or {})
         return self
 
-    def scale_current(self, scale, options={}):
+    def scale_current(self, scale, options=None):
         """Scale raw current columns on this CV and return ``self``.
         
         Parameters
@@ -3082,7 +3225,7 @@ class cv(echem):
         start, end = seg_bounds[seg_idx], seg_bounds[seg_idx + 1]
         return seg_idx, slice(start, end), (start, end)
 
-    def fft(self, options={}):
+    def fft(self, options=None):
         """
         Plots the FFT amplitude spectrum of the CV's current data.
 
@@ -3188,10 +3331,10 @@ class cv(echem):
 
         return xf, yf
 
-    def noise_filter(self, options={}):
+    def noise_filter(self, options=None):
         cuttoff_Hz = options.get('noise cutoff',9)
 
-    def current_at_potential(self, potential, options={}):
+    def current_at_potential(self, potential, options=None):
         """
         Returns the current at a specified potential. If no segment(s) are provided,
         reports the current from all segments.
@@ -3286,96 +3429,7 @@ class cv(echem):
             result.show(options)
         return result
 
-    # get Ep
-    def peak_potential_old(self, options={}):
-        options = self._cv_analysis_options(options)
-
-        # Smoothing the y data using Savitzky-Golay filter
-        temp_options = options.copy()
-        temp_options['smooth'] = False
-        x, y = self.analysis_segment_data(options)
-        smoothed_y, _, _, sg_meta = _savgol_bundle(y, options, delta=self.delta_x)
-
-        if options.get("troubleshoot"):
-            print(f"SG window={sg_meta['window']}, polyorder={sg_meta['polyorder']}")
-
-        # determine prominence
-        prominence = options.get('peak prominence')
-        noise_std_dev = None
-        if prominence is None:
-            if len(smoothed_y) > 1 and prominence is None:
-                current_diffs = np.diff(smoothed_y)
-                noise_std_dev = np.std(current_diffs) / np.sqrt(2)
-            else:
-                noise_std_dev = 0
-            prominence = 5 * noise_std_dev
-
-        if options.get('troubleshoot'):
-            if noise_std_dev is not None:
-                print(f"Estimated noise std dev: {noise_std_dev}")
-            print(f"Calculated dynamic prominence: {prominence}")
-
-        # Find peaks in the smoothed y data
-        maxima, _ = find_peaks(smoothed_y, prominence = prominence)
-        minima, _ = find_peaks(-smoothed_y, prominence = prominence)
-        peaks = np.concatenate((maxima, minima))
-
-        # If no peaks are found, return None
-        if len(peaks) == 0:
-            selection = 'CV trace'
-            if options.get('segments') or options.get('segment'):
-                selection = 'selected segment(s)'
-            raise ValueError(
-                f"peak_potential could not locate any peaks in the {selection}. "
-                "Check the 'guess potential', 'peak prominence' threshold, and 'noise window' options, "
-                "or verify that the segment actually contains a local extremum. "
-                "Use the 'troubleshoot' option for more help."
-            )
-
-        exact_potential = options.get('exact potential')
-        guess_potential = options.get('guess potential')
-
-        if exact_potential is not None:
-            # Find index closest to the exact potential (no peak logic)
-            peak_index = int(np.argmin(np.abs(x - exact_potential)))
-
-        elif guess_potential is not None:
-            # Find the peak potential (x-value) closest to the guessed value
-            peak_index = peaks[np.argmin(np.abs(x[peaks] - guess_potential))]
-
-        else:
-            # Default: largest absolute peak
-            peak_index = peaks[np.argmax(np.abs(smoothed_y[peaks]))]
-
-        peak_potential = round_sigfigs(x[peak_index], options["sig figs"])
-
-        if options["print"]:
-            x_name = self.x(options).name
-            x_unit = self.units.get(x_name, '')
-            print(f"Ep: {peak_potential} {x_unit}".strip())
-        if options["plot"]:
-            if not options.get('internal call'):
-                self._plot_from_analysis_options(options)
-            x_scale, y_scale = self.xy_scale(options)
-            plt.scatter(
-                x[peak_index] * x_scale,
-                y[peak_index] * y_scale + options.get('offset', 0),
-                color='tab:blue',zorder=3
-            )
-            if options.get('troubleshoot'):
-                plt.scatter(
-                    x[peaks] * x_scale,
-                    y[peaks] * y_scale + options.get('offset', 0),
-                    color='tab:blue', zorder=3, s=10
-                )
-            
-        return {
-            "Ep": peak_potential,
-            "index": peak_index,
-            "current": y[peak_index],
-        }
-
-    def peak_potential(self, options={}):
+    def peak_potential(self, options=None):
         """Find the peak potential for a selected CV segment.
         
         Parameters
@@ -4058,7 +4112,7 @@ class cv(echem):
             "segment_slice": seg_slice,
         }
 
-    def peak_current(self, options={}):
+    def peak_current(self, options=None):
         """Measure peak current using a tangent-background correction.
         
         Parameters
@@ -4251,7 +4305,7 @@ class cv(echem):
             result.show(options)
         return result
 
-    def plateau_current(self, options={}):
+    def plateau_current(self, options=None):
         """Analyze plateau current for this CV.
 
         Parameters
@@ -4270,7 +4324,7 @@ class cv(echem):
         """
         return plateau_current(self, options)
 
-    def half_peak_potential(self, options={}):
+    def half_peak_potential(self, options=None):
         """Estimate the half-peak potential for a selected CV wave.
         
         Parameters
@@ -4372,7 +4426,7 @@ class cv(echem):
             result.show(options)
         return result
 
-    def peak_info(self, options={}): ### Change this to have a default plot and print option? Make consistent with wave_info
+    def peak_info(self, options=None): ### Change this to have a default plot and print option? Make consistent with wave_info
         options = self._cv_analysis_options(options)
         do_print = options.get('print', True)
 
@@ -4441,7 +4495,7 @@ class cv(echem):
             result.show(options)
         return result
 
-    def half_wave_potential(self, options={}):
+    def half_wave_potential(self, options=None):
         """Estimate the half-wave potential for a selected CV wave.
         
         Parameters
@@ -4467,21 +4521,7 @@ class cv(echem):
         internal_options['internal call'] = True
         internal_options['new plot'] = False
 
-        segs = options.get("segments", None)
-        if segs is None:
-            seg1 = options.get("segment", 1)
-            if seg1 is None:
-                seg1 = 1
-            seg2 = seg1 + 1
-        else:
-            if isinstance(segs, int):
-                seg1, seg2 = segs, segs + 1
-            elif len(segs) == 2:
-                seg1, seg2 = segs
-            else:
-                raise ValueError(
-                    "'segments' for half_wave_potential must be an int or a 2-element sequence."
-                )
+        seg1, seg2 = _resolve_half_wave_segments(self, options)
 
         guess = options.get('guess potential', None)
         if isinstance(guess, (tuple, list)) and len(guess) == 2:
@@ -4589,7 +4629,7 @@ class cv(echem):
             result.show(options)
         return result
 
-    def wave_info(self, options={}):
+    def wave_info(self, options=None):
         """
         Summarize a reversible CV wave using both half-wave and peak analyses.
 
@@ -4722,7 +4762,7 @@ class cv(echem):
             result.show(options)
         return result
 
-    # def wave_infof(self, options={}):
+    # def wave_infof(self, options=None):
     #     options['normalize'] = False
     #     options = self._cv_analysis_options(options)
     #
@@ -4839,7 +4879,7 @@ class dpv(echem):
     --------
     >>> dpv_obj = e.dpv(path, {"software": "CH"})
     """
-    def __init__(self, filepath=None, options={}):
+    def __init__(self, filepath=None, options=None):
         super().__init__(filepath, options)
         self.type = "Differential Pulse Voltammetry"
 
@@ -4858,6 +4898,7 @@ class dpv(echem):
 
         if filepath is not None:
             self.get_data_from_file(filepath, options)
+            self._refresh_parse_result()
 
     def get_data_from_file(self, filepath, options):
         if self.software == "CH":
@@ -4997,7 +5038,7 @@ class dpv(echem):
 
         return stats
 
-    def peak_potential(self, options={}):
+    def peak_potential(self, options=None):
         """Find a DPV peak potential near a requested guess.
         
         Parameters
@@ -5212,7 +5253,7 @@ class dpv(echem):
             bounds.append((lower, upper))
         return bounds
 
-    def fit_overlapping_peaks(self, options={}):
+    def fit_overlapping_peaks(self, options=None):
         options = {} if options is None else dict(options)
 
         x = self.x(options).to_numpy(dtype=float)
@@ -5448,7 +5489,7 @@ class cp(echem):
     --------
     >>> cp_obj = e.cp(path, {"software": "CH"})
     """
-    def __init__(self, filepath=None, options={}):
+    def __init__(self, filepath=None, options=None):
         super().__init__(filepath, options)
 
         self.type = "Chronopotentiometry"
@@ -5473,6 +5514,7 @@ class cp(echem):
 
         # Parse data depending on software
         self.get_data_from_file(filepath, options)
+        self._refresh_parse_result()
 
     def get_data_from_file(self, filepath, options):
         if self.software == "CH":
@@ -5861,7 +5903,7 @@ class cp(echem):
 
         return stats
 
-    def get_cycles(self, options={}):
+    def get_cycles(self, options=None):
         """Split chronopotentiometry data into charge/discharge cycles.
         
         Parameters
@@ -5905,7 +5947,7 @@ class cp(echem):
         return {'t': t, 'v': v, 'seg_idxs': seg_idxs}
         
 
-    def cycle_info(self, options={}):
+    def cycle_info(self, options=None):
         """
         Compute per‐cycle summary using get_cycles segmentation.
         Returns a DataFrame with columns:
@@ -6002,7 +6044,7 @@ class cp(echem):
         })
         return df
 
-    def plot_cycles(self, options={}, **mpl_kwargs):
+    def plot_cycles(self, options=None, **mpl_kwargs):
         """Plot chronopotentiometry cycles.
         
         Parameters
@@ -6221,7 +6263,7 @@ class cp(echem):
 
     def cycling_plot(
             self,
-            options={},
+            options=None,
             **mpl_kwargs
     ):
         """
@@ -6237,6 +6279,7 @@ class cp(echem):
           'legend': bool
           'capacity mode': 'discharge', 'charge', or 'both'  # which capacity curves to show
         """
+        options = {} if options is None else dict(options)
         df = self.cycle_info(options)
         maxc = options.get('max cycles')
         cycles_opt = options.get('cycles')
@@ -6408,99 +6451,6 @@ class cp(echem):
                 fig._suptitle.set_y(options.get("title y", 0.98))
         return fig, (ax1, ax2)
     
-    def cycling_plot_old(
-        self,
-        options={},
-        **mpl_kwargs
-    ):
-        """
-        Plot cycling performance using cycle_info DataFrame.
-        """
-        df = self.cycle_info(options)
-        maxc = options.get('max cycles')
-        if isinstance(maxc, int) and maxc > 0:
-            df = df.iloc[:maxc].copy()
-
-        cycles = df['Cycle']
-        raw_cap_col = 'Discharge Capacity (mA·h)'
-        cap_col = 'Percent Discharge Capacity (%)' if options.get('percent capacity') else raw_cap_col
-        CE_col  = 'Coulombic Efficiency (%)'
-
-        # Prepare plot
-        fig, ax1 = plt.subplots()
-        ax2 = ax1.twinx()
-        cap_color = mpl_kwargs.get('cap_color', 'k')
-        ce_color  = mpl_kwargs.get('ce_color', 'tab:red')
-        alpha = mpl_kwargs.get('alpha', 1)
-
-        # Moving average
-        ma = options.get('ma window')
-        if ma and ma > 1:
-            alpha = 0.5
-            df['cap_ma'] = df[cap_col].rolling(ma).mean()
-            df['CE_ma']  = df[CE_col].rolling(ma).mean()
-            ax1.plot(cycles[ma-1:], df['cap_ma'].dropna(), '-', color=cap_color, label='Capacity Moving Avg.')
-            ax2.plot(cycles[ma:], df['CE_ma'].dropna(), '-', color=ce_color, label='CE Moving Avg.')
-
-        # Determine point size
-        n_pts = len(cycles)
-        ref_pts = options.get('marker reference', 10)
-        default_ms = plt.rcParams.get('lines.markersize', 6) ** 2
-        scale = min(1.0, ref_pts / max(n_pts, 1))
-        ms = default_ms * scale**0.5
-
-        # Scatter raw
-        ax1.scatter(cycles, df[cap_col], color=cap_color, marker='o', s=ms, linewidths=0, alpha=alpha, label='Capacity')
-        ax2.scatter(cycles, df[CE_col], color=ce_color, marker='o', s=ms, linewidths=0, alpha=alpha, label='CE')
-
-        # Axes formatting
-        ax1.set_xlabel('Cycle Number')
-        ax1.set_ylabel(cap_col, color=cap_color)
-        ax1.yaxis.label.set_color(cap_color)
-        ax1.tick_params(axis='y', colors=cap_color)
-        ax1.spines['left'].set_color(cap_color)
-        ax1.tick_params(which='minor', axis='y', colors=cap_color)
-
-        ax2.set_ylabel(CE_col, color=ce_color)
-        ax2.yaxis.label.set_color(ce_color)
-        ax2.tick_params(axis='y', colors=ce_color)
-        ax2.spines['right'].set_color(ce_color)
-        ax2.tick_params(which='minor', axis='y', colors=ce_color)
-
-
-                # Theoretical capacity line (if requested)
-        if 'theoretical moles' in options:
-            mol = options.get('theoretical moles')
-            # compute absolute Q_th in mA·h
-            Q_th = mol * F * 1000 / 3600
-            if options.get('percent capacity', False):
-                # baseline first-discharge for % scale
-                theo_val = Q_th / df[raw_cap_col].iloc[0] * 100
-            else:
-                theo_val = Q_th
-            ax1.axhline(theo_val, linestyle='--', color='gray', label='Theoretical Capacity')
-
-        if not options.get('percent capacity'):
-            ax1.set_ylim(bottom=0)
-        ax2.set_ylim(bottom=0)
-
-        y0, y1 = ax1.get_ylim()
-        pad = (y1 - y0) * options.get('top padding', 0.1)
-        ax1.set_ylim(bottom=y0, top=y1 + pad)
-
-        y0, y1 = ax2.get_ylim()
-        pad = (y1 - y0) * options.get('top padding', 0.1)
-        ax2.set_ylim(bottom=y0, top=y1 + pad)
-
-        # Legend & layout & layout
-        h1, l1 = ax1.get_legend_handles_labels()
-        h2, l2 = ax2.get_legend_handles_labels()
-        if options.get('legend', False):
-            ax1.legend(h1+h2,l1[::-1]+l2, **mpl_kwargs)
-        plt.title('Cycling Performance')
-        plt.tight_layout()
-        return fig, (ax1, ax2)
-
 class ca(echem):
     """Chronoamperometry object with charge-integration helpers.
     
@@ -6515,7 +6465,7 @@ class ca(echem):
     --------
     >>> ca_obj = e.ca(path, {"software": "CH"})
     """
-    def __init__(self, filepath, options={}):
+    def __init__(self, filepath, options=None):
         super().__init__(filepath, options)
         self.type = "Chronoamperometry"
         # CA-specific parameters
@@ -6526,6 +6476,7 @@ class ca(echem):
         self.sensitivity = None
         # parse file and load data
         self._parse_ch_ca_file(filepath)
+        self._refresh_parse_result()
 
     def _parse_ch_ca_file(self, filepath):
         """
@@ -6768,7 +6719,7 @@ class ca(echem):
         if options.get("legend", False) is True:
             ax.legend()
 
-    def charge(self, options={}, **mpl_kwargs):
+    def charge(self, options=None, **mpl_kwargs):
         """Integrate CA current to cumulative charge and optionally plot it.
         
         Parameters
@@ -6850,7 +6801,7 @@ class ca(echem):
             })
         return ChronoAnalysisResult(values, axes=ax)
 
-    def plot(self, options={}, **mpl_kwargs):
+    def plot(self, options=None, **mpl_kwargs):
         """Plot chronoamperometry current versus time.
         
         Parameters
@@ -6922,7 +6873,7 @@ class ca(echem):
 
         return ax1
 
-    def time_at_charge(self, charge=None, options={}):
+    def time_at_charge(self, charge=None, options=None):
         """Find the time at which cumulative CA charge reaches a target.
         
         Parameters
@@ -6943,7 +6894,7 @@ class ca(echem):
         >>> result = ca_obj.time_at_charge({"target charge": 0.001})
         >>> result["time"]
         """
-        if isinstance(charge, dict) and options == {}:
+        if isinstance(charge, dict) and options in ({}, None):
             options = charge
             charge = None
         options = PlotOptions.from_options(options).to_legacy_dict()
@@ -7059,7 +7010,16 @@ from .plotting import (
     _resolve_single_plot_title_subtitle,
     _resolve_subtitle_fontsize,
     _resolve_title_fontsize,
+    _add_directional_arrows,
 )
 from .reference import midpoint_potential
 
-__all__ = ["echem", "cv", "ca", "cp", "dpv"]
+__all__ = [
+    "ChronoAnalysisResult",
+    "CVAnalysisResult",
+    "echem",
+    "cv",
+    "ca",
+    "cp",
+    "dpv",
+]

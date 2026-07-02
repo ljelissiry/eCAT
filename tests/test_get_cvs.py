@@ -3,6 +3,16 @@ from pathlib import Path
 import pytest
 
 
+def test_get_cvs_returns_empty_list_for_missing_or_empty_folder(ecat_module, tmp_path):
+    from ecat import io as ecat_io
+
+    missing = ecat_io.get_CVs({"folder path": str(tmp_path / "missing"), "print": False})
+    empty = ecat_io.get_CVs({"folder path": str(tmp_path), "recursive search": False, "print": False})
+
+    assert missing == []
+    assert empty == []
+
+
 def test_get_cvs_loads_semicolon_decimal_comma_cv_as_cv(ecat_module, tmp_path):
     from ecat import io as ecat_io
 

@@ -454,7 +454,8 @@ def test_simulated_cv_show_can_include_params_and_data(ecat_module, capsys):
     out = capsys.readouterr().out
     assert "Simulated CV Setup:" not in out
     assert "Simulation Params:" in out
-    assert "[parameters]" in out
+    assert "[simulation setup]" in out
+    assert "[cell]" in out
     assert "cell.T" in out
     assert "Simulated CV Data:" in out
     assert "Potential" in out
@@ -1264,7 +1265,8 @@ def test_print_params_defaults_to_pretty_and_raw_mode_is_available(ecat_module, 
 
     out = capsys.readouterr().out
     assert "Simulation Params:" in out
-    assert "[parameters]" in out
+    assert "[simulation setup]" in out
+    assert "[cell]" in out
     assert "Group" in out
     assert "Symbol" not in out
     assert "cell" in out
@@ -1295,10 +1297,49 @@ def test_print_params_defaults_to_pretty_and_raw_mode_is_available(ecat_module, 
     assert "{'cell'" not in out
     frames = sim._simulation_param_dataframes(params)
     assert all(isinstance(frame, pd.DataFrame) for _, frame in frames)
+    section_names = [name for name, _frame in frames]
+    assert section_names[:4] == ["simulation setup", "cell", "species", "mechanism"]
+    setup = dict(frames)["simulation setup"]
+    cell = dict(frames)["cell"]
+    species = dict(frames)["species"]
+    mechanism = dict(frames)["mechanism"]
+    assert "spatial.nx" in setup["Path"].tolist()
+    assert "cell.T" in cell["Path"].tolist()
+    assert "diffusion.FeII" in species["Path"].tolist()
+    assert list(mechanism.columns)[:3] == ["Group", "Path", "Step"]
 
     sim._maybe_print_simulation_params(params, {"print params": "raw"})
     raw = capsys.readouterr().out
     assert "{'cell'" in raw
+
+
+def test_fit_param_comparison_sections_keep_diffusion_with_species_and_spatial_in_setup(ecat_module):
+    sim = ecat_module.simulation
+    initial = {
+        "cell": {"T": 298.15},
+        "spatial": {"nx": 20},
+        "diffusion": {"a": 1e-9},
+        "concentrations": {"bulk": {"a": 1.0}},
+        "kinetics": [{"E0": -0.9, "k0": 1e-3, "alpha": 0.5}],
+    }
+    final = {
+        "cell": {"T": 300.0},
+        "spatial": {"nx": 30},
+        "diffusion": {"a": 2e-9},
+        "concentrations": {"bulk": {"a": 1.0}},
+        "kinetics": [{"E0": -0.8, "k0": 2e-3, "alpha": 0.5}],
+    }
+
+    sections = sim._simulation_param_comparison_dataframes(initial, final)
+
+    section_names = [name for name, _frame in sections]
+    assert section_names[:4] == ["simulation setup", "cell", "species", "mechanism"]
+    setup = dict(sections)["simulation setup"]
+    species = dict(sections)["species"]
+    mechanism = dict(sections)["mechanism"]
+    assert "spatial.nx" in setup["Path"].tolist()
+    assert "diffusion.a" in species["Path"].tolist()
+    assert list(mechanism.columns)[:3] == ["Group", "Path", "Step"]
 
 
 def test_print_params_compact_combines_species_and_mechanism_tables(ecat_module, capsys):
@@ -1338,6 +1379,7 @@ def test_mechanism_presets_compile_expected_strings(ecat_module):
     assert sim.compile_mechanism("E,E").mechanism == "E(1):a=b\nE(1):b=c"
     assert sim.compile_mechanism("EC").mechanism == "E(1):a=b\nC:b=c"
     assert sim.compile_mechanism("ECE").mechanism == "E(1):a=b\nC:b=c\nE(1):c=d"
+    assert sim.compile_mechanism("Square").mechanism == "E(1):a=b\nC:a=c\nE(1):c=d\nC:b=d"
 
     with pytest.warns(UserWarning, match="inferred catalysis form"):
         homogeneous = sim.compile_mechanism(
@@ -1386,6 +1428,7 @@ def test_star_shorthand_forces_surface_presets(ecat_module):
     assert sim.compile_mechanism("EE*").mechanism == "E(1):a*=b*\nE(1):b*=c*"
     assert sim.compile_mechanism("EC*").mechanism == "E(1):a*=b*\nC:b*=c*"
     assert sim.compile_mechanism("ECE*").mechanism == "E(1):a*=b*\nC:b*=c*\nE(1):c*=d*"
+    assert sim.compile_mechanism("Square*").mechanism == "E(1):a*=b*\nC:a*=c*\nE(1):c*=d*\nC:b*=d*"
     with pytest.warns(UserWarning, match="inferred catalysis form"):
         assert sim.compile_mechanism("EC'*").mechanism == "E(1):CatOx*=CatRed*\nC:CatRed*=CatOx*"
     with pytest.warns(UserWarning, match="inferred catalysis form"):
@@ -2412,7 +2455,7 @@ def test_fit_cv_can_print_fitting_setup_and_initial_final_params(ecat_module, mo
     assert "Residual mode" in out
     assert "method" in out
     assert "least squares" in out
-    assert "Step" not in out
+    assert "Step" in out
     assert "Step?" not in out
     assert "Path" in out
     assert "cell.T" in out
@@ -2683,8 +2726,8 @@ def test_notebook_fit_progress_display_updates(ecat_module, monkeypatch):
     bar.close()
 
     assert "Fit EE" in updates[0]
-    assert "1/~3 eval" in updates[1]
-    assert "4/~3 eval" in updates[2]
+    assert "1 / ~3 evals" in updates[1]
+    assert "4 / ~3 evals" in updates[2]
     assert "(133%)" in updates[2]
     assert "cost 0.125" in updates[2]
     assert "elapsed" in updates[1]
@@ -2706,9 +2749,9 @@ def test_notebook_progress_display_can_exceed_100_percent_and_omits_done_remaini
         elapsed=10.0,
         remaining=0.0,
     )
-    assert "7/~5 eval (140%)" in html_over
+    assert "7 / ~5 evals (140%)" in html_over
     assert "remaining" not in html_over
-    assert 'value="5"' in html_over
+    assert "width:100.0000%" in html_over
 
     html_mid = sim._NotebookFitProgressDisplay._html(
         2,
@@ -2718,8 +2761,8 @@ def test_notebook_progress_display_can_exceed_100_percent_and_omits_done_remaini
         elapsed=4.0,
         remaining=6.0,
     )
-    assert "2/~5 eval (40%)" in html_mid
-    assert "remaining ~6s" in html_mid
+    assert "2 / ~5 evals (40%)" in html_mid
+    assert "remaining ~6.0s" in html_mid
 
 
 def test_notebook_progress_display_stops_indeterminate_bar_on_close(ecat_module, monkeypatch):
@@ -2746,10 +2789,11 @@ def test_notebook_progress_display_stops_indeterminate_bar_on_close(ecat_module,
     bar.update(3, cost=0.25)
     bar.close()
 
-    assert "<progress" in updates[-2]
-    assert "3 eval" in updates[-1]
-    assert "done" in updates[-1]
-    assert "<progress" not in updates[-1]
+    assert "border-radius:999px" in updates[-2]
+    assert "ecat-indeterminate" in updates[-2]
+    assert "3 evals" in updates[-1]
+    assert "width:100%" in updates[-1]
+    assert "elapsed" in updates[-1]
 
 
 def test_fit_cv_residual_scale_and_linear_baseline_corrections(ecat_module, monkeypatch):

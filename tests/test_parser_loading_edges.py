@@ -336,6 +336,41 @@ def test_beta_exp_type_parser_matrix_exposes_expected_public_axes(ecat_module, f
         assert expected_y in obj.units
 
 
+def test_loaded_objects_expose_standard_parse_result_contract(ecat_module, fixtures_dir):
+    cases = [
+        ("ch_cv.txt", "CV", "CH", ["Potential", "Current"]),
+        ("basi_cv.txt", "CV", "BASI", ["Potential", "Current"]),
+        ("eclab_cv.txt", "CV", "EC-Lab", ["Potential", "Current"]),
+        ("ch_ca_tiny.txt", "CA", "CH", ["Time", "Current"]),
+        ("ch_cp_tiny.txt", "CP", "CH", ["Time", "Potential"]),
+        ("eclab_gcpl_tiny.txt", "CP", "EC-Lab", ["Time", "Potential"]),
+    ]
+
+    for filename, technique, software, columns in cases:
+        obj = ecat_module.echem.from_file(str(fixtures_dir / filename), {})
+        parsed = obj.parse_result
+
+        assert isinstance(parsed, ecat_module.ParseResult), filename
+        assert parsed.technique == technique
+        assert parsed.software == software
+        assert parsed.parser == software
+        assert list(parsed.data.columns[:2]) == columns
+        assert parsed.units == obj.units
+        assert parsed.metadata["name"] == obj.name
+        assert parsed.metadata["type"] == obj.type
+        assert parsed.source == obj.filepath
+
+
+def test_parse_file_returns_standard_parse_result_without_exposing_object(ecat_module, fixtures_dir):
+    parsed = ecat_module.parse_file(str(fixtures_dir / "ch_cv.txt"), {})
+
+    assert isinstance(parsed, ecat_module.ParseResult)
+    assert parsed.technique == "CV"
+    assert parsed.software == "CH"
+    assert list(parsed.data.columns[:2]) == ["Potential", "Current"]
+    assert parsed.metadata["scan_rate"] == pytest.approx(0.05)
+
+
 def test_ch_dpv_parser_exposes_expected_public_axis_contract(ecat_module, repo_root):
     obj = ecat_module.echem.from_file(
         str(repo_root / "tests" / "tmp_real_examples" / "DPV_MeCN_CO2_0.1MTBAPF6_3mMFc_1mMFe-tpyPY2Me_-0.7_to_-1.2V.txt"),
@@ -706,7 +741,7 @@ def test_get_data_loads_ca_and_cp_subclasses_from_small_folder_tree(
     }
 
 
-def test_get_data_returns_none_when_small_folder_tree_has_no_txt_files(ecat_module, tmp_path):
+def test_get_data_returns_empty_list_when_small_folder_tree_has_no_txt_files(ecat_module, tmp_path):
     (tmp_path / "notes.csv").write_text("a,b\n1,2\n", encoding="utf-8")
 
     result = ecat_module.get_data(
@@ -718,4 +753,4 @@ def test_get_data_returns_none_when_small_folder_tree_has_no_txt_files(ecat_modu
         }
     )
 
-    assert result is None
+    assert result == []

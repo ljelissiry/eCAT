@@ -1,6 +1,6 @@
 # eCAT Lab Beta Scope
 
-This document defines what is supported for the internal lab beta of eCAT `0.1.0b2`. The beta goal is to validate real lab workflows without implying that every parser, technique, or analysis path is manuscript-ready.
+This document defines what is supported for the internal lab beta of eCAT `0.1.0b3`. The beta goal is to validate real lab workflows without implying that every parser, technique, or analysis path is manuscript-ready.
 
 ## Supported Files, Techniques, and Limitations
 
@@ -29,7 +29,7 @@ The beta validates these existing workflows without redesigning them:
 - CV `peak_potential()` and `peak_current()`
 - CV normalization, current density, and `i/ip0` plotting paths
 - Reference-shift workflows already covered by tests
-- CSV/table export through `save_data(...)`
+- CSV/table export and eCAT Excel workbook export through `save_data(...)`
 
 ## Known Limitations
 

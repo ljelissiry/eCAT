@@ -102,6 +102,14 @@ def test_fit_rate_accepts_print_all_as_common_verbosity_option(ecat_module):
     assert opts.to_legacy_dict()["print all"] is True
 
 
+def test_scatter_fit_options_reject_removed_fit_equation_option(ecat_module):
+    with pytest.raises(ecat_module.OptionError, match="fit equation"):
+        ecat_module.FitRateOptions.from_options({"fit equation": "y = a*x"})
+
+    with pytest.raises(ecat_module.OptionError, match="equation"):
+        ecat_module.FitRateOptions.from_options({"equation": "y = a*x"})
+
+
 def test_peak_current_routes_only_peak_potential_fields(ecat_module):
     opts = ecat_module.PeakCurrentOptions.from_options(
         {"guess potential": 0.1, "tangent range": [0.05, 0.3]}

@@ -26,6 +26,46 @@ def test_get_conversion_factor_and_scale_axis(ecat_module):
     assert unit == "μA"
 
 
+def test_pressure_units_are_recognized_and_convert_when_requested(ecat_module):
+    assert ecat_module.extract_prefix_and_base("Pa") == ("", "Pa")
+    assert ecat_module.extract_prefix_and_base("kPa") == ("k", "Pa")
+    assert ecat_module.extract_prefix_and_base("mbar") == ("m", "bar")
+    assert ecat_module.extract_prefix_and_base("atm") == ("", "atm")
+    assert ecat_module.extract_prefix_and_base("Torr") == ("", "Torr")
+    assert ecat_module.extract_prefix_and_base("mmHg") == ("", "mmHg")
+    assert ecat_module.extract_prefix_and_base("psi") == ("", "psi")
+    assert ecat_module.extract_prefix_and_base("mpsi") == ("", "mpsi")
+
+    assert ecat_module.get_conversion_factor("atm", "Pa") == pytest.approx(101325)
+    assert ecat_module.get_conversion_factor("bar", "Pa") == pytest.approx(100000)
+    assert ecat_module.get_conversion_factor("mbar", "Pa") == pytest.approx(100)
+    assert ecat_module.get_conversion_factor("Torr", "Pa") == pytest.approx(101325 / 760)
+    assert ecat_module.get_conversion_factor("mmHg", "atm") == pytest.approx(1 / 760)
+    assert ecat_module.get_conversion_factor("psi", "Pa") == pytest.approx(6894.757293168)
+
+
+def test_pressure_values_preserve_units_by_default_and_convert_explicitly(ecat_module):
+    value, unit = ecat_module.scale_value(1.0, "atm", selected_unit="auto")
+    assert value == pytest.approx(1.0)
+    assert unit == "atm"
+
+    value, unit = ecat_module.scale_value(1013.25, "mbar", selected_unit="bar")
+    assert value == pytest.approx(1.01325)
+    assert unit == "bar"
+
+    scale_factor, unit = ecat_module.scale_axis(
+        np.array([0.0, 1.0]),
+        "atm",
+        selected_unit="Pa",
+    )
+    assert scale_factor == pytest.approx(101325)
+    assert unit == "Pa"
+
+    scale_factor, unit = ecat_module.scale_axis(np.array([0.0, 1013.25]), "mbar")
+    assert scale_factor == pytest.approx(1.0)
+    assert unit == "mbar"
+
+
 def test_current_density_auto_scales_current_numerator(ecat_module):
     scale_factor, unit = ecat_module.scale_axis(
         np.array([0.0, 2e-6]),

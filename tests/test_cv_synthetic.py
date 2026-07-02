@@ -1016,6 +1016,52 @@ def test_half_wave_potential_preserves_return_shape_with_explicit_guesses(
     }
 
 
+def test_half_wave_potential_single_segment_guess_chooses_adjacent_segment_containing_guess(
+    cv_factory,
+):
+    obj = cv_factory()
+    obj.segments = 3
+    segment_x = {
+        1: np.array([-1.2, -0.9, 0.0]),
+        2: np.array([1.0, -0.9, -1.2]),
+        3: np.array([0.2, 0.6, 1.0]),
+    }
+    segment_y = {
+        1: np.array([-2.0e-6, -4.0e-6, -1.0e-6]),
+        2: np.array([1.0e-6, 3.0e-6, 0.0]),
+        3: np.array([0.5e-6, 1.0e-6, 0.7e-6]),
+    }
+    peak_ep = {1: -0.95, 2: -0.85, 3: 0.6}
+    calls = []
+
+    def fake_analysis_segment_data(options=None):
+        segment = (options or {}).get("segment")
+        return segment_x[segment], segment_y[segment]
+
+    def fake_peak_potential(options=None):
+        segment = getattr(options, "segment", None)
+        if segment is None and isinstance(options, dict):
+            segment = options.get("segment")
+        calls.append(segment)
+        return {"Ep": peak_ep[segment], "index": 1}
+
+    obj.analysis_segment_data = fake_analysis_segment_data
+    obj.peak_potential = fake_peak_potential
+
+    result = obj.half_wave_potential(
+        {
+            "plot": False,
+            "print": False,
+            "segment": 2,
+            "guess potential": -0.9,
+        }
+    )
+
+    assert calls == [2, 1]
+    assert result["peak 1"]["segment"] == 2
+    assert result["peak 2"]["segment"] == 1
+
+
 def test_half_wave_potential_plots_single_trace_without_default_legend(
     blank_echem_factory,
     ecat_module,

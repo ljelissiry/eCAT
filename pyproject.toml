@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ecat"
-version = "0.1.0b2"
-description = "ElectroCatalysis Analysis Tools for electrochemical data handling and analysis."
+version = "0.1.0b3"
+description = "electroChemical Analysis Tools for electrochemical data handling and analysis."
 readme = "README.md"
 requires-python = ">=3.10"
 authors = [
@@ -17,11 +17,13 @@ dependencies = [
     "jinja2",
     "matplotlib",
     "numpy",
+    "openpyxl",
     "pandas",
     "scikit-learn",
     "scipy",
     "dash",
     "dash-ag-grid",
+    "pywebview",
 ]
 
 classifiers = [
@@ -33,7 +35,6 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-app = []
 simulation = [
     "electrokitty",
 ]
@@ -42,14 +43,14 @@ simulation-all = [
 ]
 
 [project.scripts]
-ecat-browser = "ecat_browser.app:main"
+ecat-app = "ecat_app.app:main"
 
 [tool.setuptools.packages.find]
-where = ["src", "apps/browser/src"]
+where = ["src", "apps/workbench/src"]
 
 [tool.setuptools]
 py-modules = ["eCAT"]
 
 [tool.setuptools.package-data]
 ecat = ["defaults.toml"]
-ecat_browser = ["assets/*.css", "assets/*.svg"]
+ecat_app = ["assets/*.css", "assets/*.svg", "assets/*.js"]

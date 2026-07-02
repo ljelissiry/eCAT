@@ -5,14 +5,22 @@ def test_split_module_boundaries_preserve_public_object_identity():
     import ecat
 
     expected = {
-        "ecat.objects": ["echem", "cv", "ca", "cp", "dpv"],
+        "ecat.objects": [
+            "ChronoAnalysisResult",
+            "CVAnalysisResult",
+            "echem",
+            "cv",
+            "ca",
+            "cp",
+            "dpv",
+        ],
         "ecat.io": [
             "get_data",
             "get_CVs",
-            "get_CVs_from_excel",
-            "create_cv_objects_from_excel",
+            "get_data_from_excel",
         ],
         "ecat.plotting": [
+            "ScatterFitResult",
             "multiplot",
             "multimultiplot",
             "multi_scatterplot",
@@ -48,6 +56,10 @@ def test_split_module_boundaries_preserve_public_object_identity():
             "canonical_reference_label",
             "resolve_reference_options",
         ],
+        "ecat.results": [
+            "AnalysisResult",
+            "analysis_result_from_table",
+        ],
     }
 
     for module_name, names in expected.items():
@@ -62,6 +74,7 @@ def test_parser_module_exposes_parser_helpers_used_by_implementation():
     from ecat import parsers
 
     expected = [
+        "ParseResult",
         "parse_ch_timestamp",
         "parse_duration_seconds",
         "parse_quiet_time_from_lines",
@@ -111,8 +124,7 @@ def test_io_module_owns_cv_specific_loading_helpers_used_by_implementation():
 
     expected = [
         "get_CVs",
-        "get_CVs_from_excel",
-        "create_cv_objects_from_excel",
+        "get_data_from_excel",
     ]
 
     for name in expected:

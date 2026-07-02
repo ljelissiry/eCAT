@@ -1,5 +1,6 @@
 import numpy as np
 import pytest
+import matplotlib.pyplot as plt
 
 
 class FakePeakCV:
@@ -72,8 +73,8 @@ def test_plateau_current_normalized_equation_manual(ecat_module):
         ),
     )
 
-    assert result.loc[0, "formula mode"] == "normalized"
-    assert result.loc[0, "kobs"] == pytest.approx(expected)
+    assert result.table.loc[0, "formula mode"] == "normalized"
+    assert result.table.loc[0, "kobs"] == pytest.approx(expected)
 
 
 def test_plateau_current_slope_normalized_equation_manual(ecat_module):
@@ -87,8 +88,8 @@ def test_plateau_current_slope_normalized_equation_manual(ecat_module):
         _opts(ic=ic, **{"ip0 sqrt scan rate slope": slope, "temperature": T}),
     )
 
-    assert result.loc[0, "formula mode"] == "slope normalized"
-    assert result.loc[0, "kobs"] == pytest.approx(expected)
+    assert result.table.loc[0, "formula mode"] == "slope normalized"
+    assert result.table.loc[0, "kobs"] == pytest.approx(expected)
 
 
 def test_plateau_current_direct_equation_manual(ecat_module):
@@ -103,8 +104,8 @@ def test_plateau_current_direct_equation_manual(ecat_module):
         _opts(ic=ic, D=D, C=C, **{"C unit": "mol/cm^3", "electrode area": A}),
     )
 
-    assert result.loc[0, "formula mode"] == "direct"
-    assert result.loc[0, "kobs"] == pytest.approx(expected)
+    assert result.table.loc[0, "formula mode"] == "direct"
+    assert result.table.loc[0, "kobs"] == pytest.approx(expected)
 
 
 def test_cv_plateau_current_delegates_to_batch_function(ecat_module, cv_factory):
@@ -118,8 +119,10 @@ def test_cv_plateau_current_delegates_to_batch_function(ecat_module, cv_factory)
     method_result = cv_obj.plateau_current(options)
     function_result = ecat_module.plateau_current(cv_obj, options)
 
-    ecat_module.pd.testing.assert_frame_equal(method_result, function_result)
-    assert method_result.loc[0, "formula mode"] == "normalized"
+    assert isinstance(method_result, ecat_module.AnalysisResult)
+    assert isinstance(function_result, ecat_module.AnalysisResult)
+    ecat_module.pd.testing.assert_frame_equal(method_result.table, function_result.table)
+    assert method_result.table.loc[0, "formula mode"] == "normalized"
 
 
 def test_plateau_forced_origin_fit(ecat_module):
@@ -215,8 +218,8 @@ def test_plateau_single_cv_warns_but_returns(ecat_module):
             ),
         )
 
-    assert result.loc[0, "valid plateau"] == True
-    assert "scan-rate independence cannot be tested" in result.loc[0, "plateau warning"]
+    assert result.table.loc[0, "valid plateau"] == True
+    assert "scan-rate independence cannot be tested" in result.table.loc[0, "plateau warning"]
 
 
 def test_plateau_current_legacy_alias_removed(ecat_module):
@@ -272,3 +275,72 @@ def test_plateau_plot_all_runs_reference_diagnostic_before_plateau_validation(ec
         "peak:cat fast",
         "plateau validation",
     ]
+
+
+def test_plateau_plot_all_peak_current_diagnostics_use_multiplot_axis_scaling(
+    ecat_module,
+    cv_factory,
+):
+    plt.close("all")
+    potential = np.linspace(-0.25, 0.25, 51)
+    current_large = (
+        0.4e-6
+        + 0.5e-6 * potential
+        + 6.0e-6 * np.exp(-((potential - 0.15) / 0.035) ** 2)
+    )
+    current_small = current_large * 1e-3
+    cvs = [
+        cv_factory(
+            name="50mVs_sample_CO2_MeCN_10mM_Fc_run01",
+            potential=potential,
+            current=current_small,
+        ),
+        cv_factory(
+            name="100mVs_sample_CO2_MeCN_10mM_Fc_run02",
+            potential=potential,
+            current=current_large,
+        ),
+    ]
+
+    ecat_module.plateau_current(
+        cvs,
+        _opts(
+            **{
+                "plot": False,
+                "print": False,
+                "plot all": True,
+                "non-catalytic current": 1e-6,
+                "ip0 scan rate": 0.1,
+                "validate plateau": False,
+                "exact potential": 0.15,
+                "tangent range": [0.1, 0.25],
+                "percent threshold": 100,
+            }
+        ),
+    )
+
+    try:
+        vertical_segments = [
+            np.asarray(segment)
+            for fig_num in plt.get_fignums()
+            for ax in plt.figure(fig_num).axes
+            for collection in ax.collections
+            for segment in getattr(collection, "get_segments", lambda: [])()
+            if len(segment) == 2
+            and np.isclose(segment[0][0], segment[1][0])
+            and collection.get_linestyle()
+        ]
+        peak_segment = max(
+            vertical_segments,
+            key=lambda segment: abs(segment[1][1] - segment[0][1]),
+        )
+
+        vertical_lengths = [
+            abs(segment[1][1] - segment[0][1])
+            for segment in vertical_segments
+        ]
+
+        assert peak_segment[0][0] == pytest.approx(0.15)
+        assert min(vertical_lengths) < 0.02
+    finally:
+        plt.close("all")

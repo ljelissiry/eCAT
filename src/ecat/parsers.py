@@ -1,7 +1,10 @@
 """Parser helper functions for electrochemical text formats."""
 
+from dataclasses import dataclass, field
 from datetime import datetime
 import re
+
+import pandas as pd
 
 
 def parse_ch_timestamp(time_str):
@@ -83,7 +86,95 @@ def exp_type_short(exp_type):
     return mapping.get(exp_type, exp_type)
 
 
+def _copy_if_dataframe(value):
+    if isinstance(value, pd.DataFrame):
+        return value.copy()
+    return value
+
+
+def _copy_dict(value):
+    if isinstance(value, dict):
+        return dict(value)
+    return {}
+
+
+def _object_metadata(obj):
+    keys = [
+        "name",
+        "filepath",
+        "folderpath",
+        "type",
+        "scan_rate",
+        "temperature",
+        "electrode_area",
+        "gas",
+        "solvent",
+        "compounds",
+        "concentrations",
+        "segments",
+        "reference_shift",
+        "reference_label",
+        "reference_mode",
+        "reference_source_file",
+        "reference_failure_message",
+        "ir_comp_resistance",
+        "ir_uncomp_resistance",
+        "ir_comp_percent",
+    ]
+    metadata = {}
+    for key in keys:
+        if hasattr(obj, key):
+            metadata[key] = getattr(obj, key)
+    return metadata
+
+
+@dataclass(slots=True)
+class ParseResult:
+    """Standard parser contract for one loaded electrochemistry file/object."""
+
+    data: pd.DataFrame
+    units: dict = field(default_factory=dict)
+    technique: str | None = None
+    software: str | None = None
+    metadata: dict = field(default_factory=dict)
+    warnings: list[str] = field(default_factory=list)
+    raw_metadata: dict = field(default_factory=dict)
+    source: str | None = None
+    parser: str | None = None
+
+    @classmethod
+    def from_object(
+        cls,
+        obj,
+        *,
+        parser=None,
+        warnings=None,
+        raw_metadata=None,
+        copy_data=True,
+    ):
+        data = getattr(obj, "data", pd.DataFrame())
+        if copy_data:
+            data = _copy_if_dataframe(data)
+        units = _copy_dict(getattr(obj, "units", {}))
+        metadata = _object_metadata(obj)
+        technique = exp_type_short(getattr(obj, "type", None))
+        if technique == getattr(obj, "type", None):
+            technique = getattr(obj, "type", None)
+        return cls(
+            data=data,
+            units=units,
+            technique=technique,
+            software=getattr(obj, "software", None),
+            metadata=metadata,
+            warnings=[] if warnings is None else list(warnings),
+            raw_metadata={} if raw_metadata is None else dict(raw_metadata),
+            source=getattr(obj, "filepath", None),
+            parser=parser or getattr(obj, "software", None),
+        )
+
+
 __all__ = [
+    "ParseResult",
     "parse_ch_timestamp",
     "parse_duration_seconds",
     "parse_quiet_time_from_lines",

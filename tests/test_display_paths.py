@@ -27,7 +27,7 @@ def test_get_data_prints_search_folder_relative_to_current_directory(
     result = ecat_module.get_data({"folder path": str(data_dir)})
 
     output = capsys.readouterr().out
-    assert result is None
+    assert result == []
     assert "examples/data" in output
     assert str(tmp_path) not in output
 
@@ -49,7 +49,7 @@ def test_get_data_prints_search_folder_relative_to_project_root_from_notebooks(
     result = ecat_module.get_data({"folder path": str(data_dir)})
 
     output = capsys.readouterr().out
-    assert result is None
+    assert result == []
     assert "examples/data" in output
     assert str(tmp_path) not in output
 

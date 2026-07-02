@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleExecutable</key>
+  <string>ecat-workbench</string>
+  <key>CFBundleIdentifier</key>
+  <string>org.ecat.workbench.native</string>
+  <key>CFBundleName</key>
+  <string>eCAT Workbench</string>
+  <key>CFBundleDisplayName</key>
+  <string>eCAT Workbench</string>
+  <key>CFBundleIconFile</key>
+  <string>ecat-logo</string>
+  <key>CFBundlePackageType</key>
+  <string>APPL</string>
+  <key>CFBundleShortVersionString</key>
+  <string>0.1.0b3</string>
+  <key>CFBundleVersion</key>
+  <string>2</string>
+  <key>LSMinimumSystemVersion</key>
+  <string>10.15</string>
+  <key>NSHighResolutionCapable</key>
+  <true/>
+</dict>
+</plist>

@@ -8,9 +8,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass, field
-import html
 import pprint
-import time
 from typing import Any
 import warnings
 
@@ -18,6 +16,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+from ._progress import NotebookProgressDisplay, progress_enabled
 from .objects import cv as _EcatCV
 
 
@@ -1140,6 +1139,12 @@ def compile_mechanism(mechanism, params=None):
             "ECE",
             surface_confined=surface_confined,
         )
+    if normalized in {"square", "squarescheme", "square-scheme", "square_scheme", "sq"}:
+        return MechanismSpec(
+            _compile_square_preset(concentrations, surface_confined),
+            "Square",
+            surface_confined=surface_confined,
+        )
     if normalized in {"ec'", "ecprime", "ecat"}:
         compiled = _compile_ecat_preset(params, force_surface=force_surface)
         note = (
@@ -1757,7 +1762,7 @@ def _mechanism_species_order_detail(mechanism_spec, concentrations):
         names = _first_two_species(_species_group(concentrations, surface_confined), fallback=("a", "b"))
     elif preset in {"ee", "ec"}:
         names = _first_three_species(_species_group(concentrations, surface_confined), fallback=("a", "b", "c"))
-    elif preset == "ece":
+    elif preset in {"ece", "square"}:
         names = _first_four_species(_species_group(concentrations, surface_confined), fallback=("a", "b", "c", "d"))
     elif preset == "ecat":
         if surface_confined and concentrations["surface"]:
@@ -2178,13 +2183,16 @@ def _format_simulation_params_pretty(params):
 
 def _simulation_param_dataframes(params, compact=False):
     sections = []
-    parameter_rows = []
-    for group in ("cell", "spatial"):
-        values = params.get(group)
-        if isinstance(values, dict) and values:
-            parameter_rows.extend(_mapping_param_rows(group, values))
-    if parameter_rows:
-        sections.append(("parameters", _parameter_dataframe(parameter_rows)))
+    setup_rows = []
+    spatial = params.get("spatial")
+    if isinstance(spatial, dict) and spatial:
+        setup_rows.extend(_mapping_param_rows("spatial", spatial))
+    if setup_rows:
+        sections.append(("simulation setup", _parameter_dataframe(setup_rows)))
+
+    cell = params.get("cell")
+    if isinstance(cell, dict) and cell:
+        sections.append(("cell", _parameter_dataframe(_mapping_param_rows("cell", cell))))
 
     if compact:
         species_frame = _compact_species_dataframe(params)
@@ -2204,34 +2212,47 @@ def _simulation_param_dataframes(params, compact=False):
         if compact:
             sections.append(("mechanism", _compact_mechanism_dataframe(mechanism_rows)))
         else:
-            sections.append(("mechanism", _parameter_dataframe(mechanism_rows)))
+            sections.append(("mechanism", _parameter_dataframe(mechanism_rows, keep_step=True)))
 
     fallback_notes = list(params.get("_fallbacks", []) or [])
     if fallback_notes:
         sections.append(("notes", pd.DataFrame({"Note": fallback_notes})))
 
     if not sections:
-        sections.append(("parameters", _parameter_dataframe([{"Group": "", "Path": "", "Parameter": "(none)", "Value": ""}])))
+        sections.append(("simulation setup", _parameter_dataframe([{"Group": "", "Path": "", "Parameter": "(none)", "Value": ""}])))
     return sections
 
 
 def _simulation_param_comparison_dataframes(initial_params, final_params, fit_spec=None):
     fit_status = _fit_status_lookup(fit_spec)
     sections = []
-    parameter_rows = []
-    for group in ("cell", "spatial", "diffusion"):
-        parameter_rows.extend(
-            _mapping_param_comparison_rows(
-                group,
-                (initial_params or {}).get(group),
-                (final_params or {}).get(group),
-                fit_status=fit_status,
-            )
-        )
-    if parameter_rows:
-        sections.append(("parameters", _parameter_dataframe(parameter_rows)))
+    setup_rows = _mapping_param_comparison_rows(
+        "spatial",
+        (initial_params or {}).get("spatial"),
+        (final_params or {}).get("spatial"),
+        fit_status=fit_status,
+    )
+    if setup_rows:
+        sections.append(("simulation setup", _parameter_dataframe(setup_rows)))
 
-    species_rows = []
+    cell_rows = _mapping_param_comparison_rows(
+        "cell",
+        (initial_params or {}).get("cell"),
+        (final_params or {}).get("cell"),
+        fit_status=fit_status,
+    )
+    if cell_rows:
+        sections.append(("cell", _parameter_dataframe(cell_rows)))
+
+    diffusion_rows = _mapping_param_comparison_rows(
+        "diffusion",
+        (initial_params or {}).get("diffusion"),
+        (final_params or {}).get("diffusion"),
+        group_label="bulk",
+        fit_status=fit_status,
+    )
+
+    species_rows = list(diffusion_rows)
     initial_species = _concentration_sections((initial_params or {}).get("concentrations"))
     final_species = _concentration_sections((final_params or {}).get("concentrations"))
     for phase in ("bulk", "surface"):
@@ -2258,10 +2279,10 @@ def _simulation_param_comparison_dataframes(initial_params, final_params, fit_sp
             )
         )
     if mechanism_rows:
-        sections.append(("mechanism", _parameter_dataframe(mechanism_rows)))
+        sections.append(("mechanism", _parameter_dataframe(mechanism_rows, keep_step=True)))
 
     if not sections:
-        sections.append(("parameters", _parameter_dataframe([{"Group": "", "Path": "", "Parameter": "(none)", "Fit Status": "", "Initial Value": "", "Final Value": ""}])))
+        sections.append(("simulation setup", _parameter_dataframe([{"Group": "", "Path": "", "Parameter": "(none)", "Fit Status": "", "Initial Value": "", "Final Value": ""}])))
     return sections
 
 
@@ -2843,9 +2864,9 @@ def _rows_dataframe(rows, empty_message="(none)"):
     return _parameter_dataframe(rows)
 
 
-def _parameter_dataframe(rows):
+def _parameter_dataframe(rows, keep_step=False):
     frame = pd.DataFrame(rows)
-    if "Step" in frame.columns and not _should_show_step_column(frame["Step"]):
+    if "Step" in frame.columns and not keep_step and not _should_show_step_column(frame["Step"]):
         frame = frame.drop(columns=["Step"])
     return frame
 
@@ -5165,15 +5186,7 @@ class _FitProgressReporter:
 
     @staticmethod
     def _progress_enabled(progress):
-        if progress is True:
-            return True
-        if progress in (False, None):
-            return False
-        if callable(progress):
-            return True
-        if isinstance(progress, str):
-            return progress.strip().lower() not in {"", "false", "none", "off", "disable", "disabled"}
-        return bool(progress)
+        return progress_enabled(progress)
 
     def _create_bar(self, progress):
         if callable(progress):
@@ -5219,94 +5232,50 @@ class _FitProgressReporter:
 
 class _NotebookFitProgressDisplay:
     def __init__(self, *, total=None, label="Fitting CV", leave=True):
-        from IPython.display import HTML, display
-
-        self.HTML = HTML
-        self.total = None if total is None else max(1, int(total))
+        self._impl = NotebookProgressDisplay(
+            total=total,
+            label=label,
+            leave=leave,
+            unit="evals",
+            approx_total=True,
+            metric_label="cost",
+        )
+        self.total = self._impl.total
         self.label = label
         self.leave = leave
-        self.start_time = time.monotonic()
-        self.count = 0
-        self.cost = None
-        self.handle = display(self.HTML(self._html(0, None, self.total, label, elapsed=0.0, remaining=None)), display_id=True)
-        if self.handle is None:
-            raise RuntimeError("IPython display did not provide an updatable display handle.")
 
     def update(self, count, *, cost=None):
-        self.count = int(count)
-        self.cost = cost
-        elapsed = max(0.0, time.monotonic() - self.start_time)
-        remaining = self._estimate_remaining(count, elapsed)
-        self.handle.update(self.HTML(self._html(count, cost, self.total, self.label, elapsed=elapsed, remaining=remaining)))
+        self._impl.update(count, metric=cost)
 
     def close(self):
-        if not self.leave:
-            self.handle.update(self.HTML(""))
-            return
-        elapsed = max(0.0, time.monotonic() - self.start_time)
-        self.handle.update(self.HTML(self._done_html(self.count, self.cost, self.total, self.label, elapsed=elapsed)))
-
-    def _estimate_remaining(self, count, elapsed):
-        if self.total is None or int(count) <= 0:
-            return None
-        if int(count) >= int(self.total):
-            return None
-        remaining_evals = max(0, int(self.total) - int(count))
-        if remaining_evals <= 0:
-            return None
-        return elapsed * remaining_evals / max(1, int(count))
+        self._impl.close()
 
     @staticmethod
     def _html(count, cost, total, label, *, elapsed=0.0, remaining=None):
-        label = html.escape(str(label))
-        cost_text = "" if cost is None else f" | cost {cost:.3g}"
-        timing_text = f" | elapsed {_format_progress_duration(elapsed)}"
-        if remaining is not None and float(remaining) > 0:
-            timing_text += f" | remaining ~{_format_progress_duration(remaining)}"
-        if total is None:
-            return (
-                '<div style="font-family: system-ui, sans-serif; margin: 0.35em 0;">'
-                f'<strong>{label}</strong>: {int(count)} eval{html.escape(cost_text + timing_text)}'
-                '<br><progress style="width: 100%; height: 1em;"></progress>'
-                "</div>"
-            )
-        total = max(1, int(total))
-        shown = int(count)
-        progress_value = min(shown, total)
-        pct = 100.0 * shown / total
-        return (
-            '<div style="font-family: system-ui, sans-serif; margin: 0.35em 0;">'
-            f'<strong>{label}</strong>: {shown}/~{total} eval ({pct:.0f}%){html.escape(cost_text + timing_text)}'
-            f'<br><progress value="{progress_value}" max="{total}" style="width: 100%; height: 1em;"></progress>'
-            "</div>"
+        return NotebookProgressDisplay._html(
+            count,
+            cost,
+            total,
+            label,
+            elapsed=elapsed,
+            remaining=remaining,
+            unit="evals",
+            approx_total=True,
+            metric_label="cost",
         )
 
     @staticmethod
     def _done_html(count, cost, total, label, *, elapsed=0.0):
-        label = html.escape(str(label))
-        cost_text = "" if cost is None else f" | cost {cost:.3g}"
-        timing_text = f" | elapsed {_format_progress_duration(elapsed)}"
-        if total is None:
-            progress_text = f"{int(count)} eval"
-        else:
-            total = max(1, int(total))
-            progress_text = f"{int(count)}/~{total} eval"
-        return (
-            '<div style="font-family: system-ui, sans-serif; margin: 0.35em 0;">'
-            f"<strong>{label}</strong>: {progress_text} | done{html.escape(cost_text + timing_text)}"
-            "</div>"
+        return NotebookProgressDisplay._done_html(
+            count,
+            cost,
+            total,
+            label,
+            elapsed=elapsed,
+            unit="evals",
+            approx_total=True,
+            metric_label="cost",
         )
-
-
-def _format_progress_duration(seconds):
-    seconds = max(0.0, float(seconds))
-    if seconds < 60:
-        return f"{seconds:.0f}s"
-    minutes, sec = divmod(int(round(seconds)), 60)
-    if minutes < 60:
-        return f"{minutes}m {sec:02d}s"
-    hours, minutes = divmod(minutes, 60)
-    return f"{hours}h {minutes:02d}m"
 
 
 def _normalize_options(options):
@@ -5677,6 +5646,18 @@ def _compile_ece_preset(species, surface_confined):
             f"E(1):{_species_name(a, surface_confined)}={_species_name(b, surface_confined)}",
             f"C:{_species_name(b, surface_confined)}={_species_name(c, surface_confined)}",
             f"E(1):{_species_name(c, surface_confined)}={_species_name(d, surface_confined)}",
+        ]
+    )
+
+
+def _compile_square_preset(species, surface_confined):
+    a, b, c, d = _first_four_species(_species_group(species, surface_confined), fallback=("a", "b", "c", "d"))
+    return "\n".join(
+        [
+            f"E(1):{_species_name(a, surface_confined)}={_species_name(b, surface_confined)}",
+            f"C:{_species_name(a, surface_confined)}={_species_name(c, surface_confined)}",
+            f"E(1):{_species_name(c, surface_confined)}={_species_name(d, surface_confined)}",
+            f"C:{_species_name(b, surface_confined)}={_species_name(d, surface_confined)}",
         ]
     )
 

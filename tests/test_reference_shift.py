@@ -95,6 +95,86 @@ def test_get_data_applies_manual_reference_shift_metadata(ecat_module, fixtures_
     assert obj.x().name == "Potential vs Fc/Fc+"
 
 
+def test_get_data_reference_manual_requires_reference_offset(ecat_module, tmp_path):
+    _write_ch_cv(tmp_path / "sample.txt", SAMPLE_ROWS)
+
+    with pytest.raises(ValueError, match="'reference offset' is required"):
+        ecat_module.get_data(
+            {
+                "folder path": str(tmp_path),
+                "recursive search": False,
+                "print": False,
+                "reference mode": "manual",
+            }
+        )
+
+
+def test_get_data_reference_keyword_requires_reference_keyword(ecat_module, tmp_path):
+    _write_ch_cv(tmp_path / "sample.txt", SAMPLE_ROWS)
+    _write_ch_cv(tmp_path / "Fc_reference.txt", REFERENCE_ROWS)
+
+    with pytest.raises(ValueError, match="reference keyword.*required"):
+        ecat_module.get_data(
+            {
+                "folder path": str(tmp_path),
+                "recursive search": False,
+                "print": False,
+                "reference mode": "keyword",
+            }
+        )
+
+
+def test_get_data_reference_mode_rejects_empty_reference_keyword(ecat_module, tmp_path):
+    _write_ch_cv(tmp_path / "sample.txt", SAMPLE_ROWS)
+
+    with pytest.raises(ValueError, match="non-empty 'reference keyword'"):
+        ecat_module.get_data(
+            {
+                "folder path": str(tmp_path),
+                "recursive search": False,
+                "print": False,
+                "reference mode": "keyword",
+                "reference keyword": "   ",
+            }
+        )
+
+
+def test_get_data_reference_accepts_numeric_reference_keyword(ecat_module, tmp_path):
+    _write_ch_cv(tmp_path / "1_ref.txt", REFERENCE_ROWS)
+    _write_ch_cv(tmp_path / "sample.txt", SAMPLE_ROWS)
+
+    objects = ecat_module.get_data(
+        {
+            "folder path": str(tmp_path),
+            "recursive search": False,
+            "print": False,
+            "reference mode": "keyword",
+            "reference keyword": 1,
+            "reference guess": 0.0,
+            "peak prominence": 1e-6,
+            "shift smooth": False,
+        }
+    )
+
+    sample = next(obj for obj in objects if obj.filepath.endswith("sample.txt"))
+    assert sample.reference_mode in {"folder", "self", "fallback"}
+    assert sample.reference_shift == pytest.approx(0.0, abs=1e-12)
+
+
+def test_get_data_reference_file_requires_reference_file(ecat_module, tmp_path):
+    _write_ch_cv(tmp_path / "sample.txt", SAMPLE_ROWS)
+
+    with pytest.raises(ValueError, match="'reference file' is required"):
+        ecat_module.get_data(
+            {
+                "folder path": str(tmp_path),
+                "recursive search": False,
+                "print": False,
+                "reference mode": "file",
+            }
+        )
+
+
 def test_get_data_prints_reference_columns_when_reference_shift_active(
     ecat_module,
     fixtures_dir,

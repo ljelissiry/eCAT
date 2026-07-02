@@ -1,6 +1,6 @@
 # eCAT
 
-eCAT, short for electroCatalysis Analysis Tools, is a Python package for loading, organizing, plotting, and analyzing electrochemical data from common lab workflows. The current lab beta focuses on trustworthy cyclic voltammetry workflows, with limited CA and CP support where the existing parsers are covered by tests.
+eCAT, short for electroChemical Analysis Tools, is a Python package for loading, organizing, plotting, and analyzing electrochemical data from common lab workflows. The current lab beta focuses on trustworthy cyclic voltammetry workflows, with limited CA and CP support where the existing parsers are covered by tests.
 
 ## Install
 
@@ -13,10 +13,12 @@ python -m pip install -U pip
 python -m pip install -e .
 ```
 
-For the public beta tag, users can install directly from GitHub:
+For the public beta tag, users can install directly from GitHub. This requires
+Git to be installed and available on your `PATH`; check with `git --version` if
+the command fails.
 
 ```bash
-python -m pip install --upgrade "git+https://github.com/ljelissiry/eCAT.git@v0.1.0b2"
+python -m pip install --upgrade "git+https://github.com/ljelissiry/eCAT.git@v0.1.0b3"
 ```
 
 Then verify the install:
@@ -26,17 +28,17 @@ python -c "import ecat as e; print(e.__version__)"
 pytest -q
 ```
 
-The beta version is `0.1.0b2`.
+The beta version is `0.1.0b3`.
 
-## Browser App
+## eCAT App
 
-The browser app is installed with the main package. From a terminal, run:
+The eCAT app is installed with the main package. From a terminal, run:
 
 ```bash
-ecat-browser
+ecat-app
 ```
 
-From a notebook, launch the same local app with:
+From a notebook, launch the native app window with:
 
 ```python
 import ecat as e
@@ -44,13 +46,25 @@ import ecat as e
 e.open_app()
 ```
 
-To embed the app in a notebook cell when supported:
+If a native window is not convenient, run the same local app in browser mode:
+
+```bash
+ecat-app --browser
+```
+
+or from Python:
+
+```python
+e.open_app(browser=True)
+```
+
+To embed browser mode in a notebook cell when supported:
 
 ```python
 e.open_app(inline=True)
 ```
 
-The app runs locally at `http://127.0.0.1:8050` by default and automatically uses the next available port if `8050` is busy.
+Browser mode runs locally at `http://127.0.0.1:8050` by default and automatically uses the next available port if `8050` is busy.
 
 ## Quickstart
 

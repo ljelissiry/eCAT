@@ -37,7 +37,7 @@ from .plotting import (
     _scatter_fit,
     _scatter_fit_row,
     _scatter_fit_table,
-    _scatter_result_from_legacy,
+    _scatter_result_from_payload,
     _scatterfit_legend_fontsize,
     _scatterfit_legend_requested,
     build_object_table,
@@ -47,6 +47,7 @@ from .plotting import (
     pretty_table_column_label,
 )
 from .reference import midpoint_potential
+from .results import AnalysisResult, analysis_result_from_table
 
 
 _FIT_MODEL_ALIASES = {
@@ -118,6 +119,9 @@ _FIT_MODEL_ALLOWED_AST_NODES = (
 
 
 _RETIRED_MODEL_OPTION_KEYS = {
+    "equation",
+    "fit equation",
+    "fit equation label",
     "model params",
     "model equation",
     "model init",
@@ -129,7 +133,6 @@ _RETIRED_MODEL_OPTION_KEYS = {
 _FIT_MODEL_BARE_OPTION_ALIASES = {
     "model": "fit model",
     "params": "fit params",
-    "equation": "fit equation",
     "init": "fit init",
     "bounds": "fit bounds",
     "residual": "fit residual",
@@ -279,7 +282,7 @@ def _resolve_fit_model_spec(model, options):
             "model": "custom",
             "names": tuple(names),
             "function": model,
-            "equation": options.get("fit equation") or getattr(model, "__name__", "custom callable"),
+            "equation": getattr(model, "__name__", "custom callable"),
         }
     if model in _FIT_MODEL_PARAMETERS:
         return {
@@ -294,7 +297,7 @@ def _resolve_fit_model_spec(model, options):
             "model": "custom",
             "names": tuple(names),
             "function": _compile_formula_model(model, names),
-            "equation": options.get("fit equation") or str(model).strip(),
+            "equation": str(model).strip(),
         }
     raise ValueError(f"Unknown fit model '{model}'.")
 
@@ -410,6 +413,41 @@ def _format_fit_model_fitted_equation(model_result):
         )
         return f"{equation}({assignments})" if equation else assignments
     return equation
+
+
+def _format_fit_equation_for_mathtext(equation):
+    def repl(match):
+        mantissa = match.group("mantissa")
+        exponent = int(match.group("exponent"))
+        return rf"{mantissa}\times 10^{{{exponent}}}"
+
+    return re.sub(
+        r"(?P<mantissa>[+-]?(?:\d+(?:\.\d*)?|\.\d+))[eE](?P<exponent>[+-]?\d+)",
+        repl,
+        str(equation),
+    )
+
+
+def _fit_residual_r2_label(residual, *, mathtext=False):
+    residual = str(residual or "direct").strip().lower().replace("_", " ")
+    if residual == "log":
+        return r"\ln R^2" if mathtext else "ln R²"
+    if residual == "log10":
+        return r"\log R^2" if mathtext else "log R²"
+    return "R^2" if mathtext else "R²"
+
+
+def _coefficient_of_determination(observed, predicted):
+    observed = np.asarray(observed, dtype=float)
+    predicted = np.asarray(predicted, dtype=float)
+    keep = np.isfinite(observed) & np.isfinite(predicted)
+    observed = observed[keep]
+    predicted = predicted[keep]
+    if len(observed) == 0:
+        return np.nan
+    ss_res = float(np.nansum((observed - predicted) ** 2))
+    ss_tot = float(np.nansum((observed - np.nanmean(observed)) ** 2))
+    return np.nan if ss_tot == 0 else 1 - ss_res / ss_tot
 
 
 def _fit_model_auto_init(model, x, y, names=None):
@@ -534,6 +572,20 @@ def _normalize_model_vector_override(spec, names, default, *, option_name):
     return values
 
 
+def _normalize_bound_value(value, *, upper):
+    if value is None:
+        return np.inf if upper else -np.inf
+    return value
+
+
+def _normalize_bound_values(values, *, upper):
+    return [_normalize_bound_value(value, upper=upper) for value in values]
+
+
+def _is_bound_scalar(value):
+    return value is None or np.isscalar(value)
+
+
 def _normalize_model_bounds(spec, names, default_bounds):
     lower_default, upper_default = default_bounds
     if spec is None or (isinstance(spec, str) and spec == "auto"):
@@ -544,20 +596,20 @@ def _normalize_model_bounds(spec, names, default_bounds):
         for i, name in enumerate(names):
             if name in spec:
                 lo, hi = spec[name]
-                lower[i] = lo
-                upper[i] = hi
+                lower[i] = _normalize_bound_value(lo, upper=False)
+                upper[i] = _normalize_bound_value(hi, upper=True)
         return lower, upper
     if len(spec) != 2:
         raise ValueError("'fit bounds' must be [lower, upper] or a dict by parameter name.")
     lo_spec, hi_spec = spec
-    if np.isscalar(lo_spec):
-        lower = [lo_spec] * len(names)
+    if _is_bound_scalar(lo_spec):
+        lower = [_normalize_bound_value(lo_spec, upper=False)] * len(names)
     else:
-        lower = list(lo_spec)
-    if np.isscalar(hi_spec):
-        upper = [hi_spec] * len(names)
+        lower = _normalize_bound_values(lo_spec, upper=False)
+    if _is_bound_scalar(hi_spec):
+        upper = [_normalize_bound_value(hi_spec, upper=True)] * len(names)
     else:
-        upper = list(hi_spec)
+        upper = _normalize_bound_values(hi_spec, upper=True)
     if len(lower) != len(names) or len(upper) != len(names):
         raise ValueError(f"'fit bounds' for this model must have {len(names)} lower and upper values.")
     return lower, upper
@@ -627,8 +679,10 @@ def _fit_model_indices_mask(length, fit_indices):
 
     if fit_indices_array.ndim == 1:
         if len(fit_indices_array) == 2:
-            start, stop = int(fit_indices_array[0]), int(fit_indices_array[1])
-            mask[np.arange(length)[start:stop]] = True
+            start, stop = fit_indices_array
+            start_i = None if start is None else int(start)
+            stop_i = None if stop is None else int(stop)
+            mask[np.arange(length)[start_i:stop_i]] = True
             return mask
         mask[np.asarray(fit_indices_array, dtype=int)] = True
         return mask
@@ -636,12 +690,24 @@ def _fit_model_indices_mask(length, fit_indices):
     if fit_indices_array.ndim == 2 and fit_indices_array.shape[1] == 2:
         base_indices = np.arange(length)
         for start, stop in fit_indices_array:
-            mask[base_indices[int(start):int(stop)]] = True
+            start_i = None if start is None else int(start)
+            stop_i = None if stop is None else int(stop)
+            mask[base_indices[start_i:stop_i]] = True
         return mask
 
     raise ValueError(
         "'fit indices' should be [start, stop], [[start, stop], ...], "
         "a boolean mask, or explicit integer indices."
+    )
+
+
+def _is_fit_index_range_pair(spec):
+    if not isinstance(spec, (list, tuple)) or len(spec) != 2:
+        return False
+    start, stop = spec
+    return (
+        (start is None or (isinstance(start, (int, np.integer, float, np.floating)) and not isinstance(start, (bool, np.bool_))))
+        and (stop is None or (isinstance(stop, (int, np.integer, float, np.floating)) and not isinstance(stop, (bool, np.bool_))))
     )
 
 
@@ -670,6 +736,58 @@ def _fit_model_selection_mask(x, options):
     if options.get("fit indices") is not None:
         mask &= _fit_model_indices_mask(len(x), options.get("fit indices"))
     return mask
+
+
+def _normalize_fit_index_ranges(fit_index_ranges):
+    """Normalize the index-window-driven multi-fit option.
+
+    Forms
+    -----
+    {"early": [0, 3], "tail": [[6, 9], [9, None]]}
+        Named fits; each entry may contain a single window or multiple windows.
+
+    [[0, 2], [4, 7]]
+        Unnamed fits labeled "Fit 1", "Fit 2", ...
+
+    [[[0, 2], [4, None]]]
+        A single unnamed fit with disconnected windows, represented as a nested list.
+
+    [0, 3]
+        One unnamed fit using an index slice.
+    """
+    if fit_index_ranges in (None, {}):
+        return []
+    if isinstance(fit_index_ranges, slice):
+        return [("Fit 1", fit_index_ranges)]
+
+    if isinstance(fit_index_ranges, dict):
+        return [(str(label), spec) for label, spec in fit_index_ranges.items()]
+
+    if _is_fit_index_range_pair(fit_index_ranges):
+        return [("Fit 1", fit_index_ranges)]
+
+    if isinstance(fit_index_ranges, (list, tuple)):
+        if len(fit_index_ranges) == 0:
+            return [("Fit 1", None)]
+        if all(isinstance(value, (bool, np.bool_)) for value in fit_index_ranges):
+            return [("Fit 1", fit_index_ranges)]
+        if (
+            len(fit_index_ranges) == 1
+            and isinstance(fit_index_ranges[0], (list, tuple))
+            and all(_is_fit_index_range_pair(item) for item in fit_index_ranges[0])
+        ):
+            return [("Fit 1", fit_index_ranges[0])]
+        if all(_is_fit_index_range_pair(item) for item in fit_index_ranges):
+            return [(f"Fit {i + 1}", item) for i, item in enumerate(fit_index_ranges)]
+        if all(
+            isinstance(value, (int, np.integer, float, np.floating))
+            for value in fit_index_ranges
+        ):
+            return [("Fit 1", fit_index_ranges)]
+
+    raise ValueError(
+        "'fit indices' must be a dict of named index specs or an unnamed index spec."
+    )
 
 
 def _fit_model_xy(x, y, model="power", options=None, label=None):
@@ -731,25 +849,56 @@ def _fit_model_xy(x, y, model="power", options=None, label=None):
     else:
         raise ValueError("'fit residual' must be direct, relative, log, or log10.")
 
-    popt, pcov = curve_fit(
-        fit_func,
-        x_fit,
-        fit_target,
-        p0=np.asarray(p0, dtype=float),
-        bounds=(np.asarray(lower, dtype=float), np.asarray(upper, dtype=float)),
-        sigma=sigma,
-        maxfev=int(options.get("fit max evals", 10000)),
-    )
+    p0_array = np.asarray(p0, dtype=float)
+    if model == "custom":
+        try:
+            np.asarray(fit_func(x_fit, *p0_array), dtype=float)
+        except Exception as exc:
+            equation = model_spec.get("equation", options.get("fit model", "custom"))
+            allowed = ", ".join(sorted(_FIT_MODEL_ALLOWED_FORMULA_FUNCTIONS))
+            raise ValueError(
+                "Could not evaluate custom fit model "
+                f"{equation!r}. Use x, fitted parameter names, arithmetic "
+                f"operators, and supported functions: {allowed}."
+            ) from exc
+
+    try:
+        popt, pcov = curve_fit(
+            fit_func,
+            x_fit,
+            fit_target,
+            p0=p0_array,
+            bounds=(np.asarray(lower, dtype=float), np.asarray(upper, dtype=float)),
+            sigma=sigma,
+            maxfev=int(options.get("fit max evals", 10000)),
+        )
+    except KeyError as exc:
+        if model == "custom":
+            equation = model_spec.get("equation", options.get("fit model", "custom"))
+            raise ValueError(
+                f"Could not evaluate custom fit model {equation!r}."
+            ) from exc
+        raise
 
     predicted = func(x, *popt)
     predicted_fit = func(x_fit, *popt)
     residuals = y - predicted
     fit_residuals = y_fit - predicted_fit
-    ss_res = float(np.nansum(fit_residuals ** 2))
-    ss_tot = float(np.nansum((y_fit - np.nanmean(y_fit)) ** 2))
-    r2 = np.nan if ss_tot == 0 else 1 - ss_res / ss_tot
     rmse = float(np.sqrt(np.nanmean(fit_residuals ** 2)))
-    stats = {"R2": r2, "RMSE": rmse, "Fit Points": int(len(x_fit))}
+    raw_r2 = _coefficient_of_determination(y_fit, predicted_fit)
+    if residual == "log10":
+        r2 = _coefficient_of_determination(np.log10(y_fit), np.log10(predicted_fit))
+    elif residual == "log":
+        r2 = _coefficient_of_determination(np.log(y_fit), np.log(predicted_fit))
+    else:
+        r2 = raw_r2
+    stats = {
+        "R2": r2,
+        "R2 raw": raw_r2,
+        "RMSE": rmse,
+        "Fit Points": int(len(x_fit)),
+        "residual space": residual,
+    }
 
     parameters = {name: float(value) for name, value in zip(names, popt)}
     sig_figs = _fit_model_sig_figs(options.get("sig figs"))
@@ -846,7 +995,6 @@ def _empty_scatter_fit_result(table, *, summary=None):
         fit_table=fit_table,
         fit_model_results={},
         summary=summary or {},
-        legacy_return=(table, {}),
     )
 
 
@@ -855,9 +1003,9 @@ def _fit_model_input_xy(x_or_result, y=None, options=None):
     if y is not None:
         return np.asarray(x_or_result, dtype=float), np.asarray(y, dtype=float), "x", "y"
 
-    table = x_or_result.table if isinstance(x_or_result, ScatterFitResult) else x_or_result
+    table = x_or_result.table if isinstance(x_or_result, AnalysisResult) else x_or_result
     if not isinstance(table, pd.DataFrame):
-        raise TypeError("fit_model accepts x/y arrays, a pandas DataFrame, or a ScatterFitResult.")
+        raise TypeError("fit_model accepts x/y arrays, a pandas DataFrame, or an AnalysisResult.")
 
     x_col = options.get("x column", "auto")
     y_col = options.get("y column", "auto")
@@ -921,14 +1069,27 @@ def _plot_fit_model_result(model_result, options=None):
             label = f"{model_result['model'].replace('_', ' ').title()} Fit"
         r2 = model_result.get("stats", {}).get("R2")
         if r2 is not None and np.isfinite(r2):
-            equation = options.get("fit equation label")
-            if equation is None:
-                equation = model_result.get("fit equation") or model_result["equation"]
+            equation = model_result.get("fit equation") or model_result["equation"]
+            show_equation = True
+            if (
+                model_result.get("model") == "custom"
+                and "x" not in str(model_result.get("equation", ""))
+            ):
+                show_equation = False
+            if show_equation:
+                equation = _format_fit_equation_for_mathtext(equation)
+            r2_label = _fit_residual_r2_label(
+                model_result.get("residual", "direct"),
+                mathtext=True,
+            )
             r2_text = _format_fit_model_display_value(
                 r2,
                 sig_figs=model_result.get("sig figs"),
             )
-            label = f"{label}\n${equation}$\n$R^2 = {r2_text}$"
+            if show_equation:
+                label = f"{label}\n${equation}$\n${r2_label} = {r2_text}$"
+            else:
+                label = f"{label}\n${r2_label} = {r2_text}$"
     ax.plot(
         x_line,
         y_line,
@@ -993,6 +1154,7 @@ def _display_or_print_fit_model_table(table):
 def _fit_model_details_display_table(model_result):
     stats = model_result["stats"]
     sig_figs = _fit_model_sig_figs(model_result.get("sig figs"))
+    r2_label = _fit_residual_r2_label(model_result.get("residual", "direct"))
     x = np.asarray(model_result["x"], dtype=float)
     finite_x = x[np.isfinite(x)]
     if len(finite_x) > 0:
@@ -1008,7 +1170,7 @@ def _fit_model_details_display_table(model_result):
         ("Residual", model_result.get("residual", "")),
         ("X Range", x_range),
         ("Fit Points", stats.get("Fit Points")),
-        ("R2", stats.get("R2")),
+        (r2_label, stats.get("R2")),
         ("RMSE", stats.get("RMSE")),
     ]
     return pd.DataFrame(
@@ -1022,6 +1184,7 @@ def _fit_model_details_display_table(model_result):
 def _fit_model_display_table(model_result):
     stats = model_result["stats"]
     sig_figs = _fit_model_sig_figs(model_result.get("sig figs"))
+    r2_label = _fit_residual_r2_label(model_result.get("residual", "direct"))
     x = np.asarray(model_result["x"], dtype=float)
     finite_x = x[np.isfinite(x)]
     if len(finite_x) > 0:
@@ -1038,7 +1201,7 @@ def _fit_model_display_table(model_result):
         ("Residual", model_result.get("residual", "")),
         ("X Range", x_range),
         ("Fit Points", stats.get("Fit Points")),
-        ("R²", stats.get("R2")),
+        (r2_label, stats.get("R2")),
         ("RMSE", stats.get("RMSE")),
     ]
     for name in model_result["names"]:
@@ -1289,6 +1452,99 @@ def fit_model(x_or_result, y=None, model=None, options=None):
             summary={"analysis": "model fit", "model": None, "fit": False},
         )
     fit_options = dict(options)
+    index_range_specs = options.get("fit indices")
+    use_index_range_specs = index_range_specs is not None
+
+    if use_index_range_specs:
+        normalized_index_ranges = _normalize_fit_index_ranges(index_range_specs)
+        base_label = options.get("series", options.get("model label", "Model"))
+        default_series_label = base_label if len(normalized_index_ranges) == 1 else None
+        base_new_plot = options.get("new plot", True)
+        base_plot = dict(options)
+        table = pd.DataFrame({x_label: x, y_label: y_values})
+        model_results = {}
+        fit_rows = []
+
+        for fit_index, (series_label, fit_spec) in enumerate(normalized_index_ranges):
+            fit_label = default_series_label if default_series_label else series_label
+            fit_options = dict(fit_options)
+            fit_options["_fit model mask"] = _fit_model_indices_mask(len(x), fit_spec)
+            model_result = _fit_model_xy(
+                x,
+                y_values,
+                model=fit_model_name,
+                options=fit_options,
+                label=fit_label,
+            )
+            model_results[fit_label] = model_result
+            fit_rows.extend(model_result["fit_rows"])
+
+            if fit_index == 0:
+                table["Predicted"] = model_result["predicted"]
+                table["Residual"] = model_result["residuals"]
+
+            if options.get("plot", False):
+                current_axes = plt.gca()
+                current_color = (
+                    _artist_color(current_axes.collections[0]) if current_axes.collections else None
+                )
+                plot_options = _options_with_default_fit_color(
+                    dict(base_plot),
+                    options,
+                    current_color,
+                    index=fit_index,
+                )
+                plot_options.setdefault("x label", x_label)
+                plot_options.setdefault("y label", y_label)
+                if "model label" not in plot_options:
+                    plot_options["model label"] = str(fit_label)
+                if options.get("fit label") is None:
+                    plot_options["fit label"] = False
+                if fit_index == 0:
+                    plot_options["new plot"] = base_new_plot
+                    plot_options["plot data"] = True
+                else:
+                    plot_options["new plot"] = False
+                    plot_options["plot data"] = False
+                plot_options["model label"] = str(fit_label)
+                _plot_fit_model_result(model_result, plot_options)
+
+        fit_table = _scatter_fit_table(fit_rows)
+        table.attrs["fit table"] = fit_table
+
+        if options.get("print", False):
+            _print_fit_model_results(model_results, options)
+
+        fits = {
+            label: {
+                "model": result["model"],
+                "parameters": result["parameters"],
+                "errors": result["errors"],
+                "stats": result["stats"],
+            }
+            for label, result in model_results.items()
+        }
+
+        return ScatterFitResult(
+            table=table,
+            fits=fits,
+            fit_table=fit_table,
+            fit_model_results=model_results,
+            summary={
+                "analysis": "model fit",
+                "model": fit_model_name,
+                "equation": next(iter(model_results.values())).get("equation"),
+                "fit equation": next(iter(model_results.values())).get("fit equation"),
+                "models": {label: result["model"] for label, result in model_results.items()},
+                "parameters": {
+                    label: result["parameters"] for label, result in model_results.items()
+                },
+                "stats": {
+                    label: result["stats"] for label, result in model_results.items()
+                },
+            },
+        )
+
     fit_options["_fit model mask"] = _fit_model_selection_mask(x, options)
     model_result = _fit_model_xy(
         x,
@@ -1336,18 +1592,23 @@ def fit_model(x_or_result, y=None, model=None, options=None):
             "parameters": model_result["parameters"],
             "stats": model_result["stats"],
         },
-        legacy_return=(table, fits),
     )
 
-def _trumpet_analysis_legacy_return(cvs, options={}):
+def _trumpet_analysis_payload(cvs, options=None):
     raw_options = options
     typed_options = TrumpetAnalysisOptions.from_options(options)
     options = typed_options.to_legacy_dict()
     if not options["plot"]:
         options["plot fit"] = False
 
-    base_segment = int(options["segment"])
-    paired_segment = base_segment + 1
+    base_segment, paired_segment, segment_selection = _resolve_analysis_segment_pair(
+        cvs,
+        raw_options,
+        options,
+        analysis_name="trumpet_analysis",
+    )
+    options["segment"] = base_segment
+    options["segments"] = [base_segment, paired_segment]
 
     if options.get("plot all", False):
         multiplot(cvs, _multiplot_options_from_mapping(options))
@@ -1359,10 +1620,26 @@ def _trumpet_analysis_legacy_return(cvs, options={}):
     half_wave_options["print all"] = False
     half_wave_options["internal call"] = True
     half_wave_options["new plot"] = False
+    half_wave_options["segments"] = [base_segment, paired_segment]
+    potential_series = _resolve_complex_potential_series_map(
+        raw_options,
+        options,
+        n_cvs=len(cvs),
+        analysis_name="trumpet_analysis",
+        option_names=["guess potential", "exact potential"],
+        paired=True,
+    )
+    for key in potential_series:
+        half_wave_options.pop(key, None)
 
     deltas, scan_rates, ep1_values, ep2_values = [], [], [], []
-    for cv in cvs:
-        half_wave = cv.half_wave_potential(half_wave_options)
+    for cv_index, cv in enumerate(cvs):
+        cv_half_wave_options = _apply_resolved_potential_options(
+            half_wave_options.copy(),
+            potential_series,
+            cv_index,
+        )
+        half_wave = cv.half_wave_potential(cv_half_wave_options)
         scan_rates.append(float(cv.scan_rate))
         deltas.append(half_wave["ΔE"])
         ep1_values.append(half_wave["peak 1"]["Ep"])
@@ -1394,10 +1671,7 @@ def _trumpet_analysis_legacy_return(cvs, options={}):
             plt.scatter(log_scan_rates, ep2_values, label=f"Seg {paired_segment} Ep")
         )
 
-    fit_indices = _trumpet_fit_indices_with_inclusive_stop(
-        len(log_scan_rates),
-        options.get("fit indices"),
-    )
+    fit_indices = options.get("fit indices")
     fit_x, fit_y1 = _select_fit_indices(log_scan_rates, ep1_values, fit_indices)
     _, fit_y2 = _select_fit_indices(log_scan_rates, ep2_values, fit_indices)
 
@@ -1484,10 +1758,11 @@ def _trumpet_analysis_legacy_return(cvs, options={}):
 
     data.attrs["fit model results"] = fit_model_results
     data.attrs["fit table"] = trumpet_results
+    _attach_segment_selection_to_table(data, segment_selection)
     return data, fits, ks
 
 
-def trumpet_analysis(cvs, options={}):
+def trumpet_analysis(cvs, options=None):
     """Run trumpet analysis from paired anodic and cathodic peak potentials.
     
     Parameters
@@ -1506,9 +1781,10 @@ def trumpet_analysis(cvs, options={}):
     --------
     >>> result = e.trumpet_analysis(cvs, {"segments": [1, 2]})
     """
-    return _scatter_result_from_legacy(
-        _trumpet_analysis_legacy_return(cvs, options),
-        summary={"analysis": "trumpet"},
+    payload = _trumpet_analysis_payload(cvs, options)
+    return _scatter_result_from_payload(
+        payload,
+        summary=_summary_with_segment_selection({"analysis": "trumpet"}, payload),
     )
 
 _NICHOLSON_AGARWAL_DELTA_EP_MV = np.arange(61, 215, dtype=float)
@@ -1618,7 +1894,7 @@ def _resolve_nicholson_scan_rates(cvs, options):
     rates = [float(rate) if rate is not None else None for rate in rates]
     for rate in rates:
         if rate is None or not np.isfinite(rate) or rate <= 0:
-            raise ValueError("Each CV must have a positive scan_rate, or provide 'scan rates'.")
+            raise ValueError("Each CV must have a positive scan_rate, or provide 'scan rate(s)'.")
     return rates
 
 
@@ -1974,7 +2250,7 @@ def _print_nicholson_summary(data, summary, options):
             print(f"  {row['name']}: {row['exclusion reason']}")
 
 
-def nicholson_analysis(cvs, options={}):
+def nicholson_analysis(cvs, options=None):
     """Estimate heterogeneous electron-transfer kinetics using Nicholson analysis.
     
     Parameters
@@ -2013,6 +2289,22 @@ def nicholson_analysis(cvs, options={}):
     fit_model = _normalize_nicholson_fit_model(options)
     through_origin = fit_model == "origin"
     scan_rates = _resolve_nicholson_scan_rates(cv_list, options)
+    base_segment, paired_segment, segment_selection = _resolve_analysis_segment_pair(
+        cv_list,
+        raw_options,
+        options,
+        analysis_name="nicholson_analysis",
+    )
+    options["segment"] = base_segment
+    options["segments"] = [base_segment, paired_segment]
+    potential_series = _resolve_complex_potential_series_map(
+        raw_options,
+        options,
+        n_cvs=len(cv_list),
+        analysis_name="nicholson_analysis",
+        option_names=["guess potential", "exact potential"],
+        paired=True,
+    )
 
     psi_source_name = str(options.get("psi source", "agarwal table")).strip().lower()
     if psi_source_name in {"lavagnini", "empirical", "empirical equation"}:
@@ -2047,13 +2339,17 @@ def nicholson_analysis(cvs, options={}):
             diagnostic_ax = plt.gca()
 
     rows = []
-    for cv_obj, scan_rate in zip(cv_list, scan_rates):
+    diagnostic_axis_options = _common_cv_plot_axis_options(cv_list, options)
+    for cv_index, (cv_obj, scan_rate) in enumerate(zip(cv_list, scan_rates)):
         peak_options = dict(options)
+        peak_options.update(diagnostic_axis_options)
         peak_options["plot"] = diagnostic_ax is not None
         peak_options["print"] = bool(options.get("print all", False))
         peak_options["internal call"] = True
         peak_options["new plot"] = False
         peak_options["plot cv"] = False
+        peak_options["segments"] = [base_segment, paired_segment]
+        _apply_resolved_potential_options(peak_options, potential_series, cv_index)
         if diagnostic_ax is not None:
             plt.sca(diagnostic_ax)
         half_wave = cv_obj.half_wave_potential(peak_options)
@@ -2144,6 +2440,8 @@ def nicholson_analysis(cvs, options={}):
     equation, x_definition = _nicholson_equation_summary(through_origin=through_origin)
     summary["equation"] = equation
     summary["x definition"] = x_definition
+    if segment_selection:
+        summary["segment selection"] = segment_selection
 
     if options.get("plot", True) or options.get("plot all", False):
         plot_options = dict(options)
@@ -2152,17 +2450,32 @@ def nicholson_analysis(cvs, options={}):
     if options.get("print", True):
         _print_nicholson_summary(data, summary, options)
 
-    return {"data": data, "summary": summary}
+    return AnalysisResult(
+        {"data": data, "summary": summary},
+        table=data,
+        summary=summary,
+        fits=fit_result,
+        fit_table=pd.DataFrame([summary]),
+        axes=plt.gca() if plt.get_fignums() else None,
+        analysis="nicholson",
+    )
 
 
-def _sevcik_legacy_return(cvs, options={}):
+def _sevcik_analysis_payload(cvs, options=None):
     raw_options = options
     typed_options = SevcikAnalysisOptions.from_options(options)
     options = typed_options.to_legacy_dict()
     do_plot = options.get("plot", True)
     do_print = options.get("print", True)
 
-    segments = _normalize_segment_option(options, default=[1, 2])
+    segments, segment_selection = _resolve_auto_single_analysis_segment(
+        cvs,
+        raw_options,
+        options,
+        method_name="peak_potential",
+        analysis_name="sevcik_analysis",
+        default=1,
+    )
 
     num_electrons = options.get("num electrons", 1)
     scan_dependence = options.get("scan dependence", 0.5)
@@ -2205,6 +2518,19 @@ def _sevcik_legacy_return(cvs, options={}):
     internal_options["new plot"] = False
     internal_options["plot"] = options.get("plot all", False)
     internal_options["print"] = options.get("print all", False)
+    internal_options.update(_common_cv_plot_axis_options(cvs, options))
+    internal_options.pop("segments", None)
+    internal_options.pop("plot segment", None)
+    internal_options.pop("plot segments", None)
+    potential_series = _resolve_complex_potential_series_map(
+        raw_options,
+        options,
+        n_cvs=len(cvs),
+        analysis_name="sevcik_analysis",
+        option_names=["guess potential", "exact potential", "tangent potential"],
+    )
+    for key in potential_series:
+        internal_options.pop(key, None)
 
     if options["plot all"]:
         multiplot(cvs, _multiplot_options_from_mapping(options))
@@ -2212,12 +2538,17 @@ def _sevcik_legacy_return(cvs, options={}):
     for seg in segments:
         internal_options["segment"] = seg
         segment_peaks = []
-        for cv in cvs:
+        for cv_index, cv in enumerate(cvs):
+            cv_peak_options = _apply_resolved_potential_options(
+                internal_options.copy(),
+                potential_series,
+                cv_index,
+            )
             y_name = cv.y(options).name
             y_unit = cv.units.get(y_name, '')
             if options.get('print all'):
                 print(cv.name)
-            peak_current = cv.peak_current(internal_options)["ip"]
+            peak_current = cv.peak_current(cv_peak_options)["ip"]
             scaled_peak_current, _ = scale_value(peak_current, y_unit, selected_unit=peak_unit)
             segment_peaks.append(scaled_peak_current)
         peaks.append(segment_peaks)
@@ -2317,10 +2648,11 @@ def _sevcik_legacy_return(cvs, options={}):
 
     if isinstance(data, pd.DataFrame):
         data.attrs["fit table"] = sevcik_fit_table
+        _attach_segment_selection_to_table(data, segment_selection)
     return diffusion_coefficients, data, fits
 
 
-def sevcik_analysis(cvs, options={}):
+def sevcik_analysis(cvs, options=None):
     """Run Sevcik analysis on peak-current data across scan rates.
     
     Parameters
@@ -2339,34 +2671,11 @@ def sevcik_analysis(cvs, options={}):
     --------
     >>> result = e.sevcik_analysis(cvs, {"guess potential": -1.5})
     """
-    return _scatter_result_from_legacy(
-        _sevcik_legacy_return(cvs, options),
-        summary={"analysis": "Sevcik"},
+    payload = _sevcik_analysis_payload(cvs, options)
+    return _scatter_result_from_payload(
+        payload,
+        summary=_summary_with_segment_selection({"analysis": "Sevcik"}, payload),
     )
-
-
-def _trumpet_fit_indices_with_inclusive_stop(length, fit_indices):
-    if fit_indices is None:
-        return None
-    fit_indices_array = np.asarray(fit_indices, dtype=object)
-    if fit_indices_array.ndim == 1 and len(fit_indices_array) == 2:
-        start = int(fit_indices_array[0])
-        stop = int(fit_indices_array[1])
-        if stop < 0:
-            stop = length + stop
-        stop = min(stop + 1, length)
-        return [start, stop]
-    if fit_indices_array.ndim == 2 and fit_indices_array.shape[1] == 2:
-        windows = []
-        for start, stop in fit_indices_array:
-            start = int(start)
-            stop = int(stop)
-            if stop < 0:
-                stop = length + stop
-            stop = min(stop + 1, length)
-            windows.append([start, stop])
-        return windows
-    return fit_indices
 
 
 def _format_trumpet_equation():
@@ -2422,7 +2731,7 @@ def _trumpet_parameter_table(base_segment, paired_segment, temperature, diffusio
             }
         )
     if fit_indices is not None:
-        rows.append({"Parameter": "Fit Indices", "Value": f"{fit_indices} (inclusive stop)"})
+        rows.append({"Parameter": "Fit Indices", "Value": f"{fit_indices} (Python-style exclusive stop)"})
     return pd.DataFrame(rows)
 
 
@@ -2548,6 +2857,458 @@ def _normalize_segment_option(options, default=None):
         return list(segments)
 
     raise TypeError("'segment' must be an int and 'segments' must be a list/tuple of ints.")
+
+
+def _option_key_text(key):
+    return str(key).strip().lower().replace("_", " ").replace("-", " ")
+
+
+def _raw_options_has_segment_selection(raw_options):
+    if raw_options is None:
+        return False
+    if isinstance(raw_options, dict):
+        normalized = {
+            _option_key_text(key): value
+            for key, value in raw_options.items()
+        }
+        return normalized.get("segment") is not None or normalized.get("segments") is not None
+    return (
+        getattr(raw_options, "segment", None) is not None
+        or getattr(raw_options, "segments", None) is not None
+    )
+
+
+def _raw_options_segments(raw_options):
+    if raw_options is None:
+        return None
+    if isinstance(raw_options, dict):
+        normalized = {
+            _option_key_text(key): value
+            for key, value in raw_options.items()
+        }
+        if normalized.get("segments") is not None:
+            return normalized["segments"]
+        return normalized.get("segment")
+    if getattr(raw_options, "segments", None) is not None:
+        return getattr(raw_options, "segments")
+    return getattr(raw_options, "segment", None)
+
+
+def _segment_anchor_from_options(options):
+    anchor = options.get("exact potential", None)
+    if anchor is None:
+        anchor = options.get("guess potential", None)
+    if anchor is None:
+        anchor = options.get("peak potential", None)
+    if isinstance(anchor, (list, tuple, np.ndarray)):
+        if len(anchor) == 0:
+            return None
+        anchor = anchor[0]
+    try:
+        return float(anchor)
+    except (TypeError, ValueError):
+        return None
+
+
+def _shared_segment_anchor_options(options, n_cvs, *, paired=False):
+    """
+    Return an options view suitable for selecting one shared analysis segment.
+
+    Per-CV potential lists should guide each downstream CV extraction, not be
+    mistaken for a single shared segment-selection anchor.
+    """
+    segment_options = dict(options)
+    for key in ("exact potential", "guess potential", "peak potential"):
+        value = segment_options.get(key)
+        if not _is_option_sequence(value):
+            continue
+
+        values = _as_option_list(value)
+        if len(values) == 0:
+            segment_options[key] = None
+        elif len(values) == 1 and not _is_option_sequence(values[0]):
+            segment_options[key] = values[0]
+        elif (
+            paired
+            and key == "guess potential"
+            and len(values) == 1
+            and _is_pair_sequence(values[0])
+        ):
+            segment_options[key] = _as_option_list(values[0])[0]
+        elif (
+            paired
+            and key == "guess potential"
+            and len(values) == 2
+            and int(n_cvs) != 2
+            and not any(_is_option_sequence(item) for item in values)
+        ):
+            segment_options[key] = values[0]
+        else:
+            segment_options[key] = None
+    return segment_options
+
+
+def _cv_segment_numbers(cv_obj):
+    total = getattr(cv_obj, "segments", None)
+    try:
+        total = int(total)
+    except (TypeError, ValueError):
+        total = None
+    if total is None or total < 1:
+        try:
+            total = int(count_segments(cv_obj.x()))
+        except Exception:
+            total = 1
+    return list(range(1, max(1, total) + 1))
+
+
+def _analysis_segment_contains_anchor(cv_obj, segment, anchor):
+    if anchor is None:
+        return True
+    try:
+        x, _ = cv_obj.analysis_segment_data({"segment": int(segment)})
+        x = np.asarray(x, dtype=float)
+    except Exception:
+        return False
+    if len(x) == 0:
+        return False
+    lo = float(np.nanmin(x))
+    hi = float(np.nanmax(x))
+    target = float(anchor)
+    return min(lo, hi) <= target <= max(lo, hi)
+
+
+def _segment_global_index(cv_obj, segment, local_index):
+    start = 0
+    for previous in range(1, int(segment)):
+        try:
+            x_prev, _ = cv_obj.analysis_segment_data({"segment": previous})
+            start += len(x_prev)
+        except Exception:
+            pass
+    return start + int(local_index)
+
+
+def _call_cv_segment_analysis(cv_obj, method_name, segment, options, *, guess=None):
+    if method_name == "peak_potential":
+        probe_options = _analysis_options_for(PeakPotentialOptions, options)
+    elif method_name == "peak_current":
+        probe_options = _analysis_options_for(PeakCurrentOptions, options)
+    else:
+        probe_options = dict(options)
+    probe_options["plot"] = False
+    probe_options["print"] = False
+    probe_options["plot all"] = False
+    probe_options["print all"] = False
+    probe_options["internal call"] = True
+    probe_options["new plot"] = False
+    probe_options["plot cv"] = False
+    probe_options["segment"] = int(segment)
+    probe_options.pop("segments", None)
+    probe_options.pop("plot segment", None)
+    probe_options.pop("plot segments", None)
+    if guess is not None and probe_options.get("exact potential") is None:
+        probe_options["guess potential"] = guess
+    method = getattr(cv_obj, method_name)
+    return method(probe_options)
+
+
+def _resolve_auto_single_analysis_segment(
+    cvs,
+    raw_options,
+    options,
+    *,
+    method_name,
+    analysis_name,
+    default=1,
+    paired_potential_guess=False,
+):
+    if _raw_options_has_segment_selection(raw_options):
+        return _normalize_segment_option(options), None
+
+    segment_options = _shared_segment_anchor_options(
+        options,
+        len(cvs),
+        paired=paired_potential_guess,
+    )
+    anchor = _segment_anchor_from_options(segment_options)
+    if anchor is None:
+        selection = {
+            "mode": "default",
+            "analysis": analysis_name,
+            "selected segment": int(default),
+            "reason": "no anchor potential provided",
+        }
+        return [int(default)], selection
+
+    support = {}
+    details = []
+    exact_anchor = segment_options.get("exact potential") is not None
+    for cv_obj in cvs:
+        candidates = [
+            segment
+            for segment in _cv_segment_numbers(cv_obj)
+            if _analysis_segment_contains_anchor(cv_obj, segment, anchor)
+        ]
+        if exact_anchor and candidates:
+            selected = int(default) if int(default) in candidates else int(candidates[0])
+            support[selected] = support.get(selected, 0) + 1
+            details.append({
+                "name": getattr(cv_obj, "name", f"CV {len(details) + 1}"),
+                "selected segment": selected,
+                "Ep": float(anchor),
+                "distance": 0.0,
+                "source": "exact potential containment",
+            })
+            continue
+        successes = []
+        failures = []
+        for segment in candidates:
+            try:
+                result = _call_cv_segment_analysis(cv_obj, method_name, segment, segment_options)
+                ep = result.get("Ep", anchor) if hasattr(result, "get") else anchor
+                distance = abs(float(ep) - float(anchor))
+                successes.append((segment, distance, ep))
+            except Exception as exc:
+                failures.append((segment, str(exc)))
+        if successes:
+            successes.sort(key=lambda item: (item[1], item[0]))
+            selected, distance, ep = successes[0]
+            support[selected] = support.get(selected, 0) + 1
+            details.append({
+                "name": getattr(cv_obj, "name", f"CV {len(details) + 1}"),
+                "selected segment": int(selected),
+                "Ep": float(ep),
+                "distance": float(distance),
+            })
+        elif len(candidates) == 1:
+            selected = int(candidates[0])
+            support[selected] = support.get(selected, 0) + 1
+            details.append({
+                "name": getattr(cv_obj, "name", f"CV {len(details) + 1}"),
+                "selected segment": selected,
+                "Ep": float(anchor),
+                "distance": 0.0,
+                "source": "single containing segment fallback",
+                "failures": failures,
+            })
+        else:
+            details.append({
+                "name": getattr(cv_obj, "name", f"CV {len(details) + 1}"),
+                "selected segment": None,
+                "failures": failures,
+            })
+
+    if not support:
+        raise ValueError(
+            f"{analysis_name} could not auto-select a segment near {anchor:g} V. "
+            "Pass 'segment' explicitly."
+        )
+
+    max_support = max(support.values())
+    tied = sorted(segment for segment, count in support.items() if count == max_support)
+    if len(tied) > 1:
+        support_text = ", ".join(f"{segment}: {support[segment]}" for segment in tied)
+        raise ValueError(
+            f"{analysis_name} could not choose one segment near {anchor:g} V "
+            f"because support was tied ({support_text}). Pass 'segment' explicitly."
+        )
+
+    selected = tied[0]
+    selection = {
+        "mode": "auto",
+        "analysis": analysis_name,
+        "selected segment": int(selected),
+        "anchor potential": float(anchor),
+        "method": method_name,
+        "support": {int(k): int(v) for k, v in sorted(support.items())},
+        "num cvs": int(len(cvs)),
+        "details": details,
+    }
+    return [int(selected)], selection
+
+
+def _resolve_closest_adjacent_segment_pair(cvs, base_segment, options):
+    base_segment = int(base_segment)
+    support = {}
+    distances = {}
+    details = []
+    anchor = _segment_anchor_from_options(options)
+
+    for cv_obj in cvs:
+        candidate_segments = [
+            segment
+            for segment in (base_segment - 1, base_segment + 1)
+            if segment in _cv_segment_numbers(cv_obj)
+        ]
+        if not candidate_segments:
+            continue
+        try:
+            base_result = _call_cv_segment_analysis(
+                cv_obj,
+                "peak_potential",
+                base_segment,
+                options,
+                guess=anchor,
+            )
+            base_ep = float(base_result["Ep"])
+            base_index = _segment_global_index(cv_obj, base_segment, base_result["index"])
+        except Exception:
+            continue
+
+        candidate_results = []
+        for candidate in candidate_segments:
+            try:
+                result = _call_cv_segment_analysis(
+                    cv_obj,
+                    "peak_potential",
+                    candidate,
+                    options,
+                    guess=base_ep,
+                )
+                global_index = _segment_global_index(cv_obj, candidate, result["index"])
+                index_distance = abs(global_index - base_index)
+                candidate_results.append((candidate, index_distance, float(result["Ep"])))
+            except Exception:
+                continue
+        if not candidate_results:
+            continue
+        candidate_results.sort(
+            key=lambda item: (
+                item[1],
+                0 if item[0] == base_segment + 1 else 1,
+                item[0],
+            )
+        )
+        selected, distance, ep = candidate_results[0]
+        support[selected] = support.get(selected, 0) + 1
+        distances.setdefault(selected, []).append(float(distance))
+        details.append({
+            "name": getattr(cv_obj, "name", f"CV {len(details) + 1}"),
+            "base segment": base_segment,
+            "paired segment": int(selected),
+            "index distance": float(distance),
+            "paired Ep": float(ep),
+        })
+
+    if support:
+        max_support = max(support.values())
+        tied = [segment for segment, count in support.items() if count == max_support]
+        if len(tied) > 1:
+            tied.sort(
+                key=lambda segment: (
+                    float(np.mean(distances.get(segment, [np.inf]))),
+                    0 if segment == base_segment + 1 else 1,
+                    segment,
+                )
+            )
+        selected = int(tied[0])
+    else:
+        available = set()
+        for cv_obj in cvs:
+            available.update(_cv_segment_numbers(cv_obj))
+        if base_segment + 1 in available:
+            selected = base_segment + 1
+        elif base_segment - 1 in available:
+            selected = base_segment - 1
+        else:
+            selected = base_segment + 1
+
+    selection = {
+        "paired segment": int(selected),
+        "paired support": {int(k): int(v) for k, v in sorted(support.items())},
+        "paired details": details,
+    }
+    return int(selected), selection
+
+
+def _resolve_analysis_segment_pair(cvs, raw_options, options, *, analysis_name):
+    segment_options = _shared_segment_anchor_options(options, len(cvs), paired=True)
+    requested = _raw_options_segments(raw_options)
+    if _raw_options_has_segment_selection(raw_options) and requested is not None:
+        if isinstance(requested, int):
+            base = int(requested)
+        elif isinstance(requested, (list, tuple, np.ndarray)):
+            values = list(requested)
+            if len(values) == 2:
+                return int(values[0]), int(values[1]), {
+                    "mode": "explicit",
+                    "analysis": analysis_name,
+                    "selected segment": int(values[0]),
+                    "paired segment": int(values[1]),
+                }
+            if len(values) == 1:
+                base = int(values[0])
+            else:
+                raise ValueError(
+                    f"'segments' for {analysis_name} must contain one base segment or a 2-segment pair."
+                )
+        else:
+            base = int(requested)
+        paired, paired_selection = _resolve_closest_adjacent_segment_pair(cvs, base, segment_options)
+        selection = {
+            "mode": "explicit",
+            "analysis": analysis_name,
+            "selected segment": int(base),
+            **paired_selection,
+        }
+        return int(base), int(paired), selection
+
+    segments, selection = _resolve_auto_single_analysis_segment(
+        cvs,
+        raw_options,
+        options,
+        method_name="peak_potential",
+        analysis_name=analysis_name,
+        default=1,
+        paired_potential_guess=True,
+    )
+    base = int(segments[0])
+    paired, paired_selection = _resolve_closest_adjacent_segment_pair(cvs, base, segment_options)
+    selection = dict(selection or {})
+    selection.update(paired_selection)
+    return int(base), int(paired), selection
+
+
+def _format_segment_selection(selection):
+    if not selection:
+        return None
+    base = selection.get("selected segment")
+    paired = selection.get("paired segment")
+    mode = selection.get("mode", "auto")
+    anchor = selection.get("anchor potential")
+    support = selection.get("support")
+    parts = [f"{mode}: segment {base}"]
+    if paired is not None:
+        parts.append(f"paired with segment {paired}")
+    if anchor is not None:
+        parts.append(f"anchor {anchor:g} V")
+    if support:
+        support_text = ", ".join(f"{k}={v}" for k, v in support.items())
+        parts.append(f"support {support_text}")
+    return "; ".join(parts)
+
+
+def _attach_segment_selection_to_table(data, selection):
+    if isinstance(data, pd.DataFrame) and selection:
+        data.attrs["segment selection"] = selection
+
+
+def _summary_with_segment_selection(summary, payload):
+    merged = dict(summary or {})
+    table = None
+    if isinstance(payload, tuple):
+        if len(payload) == 3 and isinstance(payload[1], pd.DataFrame):
+            table = payload[1]
+        elif len(payload) > 0 and isinstance(payload[0], pd.DataFrame):
+            table = payload[0]
+    elif isinstance(payload, pd.DataFrame):
+        table = payload
+    if table is not None:
+        selection = table.attrs.get("segment selection")
+        if selection:
+            merged["segment selection"] = selection
+    return merged
 
 
 def _fit_indices_for_segment(fit_indices, segment, npts):
@@ -2829,6 +3590,43 @@ def _plot_all_multiplot_options(options, raw_options):
     if not _option_was_provided(raw_options, "legend"):
         routed["legend"] = True
     return routed
+
+
+def _common_cv_plot_axis_options(cvs, options):
+    """Resolve the axis choices that shared CV diagnostic overlays must use."""
+    if not cvs:
+        return {}
+
+    common = {}
+    if options.get("x axis") is not None:
+        common["x axis"] = options.get("x axis")
+    if options.get("y axis") is not None:
+        common["y axis"] = options.get("y axis")
+
+    try:
+        common["x unit"] = _axis_common_unit(
+            cvs,
+            lambda cv_obj: (cv_obj.x(options).values, cv_obj.x(options).name),
+            options.get("x unit", "auto"),
+        )
+    except Exception:
+        if options.get("x unit") not in (None, "auto"):
+            common["x unit"] = options.get("x unit")
+
+    if _is_ip0_y_axis(options.get("y axis", "")):
+        common["y unit"] = None
+    else:
+        try:
+            common["y unit"] = _axis_common_unit(
+                cvs,
+                lambda cv_obj: (cv_obj.y(options), cv_obj.y(options).name),
+                options.get("y unit", "auto"),
+            )
+        except Exception:
+            if options.get("y unit") not in (None, "auto"):
+                common["y unit"] = options.get("y unit")
+
+    return common
 
 
 def _axis_label_unit_parts(label, default_unit=""):
@@ -3440,7 +4238,7 @@ def _inverse_y_mode_values(adjusted, y_mode, y0):
     raise ValueError(f"Unknown y mode: {mode}")
 
 
-def _fit_peak_potential_legacy_return(cvs, options={}):
+def _fit_peak_potential_payload(cvs, options=None):
     """
     Fit peak potential vs log(scan rate) or log(concentration).
 
@@ -3477,7 +4275,14 @@ def _fit_peak_potential_legacy_return(cvs, options={}):
             print("Must provide a non-empty list of CVs.")
         return None, None
 
-    segments = _normalize_segment_option(options)
+    segments, segment_selection = _resolve_auto_single_analysis_segment(
+        cvs,
+        raw_options,
+        options,
+        method_name="peak_potential",
+        analysis_name="fit_peak_potential",
+        default=1,
+    )
 
     x_raw, x_label, x_kind, extra = _resolve_varying_x(cvs, options, do_print=do_print)
     if x_raw is None:
@@ -3521,11 +4326,21 @@ def _fit_peak_potential_legacy_return(cvs, options={}):
     internal_options["new plot"] = False
     internal_options["plot"] = options.get("plot all", False)
     internal_options["print"] = options.get("print all", False)
+    internal_options.update(_common_cv_plot_axis_options(cvs, options))
 
     # Important: do not let peak_potential see a multi-segment request
     internal_options.pop("segments", None)
     internal_options.pop("plot segment", None)
     internal_options.pop("plot segments", None)
+    potential_series = _resolve_complex_potential_series_map(
+        raw_options,
+        options,
+        n_cvs=len(cvs),
+        analysis_name="fit_peak_potential",
+        option_names=["guess potential", "exact potential"],
+    )
+    for key in potential_series:
+        internal_options.pop(key, None)
 
     # If plotting all intermediate work, first show the CVs together
     if options.get("plot all", False):
@@ -3547,7 +4362,8 @@ def _fit_peak_potential_legacy_return(cvs, options={}):
         x_name = x_arr.name
         x_unit = cv_obj.units.get(x_name, "V")
 
-        running_guess = options.get("guess potential", None)
+        running_guess = potential_series["guess potential"][i]
+        exact_potential = potential_series["exact potential"][i]
         ep_by_segment = {}
 
         # Collect Ep for each requested segment
@@ -3559,7 +4375,10 @@ def _fit_peak_potential_legacy_return(cvs, options={}):
             else:
                 seg_options.pop("segment", None)
 
-            if seg_options.get("exact potential") is None and running_guess is not None:
+            if exact_potential is not None:
+                seg_options["exact potential"] = exact_potential
+                seg_options.pop("guess potential", None)
+            elif running_guess is not None:
                 seg_options["guess potential"] = running_guess
             else:
                 seg_options.pop("guess potential", None)
@@ -3784,6 +4603,7 @@ def _fit_peak_potential_legacy_return(cvs, options={}):
 
     _attach_scatter_fit_table(data, fit_rows)
     data.attrs["fit model results"] = fit_model_results
+    _attach_segment_selection_to_table(data, segment_selection)
     if do_print:
         _print_fit_model_results(fit_model_results, options)
 
@@ -3792,7 +4612,7 @@ def _fit_peak_potential_legacy_return(cvs, options={}):
     return data, fits
 
 
-def fit_peak_potential(cvs, options={}):
+def fit_peak_potential(cvs, options=None):
     """Fit peak potential values across a CV series.
     
     Parameters
@@ -3811,20 +4631,20 @@ def fit_peak_potential(cvs, options={}):
     --------
     >>> result = e.fit_peak_potential(cvs, {"guess potential": -1.5, "segments": [1, 2]})
     """
-    return _scatter_result_from_legacy(
-        _fit_peak_potential_legacy_return(cvs, options),
-        summary={"analysis": "peak potential fit"},
+    payload = _fit_peak_potential_payload(cvs, options)
+    return _scatter_result_from_payload(
+        payload,
+        summary=_summary_with_segment_selection({"analysis": "peak potential fit"}, payload),
     )
 
 
-def _fit_peak_current_legacy_return(cvs, options={}):
+def _fit_peak_current_payload(cvs, options=None):
     """
-    Fit peak current (ip) vs scan rate or concentration, using x^x_power scaling.
+    Fit peak current (ip) vs scan rate or concentration.
 
     Behavior
     --------
     - Uses _resolve_varying_x(...) to determine whether scan rate or concentration varies.
-    - Uses x**x_power for the x-axis transform.
     - Supports either 'segment' or 'segments'.
     - If multiple segments are requested, analyzes one segment at a time and returns
       one fit per segment.
@@ -3835,7 +4655,7 @@ def _fit_peak_current_legacy_return(cvs, options={}):
     do_plot = options.get("plot", True)
     do_print = options.get("print", True)
     do_fit = options.get("fit", True)
-    x_power = options.get("x power", 0.5)
+    x_transform = options.get("x transform", "^0.5")
     fit_color_index = 0
 
     if not do_plot:
@@ -3847,7 +4667,7 @@ def _fit_peak_current_legacy_return(cvs, options={}):
 
     x_raw = np.asarray(x_raw, dtype=float)
 
-    default_x_transform = "identity" if x_power is None else x_power
+    default_x_transform = "identity" if x_transform is None else x_transform
     x_transform, y_transform, mode_label = _resolve_xy_transforms(
         options,
         default_x=default_x_transform,
@@ -3861,7 +4681,14 @@ def _fit_peak_current_legacy_return(cvs, options={}):
     data["x unit"] = extra.get("unit", "")
     data["x kind"] = x_kind
 
-    segments = _normalize_segment_option(options)
+    segments, segment_selection = _resolve_auto_single_analysis_segment(
+        cvs,
+        raw_options,
+        options,
+        method_name="peak_potential",
+        analysis_name="fit_peak_current",
+        default=1,
+    )
 
     # Determine a common current unit, like Sevcik / fit_peak_current.
     peak_unit = _axis_common_unit(
@@ -3879,11 +4706,21 @@ def _fit_peak_current_legacy_return(cvs, options={}):
     internal_options["new plot"] = False
     internal_options["plot"] = options.get("plot all", False)
     internal_options["print"] = options.get("print all", False)
+    internal_options.update(_common_cv_plot_axis_options(cvs, options))
 
     # Important: only pass one segment at a time downstream
     internal_options.pop("segments", None)
     internal_options.pop("plot segment", None)
     internal_options.pop("plot segments", None)
+    potential_series = _resolve_complex_potential_series_map(
+        raw_options,
+        options,
+        n_cvs=len(cvs),
+        analysis_name="fit_peak_current",
+        option_names=["guess potential", "exact potential", "tangent potential"],
+    )
+    for key in potential_series:
+        internal_options.pop(key, None)
 
     fits = {}
     fit_rows = []
@@ -3904,12 +4741,17 @@ def _fit_peak_current_legacy_return(cvs, options={}):
             fit_label = "Fit"
 
         ips = []
-        for cv in cvs:
+        for cv_index, cv in enumerate(cvs):
+            cv_peak_options = _apply_resolved_potential_options(
+                seg_options.copy(),
+                potential_series,
+                cv_index,
+            )
             y_arr = cv.y(options)
             y_name = y_arr.name
             y_unit = cv.units.get(y_name, "")
 
-            peak_current = cv.peak_current(seg_options)["ip"]
+            peak_current = cv.peak_current(cv_peak_options)["ip"]
             scaled_peak_current, _ = scale_value(
                 peak_current,
                 y_unit,
@@ -4045,6 +4887,7 @@ def _fit_peak_current_legacy_return(cvs, options={}):
 
     _attach_scatter_fit_table(data, fit_rows)
     data.attrs["fit model results"] = fit_model_results
+    _attach_segment_selection_to_table(data, segment_selection)
     if do_print:
         _print_fit_model_results(fit_model_results, options)
 
@@ -4053,7 +4896,7 @@ def _fit_peak_current_legacy_return(cvs, options={}):
     return data, fits
 
 
-def fit_peak_current(cvs, options={}):
+def fit_peak_current(cvs, options=None):
     """Fit peak current values across a CV series.
     
     Parameters
@@ -4072,9 +4915,10 @@ def fit_peak_current(cvs, options={}):
     --------
     >>> result = e.fit_peak_current(cvs, {"guess potential": -1.5, "segment": 1})
     """
-    return _scatter_result_from_legacy(
-        _fit_peak_current_legacy_return(cvs, options),
-        summary={"analysis": "peak current fit"},
+    payload = _fit_peak_current_payload(cvs, options)
+    return _scatter_result_from_payload(
+        payload,
+        summary=_summary_with_segment_selection({"analysis": "peak current fit"}, payload),
     )
 
 import warnings
@@ -4206,6 +5050,64 @@ def _display_fowa_summary_table(summary, options=None):
     ]
     styled = (
         display_table.style
+        .format(escape=None)
+        .set_properties(**{
+            "text-align": "left",
+            "white-space": "pre-wrap",
+            "vertical-align": "top",
+        })
+        .set_table_styles([
+            {"selector": "th", "props": [("text-align", "left")]},
+            {"selector": "td", "props": [("text-align", "left")]},
+        ])
+    )
+    display(styled)
+    return table
+
+
+def _format_fowa_display_value(column, value, options=None):
+    options = {} if options is None else options
+    if value is None:
+        return ""
+    try:
+        if pd.isna(value):
+            return ""
+    except (TypeError, ValueError):
+        pass
+
+    sig_figs = options.get("sig figs", 4)
+    column_key = str(column).strip().lower()
+    if isinstance(value, (int, float, np.integer, np.floating)):
+        if column_key == "kobs":
+            return _format_sevcik_value(value, sig_figs=sig_figs, scientific=True)
+        return _format_fit_model_display_value(value, sig_figs=sig_figs)
+    return value
+
+
+def _fowa_results_display_table(table, options=None):
+    options = {} if options is None else options
+    display_table = table.copy()
+    for column in display_table.columns:
+        display_table[column] = [
+            _format_fowa_display_value(column, value, options)
+            for value in display_table[column]
+        ]
+    return display_table
+
+
+def _display_fowa_results_table(table, options=None):
+    options = {} if options is None else options
+    if table.empty:
+        return table
+
+    display_table = _fowa_results_display_table(table, options)
+    if not options.get("pretty print", True) or display is None:
+        print(display_table.to_string(index=False, justify="left"))
+        return table
+
+    styled = (
+        display_table.rename(columns=_pretty_table_header_html_label)
+        .style
         .format(escape=None)
         .set_properties(**{
             "text-align": "left",
@@ -4832,6 +5734,10 @@ def _extract_current_with_peak_current(cv_obj, options, role, fallback_potential
         "print all": bool(options.get("print all", False)),
         "internal call": True,
         "new plot": False,
+        "x axis": options.get("x axis"),
+        "y axis": options.get("y axis"),
+        "x unit": options.get("x unit"),
+        "y unit": options.get("y unit"),
         "segment": options.get("segment"),
         "segments": options.get("segments"),
         "noise window": options.get("noise window", "auto"),
@@ -4868,10 +5774,15 @@ def _extract_current_with_peak_current(cv_obj, options, role, fallback_potential
         ) from exc
 
 
-def _extract_catalytic_currents(cat_cvs, options):
+def _extract_catalytic_currents(cat_cvs, options, potential_series=None):
     rows = []
-    for cv_obj in cat_cvs:
-        extracted = _extract_current_with_peak_current(cv_obj, options, role="catalytic")
+    for cv_index, cv_obj in enumerate(cat_cvs):
+        cv_options = (
+            _apply_resolved_potential_options(dict(options), potential_series, cv_index)
+            if potential_series is not None
+            else options
+        )
+        extracted = _extract_current_with_peak_current(cv_obj, cv_options, role="catalytic")
         scan_rate = extracted["scan rate"]
         rows.append({
             "cv": extracted["cv"],
@@ -4886,17 +5797,26 @@ def _extract_catalytic_currents(cat_cvs, options):
     return pd.DataFrame(rows)
 
 
-def _extract_ip0_currents(ref_cvs, options):
+def _extract_ip0_currents(ref_cvs, options, potential_series=None):
     rows = []
     successes = []
-    for ref_cv in ref_cvs:
+    for cv_index, ref_cv in enumerate(ref_cvs):
+        cv_options = (
+            _apply_resolved_potential_options(dict(options), potential_series, cv_index)
+            if potential_series is not None
+            else options
+        )
+        if potential_series is not None:
+            nc_guess = cv_options.pop("non-catalytic guess potential", None)
+            if nc_guess is not None:
+                cv_options["guess potential"] = nc_guess
         scan_rate = float(getattr(ref_cv, "scan_rate", np.nan))
         fallback = None
         if successes and np.isfinite(scan_rate):
             fallback = min(successes, key=lambda item: abs(item["scan rate"] - scan_rate)).get("potential")
         extracted = _extract_current_with_peak_current(
             ref_cv,
-            options,
+            cv_options,
             role="non-catalytic",
             fallback_potential=fallback,
         )
@@ -5108,7 +6028,7 @@ def _plot_ip0_sqrt_fit(ip0_df, slope, options):
     plt.title("ip0 vs sqrt(scan rate)")
 
 
-def plateau_current(cvs, options={}):
+def plateau_current(cvs, options=None):
     """Analyze catalytic plateau current from one CV or a CV group.
     
     Parameters
@@ -5127,10 +6047,18 @@ def plateau_current(cvs, options={}):
     --------
     >>> result = e.plateau_current(cvs, {"non-catalytic cvs": blanks, "plot all": True})
     """
+    raw_options = options
     typed_options = PlateauCurrentOptions.from_options(options)
     options = typed_options.to_legacy_dict()
     manual_ilim = _resolve_manual_ilim(options)
     cat_cvs = _coerce_plateau_cv_list(cvs, allow_empty=manual_ilim is not None)
+    cat_potential_series = _resolve_complex_potential_series_map(
+        raw_options,
+        options,
+        n_cvs=len(cat_cvs),
+        analysis_name="plateau_current",
+        option_names=["guess potential", "exact potential", "tangent potential"],
+    ) if cat_cvs else None
 
     shared_ref = options.get("non-catalytic cv")
     ref_list = options.get("non-catalytic cvs")
@@ -5144,6 +6072,18 @@ def plateau_current(cvs, options={}):
         ref_cvs = [shared_ref]
     else:
         ref_cvs = []
+    ref_potential_series = _resolve_complex_potential_series_map(
+        raw_options,
+        options,
+        n_cvs=len(ref_cvs),
+        analysis_name="plateau_current",
+        option_names=[
+            "guess potential",
+            "exact potential",
+            "tangent potential",
+            "non-catalytic guess potential",
+        ],
+    ) if ref_cvs else None
 
     ip0 = options.get("ip0")
     if ip0 is None:
@@ -5158,16 +6098,22 @@ def plateau_current(cvs, options={}):
     ip0_source = "manual" if ip0 is not None else None
     ip0_fit_r2 = np.nan
     ip0_df = pd.DataFrame()
+    ref_extraction_options = options
 
     if ip0 is None and ip0_slope is None and ref_cvs:
         if options.get("plot all", False):
             try:
                 ref_plot_options = _multiplot_options_from_mapping(options)
+                ref_plot_options.update(_common_cv_plot_axis_options(ref_cvs, ref_plot_options))
+                ref_extraction_options = dict(options)
+                ref_extraction_options.update(
+                    _common_cv_plot_axis_options(ref_cvs, ref_plot_options)
+                )
                 ref_plot_options.update({"plot": True, "print": False, "legend": True})
                 multiplot(ref_cvs, ref_plot_options)
             except Exception:
                 pass
-        ip0_df = _extract_ip0_currents(ref_cvs, options)
+        ip0_df = _extract_ip0_currents(ref_cvs, ref_extraction_options, ref_potential_series)
         if len(ip0_df) > 1:
             x = ip0_df["sqrt scan rate"].astype(float).to_numpy()
             y = ip0_df["abs ip0"].astype(float).to_numpy()
@@ -5180,9 +6126,15 @@ def plateau_current(cvs, options={}):
             ip0_scan_rate = float(ip0_df["scan rate"].iloc[0])
             ip0_source = "non-catalytic cv"
 
+    cat_extraction_options = options
     if options.get("plot all", False) and cat_cvs:
         try:
             cat_plot_options = _multiplot_options_from_mapping(options)
+            cat_plot_options.update(_common_cv_plot_axis_options(cat_cvs, cat_plot_options))
+            cat_extraction_options = dict(options)
+            cat_extraction_options.update(
+                _common_cv_plot_axis_options(cat_cvs, cat_plot_options)
+            )
             cat_plot_options.update({"plot": True, "print": False, "legend": True})
             multiplot(cat_cvs, cat_plot_options)
         except Exception:
@@ -5190,7 +6142,7 @@ def plateau_current(cvs, options={}):
 
     ic_df = pd.DataFrame()
     if manual_ilim is None:
-        ic_df = _extract_catalytic_currents(cat_cvs, options)
+        ic_df = _extract_catalytic_currents(cat_cvs, cat_extraction_options, cat_potential_series)
         selection = _select_plateau_subset(ic_df, options)
         ilim = selection["ilim"]
         ilim_source = "peak_current"
@@ -5276,7 +6228,21 @@ def plateau_current(cvs, options={}):
     if not options.get("plot all", False) and (options.get("plot", True) and len(ip0_df) > 1):
         _plot_ip0_sqrt_fit(ip0_df, ip0_slope, options)
 
-    return display_df
+    return analysis_result_from_table(
+        display_df,
+        analysis="plateau_current",
+        summary={
+            "formula mode": mode,
+            "valid plateau": selection["valid plateau"],
+            "ilim source": ilim_source,
+            "ip0 source": ip0_source,
+        },
+        diagnostics={
+            "catalytic currents": ic_df,
+            "ip0 currents": ip0_df,
+            "plateau selection": selection,
+        },
+    )
 
 
 def _resolve_fowa_formula(cv_obj, slope, options):
@@ -5657,6 +6623,150 @@ def _analysis_options_for(option_cls, source):
         if norm in valid:
             routed[norm] = value
     return option_cls.from_options(routed).to_legacy_dict()
+
+
+_COMPLEX_POTENTIAL_PLURAL_KEYS = {
+    "guess potential": "guess potentials",
+    "exact potential": "exact potentials",
+    "tangent potential": "tangent potentials",
+    "peak potential": "peak potentials",
+    "non-catalytic guess potential": "non-catalytic guess potentials",
+    "redox potential": "redox potentials",
+}
+
+
+def _mapping_from_options(options):
+    if options is None:
+        return {}
+    if isinstance(options, dict):
+        return options
+    if hasattr(options, "to_legacy_dict"):
+        return options.to_legacy_dict()
+    return {}
+
+
+def _raw_option_value(raw_options, option_name):
+    option_key = normalize_key(option_name)
+    for key, value in _mapping_from_options(raw_options).items():
+        if normalize_key(key) == option_key:
+            return True, value, key
+    return False, None, None
+
+
+def _is_option_sequence(value):
+    return isinstance(value, (list, tuple, np.ndarray, pd.Series))
+
+
+def _as_option_list(value):
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, pd.Series):
+        return value.tolist()
+    return list(value)
+
+
+def _is_pair_sequence(value):
+    return _is_option_sequence(value) and len(_as_option_list(value)) == 2
+
+
+def _format_option_name_for_error(option_name):
+    return str(option_name).replace("_", " ")
+
+
+def _resolve_complex_potential_series(
+    raw_options,
+    options,
+    *,
+    n_cvs,
+    option_name,
+    analysis_name,
+    paired=False,
+    allow_none=True,
+):
+    """Resolve scalar/list potential options to one value per CV."""
+    canonical = _format_option_name_for_error(option_name)
+    plural = _COMPLEX_POTENTIAL_PLURAL_KEYS.get(canonical, f"{canonical}s")
+
+    has_singular, singular_value, singular_key = _raw_option_value(raw_options, canonical)
+    has_plural, plural_value, plural_key = _raw_option_value(raw_options, plural)
+
+    if has_singular and has_plural:
+        raise OptionError(
+            f"Use either '{singular_key}' or '{plural_key}' for {analysis_name}, not both."
+        )
+
+    if has_plural:
+        value = plural_value
+    elif has_singular:
+        value = singular_value
+    else:
+        value = options.get(canonical)
+
+    if value is None:
+        if allow_none:
+            return [None] * int(n_cvs)
+        raise ValueError(f"'{canonical}' cannot be None for {analysis_name}.")
+
+    if not _is_option_sequence(value):
+        return [value] * int(n_cvs)
+
+    values = _as_option_list(value)
+
+    if paired:
+        if (
+            len(values) == 1
+            and _is_pair_sequence(values[0])
+            and not any(_is_option_sequence(item) for item in _as_option_list(values[0]))
+        ):
+            return [_as_option_list(values[0]) for _ in range(int(n_cvs))]
+
+        if (
+            canonical == "guess potential"
+            and len(values) == 2
+            and int(n_cvs) != 2
+            and not any(_is_option_sequence(item) for item in values)
+        ):
+            return [list(values) for _ in range(int(n_cvs))]
+
+    if len(values) != int(n_cvs):
+        raise ValueError(
+            f"'{canonical}' for {analysis_name} expected 1 scalar or {n_cvs} CVs, "
+            f"but received {len(values)} entries."
+        )
+
+    return values
+
+
+def _resolve_complex_potential_series_map(
+    raw_options,
+    options,
+    *,
+    n_cvs,
+    analysis_name,
+    option_names,
+    paired=False,
+):
+    return {
+        option_name: _resolve_complex_potential_series(
+            raw_options,
+            options,
+            n_cvs=n_cvs,
+            option_name=option_name,
+            analysis_name=analysis_name,
+            paired=paired,
+        )
+        for option_name in option_names
+    }
+
+
+def _apply_resolved_potential_options(target_options, potential_series, cv_index):
+    for option_name, values in potential_series.items():
+        value = values[cv_index]
+        if value is None:
+            target_options.pop(option_name, None)
+        else:
+            target_options[option_name] = value
+    return target_options
 
 
 def _resolve_fowa_redox_potential(cat_cv, ref_cv, options, internal_options, manual_redox=None):
@@ -6045,7 +7155,7 @@ def _format_fowa_tangent_background_error(cv_name, options):
     )
 
 
-def fowa(cvs, options={}):
+def fowa(cvs, options=None):
     """Run foot-of-the-wave analysis on one CV or a list of CVs.
     
     Parameters
@@ -6064,6 +7174,7 @@ def fowa(cvs, options={}):
     --------
     >>> df = e.fowa(cvs, {"redox mode": "half wave", "non-catalytic cv": blank_cv})
     """
+    raw_options = options
     typed_options = FOWAOptions.from_options(options)
     options = typed_options.to_legacy_dict()
 
@@ -6072,13 +7183,21 @@ def fowa(cvs, options={}):
     ref_cvs = _resolve_non_catalytic_cvs(cvs, options)
 
     manual_ip0_values = _resolve_manual_ip0_values(options, len(cvs))
-
-    manual_redox_values = _resolve_fowa_scalar_or_sequence(
-        options.get("redox potential"),
-        len(cvs),
-        "redox potential",
-        allow_none=True,
+    potential_series = _resolve_complex_potential_series_map(
+        raw_options,
+        options,
+        n_cvs=len(cvs),
+        analysis_name="fowa",
+        option_names=[
+            "guess potential",
+            "exact potential",
+            "tangent potential",
+            "peak potential",
+            "non-catalytic guess potential",
+            "redox potential",
+        ],
     )
+    manual_redox_values = potential_series["redox potential"]
 
     fit_ranges = _resolve_fowa_range_or_sequence(
         options.get("fit range"),
@@ -6113,20 +7232,19 @@ def fowa(cvs, options={}):
     ecat_shift_warning_threshold = options.get("ecat shift warning threshold", 0.05)
 
     # FOWA should analyze one segment at a time.
-    analysis_segments = options.get("segments", None)
-    analysis_segment = options.get("segment", None)
-
-    if analysis_segments is not None:
-        if isinstance(analysis_segments, int):
-            analysis_segments = [analysis_segments]
-        elif not isinstance(analysis_segments, (list, tuple, np.ndarray)):
-            raise TypeError("'segments' must be an int or a list/tuple of ints.")
-    else:
-        # default to segment 1 if nothing is provided
-        analysis_segments = [1 if analysis_segment is None else analysis_segment]
+    analysis_segments, segment_selection = _resolve_auto_single_analysis_segment(
+        cvs,
+        raw_options,
+        options,
+        method_name="peak_potential",
+        analysis_name="fowa",
+        default=1,
+    )
 
     # for now, FOWA analyzes one segment at a time; use the first requested segment
     fowa_segment = analysis_segments[0]
+    options["segment"] = fowa_segment
+    options["segments"] = None
 
     diagnostic_y_axis = str(options.get("diagnostic y axis", "i/ip0")).strip().lower()
     if diagnostic_y_axis not in {"i/ip0", "current"}:
@@ -6162,46 +7280,23 @@ def fowa(cvs, options={}):
     raw_plot_options["y axis"] = diagnostic_y_axis
 
     fowa_plot_labels = options.get("plot labels")
-    label_map = {}
-
-    # Reference CV labels
-    for ref_cv in ref_cvs:
-        if ref_cv is not None and id(ref_cv) not in label_map:
-            label_map[id(ref_cv)] = ref_cv.name
-
-    # Catalytic CV labels
     if fowa_plot_labels is not None:
         if len(fowa_plot_labels) != len(cvs):
-            raise ValueError("'plot labels' must match the number of catalytic CVs passed to FOWA.")
-        for cat_cv, lbl in zip(cvs, fowa_plot_labels):
-            label_map[id(cat_cv)] = lbl
-    else:
-        for cat_cv in cvs:
-            label_map[id(cat_cv)] = cat_cv.name
-
-    if fowa_plot_labels is not None:
-        ordered_plot_labels = [
-            label_map.get(id(obj), getattr(obj, "name", f"Trace {i + 1}"))
+            raise ValueError("'labels' must match the number of catalytic CVs passed to FOWA.")
+        explicit_diagnostic_labels = {
+            id(ref_cv): getattr(ref_cv, "name", f"Trace {i + 1}")
+            for i, ref_cv in enumerate(ref_cvs)
+            if ref_cv is not None
+        }
+        explicit_diagnostic_labels.update(
+            {id(cat_cv): lbl for cat_cv, lbl in zip(cvs, fowa_plot_labels)}
+        )
+        raw_plot_options["labels"] = [
+            explicit_diagnostic_labels.get(id(obj), getattr(obj, "name", f"Trace {i + 1}"))
             for i, obj in enumerate(all_cvs)
         ]
-        raw_plot_options["labels"] = ordered_plot_labels
 
-    # Separate label-resolution options from the actual multiplot call
-    mp_options = _multiplot_options_from_mapping(raw_plot_options)
-
-    resolved_labels, _title, _subtitle, _shared_compounds, _similarities = (
-        _resolve_multiplot_labels_title_subtitle(all_cvs, mp_options)
-    )
-
-    resolved_label_map = {
-        id(obj): lbl
-        for obj, lbl in zip(all_cvs, resolved_labels)
-    }
-    resolved_plot_labels = [
-        resolved_label_map.get(id(obj), getattr(obj, "name", f"Trace {i + 1}"))
-        for i, obj in enumerate(all_cvs)
-    ]
-    raw_plot_options["labels"] = resolved_plot_labels
+    raw_plot_options.update(_common_cv_plot_axis_options(all_cvs, raw_plot_options))
 
     transformed_label_options = raw_plot_options.copy()
     if fowa_plot_labels is not None:
@@ -6237,6 +7332,15 @@ def fowa(cvs, options={}):
         loop_options.pop("segments", None)
         loop_options["segment"] = fowa_segment
         loop_options["y axis"] = "Current"
+        _apply_resolved_potential_options(
+            loop_options,
+            {
+                key: values
+                for key, values in potential_series.items()
+                if key != "non-catalytic guess potential"
+            },
+            i,
+        )
 
         internal_options = loop_options.copy()
         internal_options["plot"] = False
@@ -6245,12 +7349,12 @@ def fowa(cvs, options={}):
         internal_options["internal call"] = True
         internal_options["new plot"] = False
 
-        nc_guess = options.get("non-catalytic guess potential")
+        nc_guess = potential_series["non-catalytic guess potential"][i]
         if nc_guess is None:
-            nc_guess = options.get("guess potential")
+            nc_guess = potential_series["guess potential"][i]
         if nc_guess is None:
-            nc_guess = options.get("redox potential")
-        if nc_guess is not None:
+            nc_guess = manual_redox_values[i]
+        if nc_guess is not None and internal_options.get("exact potential") is None:
             internal_options["guess potential"] = nc_guess
 
         fit_lo, fit_hi = fit_ranges[i]
@@ -6384,7 +7488,7 @@ def fowa(cvs, options={}):
             plt.sca(raw_ax)
 
             color = resolved_color_map.get(id(cat_cv), options.get("color", "black"))
-            x_scale, y_scale = cat_cv.xy_scale(options)
+            x_scale, y_scale = cat_cv.xy_scale(raw_plot_options)
             
             plt.plot(
                 x_wave * x_scale,
@@ -6405,6 +7509,7 @@ def fowa(cvs, options={}):
         redox_key = round(float(redox_potential), 6)
         if raw_ax is not None and diagnostic_y_axis == "current" and redox_key not in drawn_redox:
             plt.sca(raw_ax)
+            x_scale, _ = cat_cv.xy_scale(raw_plot_options)
             plt.axvline(
                 redox_potential * x_scale,
                 color=resolved_color_map.get(id(ref_cv), "0.4"),
@@ -6500,7 +7605,7 @@ def fowa(cvs, options={}):
 
             if raw_ax is not None and diagnostic_y_axis == "current" and options.get("plot all", False):
                 plt.sca(raw_ax)
-                x_scale, y_scale = cat_cv.xy_scale(options)
+                x_scale, y_scale = cat_cv.xy_scale(raw_plot_options)
                 color = resolved_color_map.get(id(cat_cv), options.get("color", "black"))
 
                 plt.plot(
@@ -6835,6 +7940,7 @@ def fowa(cvs, options={}):
         raw_ax.set_ylim(main_ylim)
 
     display_df = _fowa_summary_table(cvs, results, plot_data, ref_cvs, options)
+    _attach_segment_selection_to_table(display_df, segment_selection)
     shared_summary = display_df.attrs.get("shared_summary", {})
 
     if options.get("print", True):
@@ -6844,6 +7950,9 @@ def fowa(cvs, options={}):
 
         # Keep the manually-added structural info you liked
         combined_summary["Segment"] = fowa_segment
+        formatted_selection = _format_segment_selection(segment_selection)
+        if formatted_selection:
+            combined_summary["Segment Selection"] = formatted_selection
         combined_summary["Fit Range"] = f"[{fit_lo}, {fit_hi}]"
         combined_summary["Background Correction"] = background_mode if background_mode is not None else "none"
         combined_summary["Mechanism"] = options.get("mechanism", "EC'")
@@ -6852,8 +7961,19 @@ def fowa(cvs, options={}):
         if options.get("non-catalytic current") is not None:
             combined_summary["ip0 Source"] = f"manual ({options['non-catalytic current']:.6g})"
 
-        if options.get("redox potential") is not None:
-            combined_summary["Redox Source"] = f"manual ({float(options['redox potential']):.6g} V)"
+        if any(value is not None for value in manual_redox_values):
+            manual_redox_floats = [
+                float(value)
+                for value in manual_redox_values
+                if value is not None
+            ]
+            if (
+                manual_redox_floats
+                and len({round(value, 12) for value in manual_redox_floats}) == 1
+            ):
+                combined_summary["Redox Source"] = f"manual ({manual_redox_floats[0]:.6g} V)"
+            else:
+                combined_summary["Redox Source"] = "manual (per CV)"
 
         # If a single shared ref CV was used and it got split out, keep it in summary
         unique_refs = []
@@ -6881,6 +8001,7 @@ def fowa(cvs, options={}):
             "Reference Ep",
             "Reference Delta E",
             "Segment",
+            "Segment Selection",
             "Background Correction",
             "Background Tangent Potential",
             "Fit Range",
@@ -6903,7 +8024,7 @@ def fowa(cvs, options={}):
             compact=options.get("print all", False),
         )
 
-        display_object_table(display_df)
+        _display_fowa_results_table(display_df, options)
 
 
     if options.get("plot", True):
@@ -6916,9 +8037,27 @@ def fowa(cvs, options={}):
     if len(cvs) == 1:
         single_df = display_df.iloc[[0]].reset_index(drop=True)
         single_df.attrs.update(display_df.attrs)
-        return single_df
+        return analysis_result_from_table(
+            single_df,
+            analysis="fowa",
+            summary=single_df.attrs.get("shared_summary", {}),
+            diagnostics={
+                "plot data": plot_data,
+                "full results": single_df.attrs.get("full_results_df"),
+            },
+            warnings=single_df.attrs.get("warnings", {}),
+        )
 
-    return display_df
+    return analysis_result_from_table(
+        display_df,
+        analysis="fowa",
+        summary=display_df.attrs.get("shared_summary", {}),
+        diagnostics={
+            "plot data": plot_data,
+            "full results": display_df.attrs.get("full_results_df"),
+        },
+        warnings=display_df.attrs.get("warnings", {}),
+    )
 
 def _resolve_df_column(df, requested, aliases=None, required=True):
     """
@@ -7307,7 +8446,9 @@ def _select_fit_indices(x, y, fit_indices):
 
     if fit_indices_array.ndim == 1:
         if len(fit_indices_array) == 2:
-            start, stop = int(fit_indices_array[0]), int(fit_indices_array[1])
+            start, stop = fit_indices_array
+            start = None if start is None else int(start)
+            stop = None if stop is None else int(stop)
             return x[start:stop], y[start:stop]
 
         positions = np.asarray(fit_indices_array, dtype=int)
@@ -7317,7 +8458,9 @@ def _select_fit_indices(x, y, fit_indices):
         positions = []
         base_indices = np.arange(len(x))
         for start, stop in fit_indices_array:
-            positions.extend(base_indices[int(start):int(stop)])
+            start = None if start is None else int(start)
+            stop = None if stop is None else int(stop)
+            positions.extend(base_indices[start:stop])
         positions = np.asarray(positions, dtype=int)
         return x[positions], y[positions]
 
@@ -7400,16 +8543,37 @@ def _select_fit_range(x, y, range_spec):
     return x[combined], y[combined]
 
 
-def _fit_rate_range_specs(options, fallback_fit_indices, default_label):
+def _fit_selection_specs(options, fallback_fit_indices=None, default_label="Fit 1"):
+    """Return normalized fit selection specs for shared scatter-fit helpers."""
     fit_ranges = options.get("fit ranges")
     if fit_ranges is None and options.get("fit range") is not None:
         fit_ranges = options.get("fit range")
-    if fit_ranges is None:
-        return [(default_label, fallback_fit_indices, False)]
-    return [
-        (label, range_spec, True)
-        for label, range_spec in _normalize_fit_ranges(fit_ranges)
-    ]
+    if fit_ranges is not None:
+        return [
+            (label, range_spec, True)
+            for label, range_spec in _normalize_fit_ranges(fit_ranges)
+        ]
+
+    fit_indices = fallback_fit_indices
+    if fit_indices is None:
+        fit_indices = options.get("fit indices")
+
+    if fit_indices is None:
+        return [(default_label, None, False)]
+
+    normalized = _normalize_fit_index_ranges(fit_indices)
+    if len(normalized) == 1 and not isinstance(fit_indices, dict):
+        _label, spec = normalized[0]
+        return [(default_label, spec, False)]
+    return [(label, spec, False) for label, spec in normalized]
+
+
+def _fit_rate_range_specs(options, fallback_fit_indices, default_label):
+    return _fit_selection_specs(
+        options,
+        fallback_fit_indices=fallback_fit_indices,
+        default_label=default_label,
+    )
 
 
 def _fit_rate_selected_points(plot_x, plot_y, spec, is_fit_range):
@@ -7515,8 +8679,8 @@ def _fit_rate_source_df(df):
     return source_df
 
 
-def _fit_rate_legacy_return(df, options={}):
-    """Fit rate-style tabular data and return the internal legacy tuple.
+def _fit_rate_payload(df, options=None):
+    """Fit rate-style tabular data and return internal table/fit payloads.
     
     Parameters
     ----------
@@ -7528,12 +8692,18 @@ def _fit_rate_legacy_return(df, options={}):
     Returns
     -------
     tuple
-        Legacy fit data and fit coefficient return used by notebook workflows.
-    
+        Internal fit data and fit coefficient payload used to build ScatterFitResult.
+
     Examples
     --------
-    >>> data, fits = e.fit_rate(fowa_df, {"fit range": [0.1, 0.4]})
+    >>> result = e.fit_rate(fowa_df, {"fit range": [0.1, 0.4]})
+    >>> result.table
     """
+    if isinstance(df, AnalysisResult):
+        df = df.table
+    if not isinstance(df, pd.DataFrame):
+        raise TypeError("fit_rate accepts a pandas DataFrame or an AnalysisResult with a table.")
+
     raw_options = options
     typed_options = FitRateOptions.from_options(options)
     options = typed_options.to_legacy_dict()
@@ -7991,7 +9161,7 @@ def _fit_rate_legacy_return(df, options={}):
     return data, fitline
 
 
-def fit_rate(df, options={}):
+def fit_rate(df, options=None):
     """Fit a rate or FOWA result table and return a scatter-fit result object.
     
     Parameters
@@ -8010,8 +9180,8 @@ def fit_rate(df, options={}):
     --------
     >>> result = e.fit_rate(fowa_df, {"transform mode": "log-log"})
     """
-    return _scatter_result_from_legacy(
-        _fit_rate_legacy_return(df, options),
+    return _scatter_result_from_payload(
+        _fit_rate_payload(df, options),
         summary={"analysis": "rate fit"},
     )
 
@@ -8059,7 +9229,7 @@ def _tafel_curve(overpotential, tof_max, thermodynamic_potential, redox_potentia
     return tof, np.log10(tof)
 
 
-def tafel_analysis(cv, TOF_max, thermodynamic_potential, redox_potential, options={}):
+def tafel_analysis(cv, TOF_max, thermodynamic_potential, redox_potential, options=None):
     """Compute and plot Tafel-style turnover-frequency data for one or more CVs.
     
     Parameters
@@ -8161,7 +9331,14 @@ def tafel_analysis(cv, TOF_max, thermodynamic_potential, redox_potential, option
     data = pd.DataFrame(data_rows)
     summary = pd.DataFrame(summary_rows)
     data.attrs["summary"] = summary
-    return {"data": data, "summary": summary, "axes": ax}
+    return analysis_result_from_table(
+        data,
+        analysis="tafel",
+        summary={"table": summary},
+        values={"summary": summary, "axes": ax},
+        axes=ax,
+        figure=ax.figure,
+    )
 
 
 

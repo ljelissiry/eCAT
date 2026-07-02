@@ -4,6 +4,73 @@ import pytest
 import matplotlib.pyplot as plt
 
 
+def test_complex_potential_series_helper_normalizes_scalar_and_per_cv_lists(ecat_module):
+    assert ecat_module._resolve_complex_potential_series(
+        {"guess potential": -0.1},
+        {"guess potential": -0.1},
+        n_cvs=3,
+        option_name="guess potential",
+        analysis_name="fit_peak_current",
+    ) == [-0.1, -0.1, -0.1]
+
+    assert ecat_module._resolve_complex_potential_series(
+        {"guess potentials": [-0.1, -0.2, -0.3]},
+        {"guess potential": [-0.1, -0.2, -0.3]},
+        n_cvs=3,
+        option_name="guess potential",
+        analysis_name="fit_peak_current",
+    ) == [-0.1, -0.2, -0.3]
+
+
+def test_complex_potential_series_helper_handles_paired_guess_shapes(ecat_module):
+    assert ecat_module._resolve_complex_potential_series(
+        {"guess potential": [-0.1, 0.1]},
+        {"guess potential": [-0.1, 0.1]},
+        n_cvs=3,
+        option_name="guess potential",
+        analysis_name="trumpet_analysis",
+        paired=True,
+    ) == [[-0.1, 0.1], [-0.1, 0.1], [-0.1, 0.1]]
+
+    assert ecat_module._resolve_complex_potential_series(
+        {"guess potential": [-0.1, -0.2]},
+        {"guess potential": [-0.1, -0.2]},
+        n_cvs=2,
+        option_name="guess potential",
+        analysis_name="trumpet_analysis",
+        paired=True,
+    ) == [-0.1, -0.2]
+
+    assert ecat_module._resolve_complex_potential_series(
+        {"guess potential": [[-0.1, 0.1], [-0.2, 0.2]]},
+        {"guess potential": [[-0.1, 0.1], [-0.2, 0.2]]},
+        n_cvs=2,
+        option_name="guess potential",
+        analysis_name="trumpet_analysis",
+        paired=True,
+    ) == [[-0.1, 0.1], [-0.2, 0.2]]
+
+    assert ecat_module._resolve_complex_potential_series(
+        {"guess potential": [[-0.1, 0.1]]},
+        {"guess potential": [[-0.1, 0.1]]},
+        n_cvs=3,
+        option_name="guess potential",
+        analysis_name="trumpet_analysis",
+        paired=True,
+    ) == [[-0.1, 0.1], [-0.1, 0.1], [-0.1, 0.1]]
+
+
+def test_complex_potential_series_helper_reports_mismatched_lengths(ecat_module):
+    with pytest.raises(ValueError, match="guess potential.*fit_peak_current.*3 CVs.*2 entries"):
+        ecat_module._resolve_complex_potential_series(
+            {"guess potentials": [-0.1, -0.2]},
+            {"guess potential": [-0.1, -0.2]},
+            n_cvs=3,
+            option_name="guess potential",
+            analysis_name="fit_peak_current",
+        )
+
+
 def test_fit_default_return_shape_and_unlabeled_plot(ecat_module):
     coeffs, r2 = ecat_module.fit([1, 2, 3], [2, 4, 6], label="Calibration")
 
@@ -207,18 +274,18 @@ def test_fit_rate_y_mode_enhancement_aliases(ecat_module, alias):
 def test_fit_rate_y_modes_and_y0_overrides(ecat_module):
     df = pd.DataFrame({"Scan Rate": [1.0, 2.0, 3.0], "kobs": [2.0, 4.0, 8.0]})
 
-    delta, _ = ecat_module.fit_rate(
+    delta = ecat_module.fit_rate(
         df,
         {"plot": False, "print": False, "y mode": "delta", "y0": 1.0},
-    )
-    negative, _ = ecat_module.fit_rate(
+    ).table
+    negative = ecat_module.fit_rate(
         df,
         {"plot": False, "print": False, "y mode": "negative delta", "y0": {"kobs": 10.0}},
-    )
-    ratio, _ = ecat_module.fit_rate(
+    ).table
+    ratio = ecat_module.fit_rate(
         df,
         {"plot": False, "print": False, "y mode": "ratio", "y0": {"default": 2.0}},
-    )
+    ).table
 
     assert delta["y adjusted"].tolist() == pytest.approx([1.0, 3.0, 7.0])
     assert negative["y adjusted"].tolist() == pytest.approx([8.0, 6.0, 2.0])
@@ -300,7 +367,7 @@ def test_fit_rate_floor_false_drops_nonpositive_values(ecat_module):
 def test_fit_rate_floor_absolute_can_be_axis_specific(ecat_module):
     df = pd.DataFrame({"Scan Rate": [0.0, 1.0, 10.0], "kobs": [0.0, 2.0, 20.0]})
 
-    data, _fitline = ecat_module.fit_rate(
+    result = ecat_module.fit_rate(
         df,
         {
             "plot": False,
@@ -311,6 +378,7 @@ def test_fit_rate_floor_absolute_can_be_axis_specific(ecat_module):
             "y floor": 1e-9,
         },
     )
+    data = result.table
 
     assert data["x transform input"].tolist() == pytest.approx([1e-6, 1.0, 10.0])
     assert data["y transform input"].tolist() == pytest.approx([1e-9, 2.0, 20.0])
@@ -321,7 +389,7 @@ def test_fit_rate_floor_absolute_can_be_axis_specific(ecat_module):
 def test_fit_rate_floor_rescues_values_below_threshold_not_only_zero(ecat_module):
     df = pd.DataFrame({"Scan Rate": [0.0, 0.5, 1.0, 10.0], "kobs": [0.0, 1.0, 2.0, 20.0]})
 
-    data, _fitline = ecat_module.fit_rate(
+    result = ecat_module.fit_rate(
         df,
         {
             "plot": False,
@@ -333,6 +401,7 @@ def test_fit_rate_floor_rescues_values_below_threshold_not_only_zero(ecat_module
             "y floor": 2.0,
         },
     )
+    data = result.table
 
     assert data["x transform input"].tolist() == pytest.approx([1.0, 1.0, 1.0, 10.0])
     assert data["y transform input"].tolist() == pytest.approx([2.0, 2.0, 2.0, 20.0])
@@ -670,6 +739,44 @@ def test_fit_model_fit_label_respects_explicit_legend_false(ecat_module):
     assert plt.gca().get_legend() is None
 
 
+def test_fit_model_log_residual_reports_residual_space_and_raw_r2(ecat_module):
+    x = np.asarray([1.0, 2.0, 3.0, 4.0])
+    y = np.exp(0.5 + 0.4 * x)
+
+    result = ecat_module.fit_model(
+        x,
+        y,
+        model="exponential",
+        options={"plot": False, "fit residual": "log"},
+    )
+
+    stats = result.fit_model_results["Model"]["stats"]
+    assert stats["residual space"] == "log"
+    assert "R2 raw" in stats
+    assert stats["R2"] == pytest.approx(1.0)
+    assert stats["R2 raw"] == pytest.approx(1.0)
+
+
+def test_fit_model_log_residual_display_uses_ln_r2_label(ecat_module, monkeypatch):
+    displayed = []
+
+    def capture_display(table):
+        displayed.append(table)
+
+    monkeypatch.setattr(ecat_module, "display", capture_display)
+
+    ecat_module.fit_model(
+        [1.0, 2.0, 3.0, 4.0],
+        np.exp(0.5 + 0.4 * np.asarray([1.0, 2.0, 3.0, 4.0])),
+        model="exponential",
+        options={"plot": False, "print": True, "fit residual": "log"},
+    )
+
+    summary_table = next(table for table in displayed if "Setting" in table.columns)
+    assert "ln R²" in summary_table["Setting"].tolist()
+    assert "R²" not in summary_table["Setting"].tolist()
+
+
 def test_fit_model_print_uses_pretty_details_and_parameter_tables(ecat_module, capsys):
     x = np.asarray([1.0, 2.0, 4.0, 8.0])
     y = 2.0 * x ** 0.5
@@ -774,7 +881,7 @@ def test_show_scatter_fit_result_uses_pretty_fit_model_output(ecat_module, cv_fa
         {
             "plot": False,
             "print": False,
-            "x power": None,
+            "x transform": "identity",
             "fit model": "linear",
         },
     )
@@ -803,8 +910,10 @@ def test_fit_model_fit_indices_selects_points_without_dropping_output_rows(ecat_
 
     assert len(result.table) == 5
     assert result.fit_table["Fit Points"].iloc[0] == 3
-    assert result.fits["parameters"]["m"] == pytest.approx(2.0)
-    assert result.fits["parameters"]["b"] == pytest.approx(1.0)
+    first_key = next(iter(result.fits))
+    assert first_key == "Model"
+    assert result.fits[first_key]["parameters"]["m"] == pytest.approx(2.0)
+    assert result.fits[first_key]["parameters"]["b"] == pytest.approx(1.0)
     assert result.table.loc[4, "Predicted"] == pytest.approx(9.0)
 
 
@@ -824,6 +933,157 @@ def test_fit_model_fit_range_selects_x_value_window(ecat_module):
     assert result.fits["parameters"]["b"] == pytest.approx(1.0)
     assert result.fit_table["fit x min"].iloc[0] == pytest.approx(0.0)
     assert result.fit_table["fit x max"].iloc[0] == pytest.approx(2.0)
+
+
+def test_fit_model_bounds_accept_none_as_unbounded(ecat_module):
+    x = np.asarray([0.0, 1.0, 2.0, 3.0])
+    y = 2.0 * x - 1.0
+
+    result = ecat_module.fit_model(
+        x,
+        y,
+        model="linear",
+        options={
+            "plot": False,
+            "print": False,
+            "fit bounds": {
+                "m": [0.0, None],
+                "b": [None, 0.0],
+            },
+        },
+    )
+
+    assert result.fits["parameters"]["m"] == pytest.approx(2.0)
+    assert result.fits["parameters"]["b"] == pytest.approx(-1.0)
+    assert result.fit_model_results["Model"]["bounds"]["m"] == (0.0, np.inf)
+    assert result.fit_model_results["Model"]["bounds"]["b"] == (-np.inf, 0.0)
+
+
+def test_fit_rate_custom_model_bounds_accept_none_as_unbounded(ecat_module):
+    h2o = np.asarray([0.0, 0.1, 0.2, 0.5, 1.0])
+    kobs = 8.5 + 50.0 * h2o + 100.0 * h2o**2
+    df = pd.DataFrame({"H2O Concentration (M)": h2o, "kobs": kobs})
+
+    result = ecat_module.fit_rate(
+        df,
+        {
+            "plot": False,
+            "print": False,
+            "x column": "H2O Concentration (M)",
+            "metric": "kobs",
+            "fit model": "k0 + k1*x + k2*x^2",
+            "fit bounds": {
+                "k0": [0.0, None],
+                "k1": [0.0, None],
+                "k2": [0.0, None],
+            },
+        },
+    )
+
+    params = result.fit_model_results["kobs"]["parameters"]
+    assert params["k0"] == pytest.approx(8.5)
+    assert params["k1"] == pytest.approx(50.0)
+    assert params["k2"] == pytest.approx(100.0)
+    assert result.fit_model_results["kobs"]["bounds"]["k2"] == (0.0, np.inf)
+
+
+def test_fit_model_fit_indices_list_of_pair_ranges_makes_multiple_fits(ecat_module):
+    x = np.arange(10, dtype=float)
+    y = 2.0 * x + 1.0
+
+    result = ecat_module.fit_model(
+        x,
+        y,
+        model="linear",
+        options={"fit indices": [[0, 2], [4, 7]], "print": False, "plot": False},
+    )
+
+    assert isinstance(result.fits, dict)
+    assert len(result.fits) == 2
+    assert set(result.fits.keys()) == {"Fit 1", "Fit 2"}
+    for model_key in ("Fit 1", "Fit 2"):
+        params = result.fits[model_key]["parameters"]
+        assert params["m"] == pytest.approx(2.0, rel=1e-5)
+        assert params["b"] == pytest.approx(1.0, rel=1e-5)
+
+
+def test_fit_model_fit_indices_nested_windows_as_unnamed_fit(ecat_module):
+    x = np.arange(10, dtype=float)
+    y = 2.0 * x + 1.0
+
+    result = ecat_module.fit_model(
+        x,
+        y,
+        model="linear",
+        options={"fit indices": [[[0, 2], [4, 7]]], "print": False, "plot": False},
+    )
+
+    assert isinstance(result.fits, dict)
+    assert len(result.fits) == 1
+    model_key = next(iter(result.fits.keys()))
+    params = result.fits[model_key]["parameters"]
+    assert params["m"] == pytest.approx(2.0, rel=1e-5)
+    assert params["b"] == pytest.approx(1.0, rel=1e-5)
+
+
+def test_fit_model_fit_indices_nested_windows_inside_named_entry(ecat_module):
+    x = np.arange(10, dtype=float)
+    y = 2.5 * x + 3.0
+
+    result = ecat_module.fit_model(
+        x,
+        y,
+        model="linear",
+        options={
+            "fit indices": {"tail": [[0, 2], [4, None]], "head": [0, 2]},
+            "print": False,
+            "plot": False,
+        },
+    )
+
+    assert set(result.fits.keys()) == {"tail", "head"}
+    tail_params = result.fits["tail"]["parameters"]
+    head_params = result.fits["head"]["parameters"]
+    assert tail_params["m"] == pytest.approx(2.5, rel=1e-5)
+    assert tail_params["b"] == pytest.approx(3.0, rel=1e-5)
+    assert head_params["m"] == pytest.approx(2.5, rel=1e-5)
+    assert head_params["b"] == pytest.approx(3.0, rel=1e-5)
+
+
+def test_fit_model_fit_indices_rejects_mixed_nested_and_index_inputs(ecat_module):
+    x = np.arange(10, dtype=float)
+    y = np.arange(10, dtype=float)
+
+    with pytest.raises(ValueError, match="'fit indices'"):
+        ecat_module.fit_model(
+            x,
+            y,
+            model="linear",
+            options={
+                "fit indices": [[0, 2], 4],
+                "plot": False,
+            },
+        )
+
+
+def test_fit_model_fit_indices_multi_list_dicts(ecat_module):
+    x = np.arange(10, dtype=float)
+    y = 2.0 * x + 1.0
+
+    result = ecat_module.fit_model(
+        x,
+        y,
+        model="linear",
+        options={"fit indices": [[0, 2], [4, 7], [4, None]], "print": False, "plot": False},
+    )
+
+    assert isinstance(result.fits, dict)
+    assert len(result.fits) == 3
+    assert set(result.fits.keys()) == {"Fit 1", "Fit 2", "Fit 3"}
+    for model_key in ("Fit 1", "Fit 2", "Fit 3"):
+        params = result.fits[model_key]["parameters"]
+        assert params["m"] == pytest.approx(2.0, rel=1e-5)
+        assert params["b"] == pytest.approx(1.0, rel=1e-5)
 
 
 def test_fit_model_overlay_does_not_replot_data_by_default(ecat_module):
@@ -888,6 +1148,40 @@ def test_fit_model_accepts_custom_callable_with_inferred_parameters(ecat_module)
     assert result.fits["parameters"]["k2"] == pytest.approx(0.25)
 
 
+def test_fit_model_callable_fit_label_omits_function_name_by_default(ecat_module):
+    def quadratic_model(x, k0, k1, k2):
+        return k0 + k1 * x + k2 * x ** 2
+
+    x = np.asarray([0.0, 1.0, 2.0, 3.0, 4.0])
+    y = 1.5 + 2.0 * x + 0.25 * x ** 2
+
+    ecat_module.fit_model(
+        x,
+        y,
+        model=quadratic_model,
+        options={"plot": True, "print": False, "fit label": True},
+    )
+
+    labels = [text.get_text() for text in plt.gca().get_legend().get_texts()]
+    fit_labels = [label for label in labels if "Custom Fit" in label]
+    assert fit_labels
+    assert not any("quadratic_model" in label for label in fit_labels)
+    assert any("R^2" in label for label in fit_labels)
+
+
+def test_fit_model_rejects_removed_fit_equation_label_option(ecat_module):
+    with pytest.raises(ecat_module.OptionError, match="fit equation label"):
+        ecat_module.fit_model(
+            [1.0, 2.0, 3.0],
+            [2.0, 4.0, 6.0],
+            model="linear",
+            options={
+                "plot": False,
+                "fit equation label": "y = m*x + b",
+            },
+        )
+
+
 def test_fit_model_accepts_formula_string_with_caret_power(ecat_module):
     x = np.asarray([0.0, 1.0, 2.0, 3.0, 4.0])
     y = 1.5 + 2.0 * x + 0.25 * x ** 2
@@ -907,6 +1201,28 @@ def test_fit_model_accepts_formula_string_with_caret_power(ecat_module):
     assert result.fits["parameters"]["k0"] == pytest.approx(1.5)
     assert result.fits["parameters"]["k1"] == pytest.approx(2.0)
     assert result.fits["parameters"]["k2"] == pytest.approx(0.25)
+
+
+def test_fit_model_custom_formula_eval_errors_are_user_friendly(ecat_module, monkeypatch):
+    def broken_function(_x):
+        raise KeyError("__import__")
+
+    monkeypatch.setitem(
+        ecat_module._FIT_MODEL_ALLOWED_FORMULA_FUNCTIONS,
+        "broken",
+        broken_function,
+    )
+
+    with pytest.raises(ValueError, match="Could not evaluate custom fit model"):
+        ecat_module.fit_model(
+            [1.0, 2.0, 3.0],
+            [2.0, 4.0, 6.0],
+            options={
+                "plot": False,
+                "fit model": "a + broken(x)",
+                "fit init": {"a": 1.0},
+            },
+        )
 
 
 def test_fit_rate_fit_model_accepts_custom_formula_and_model_params(ecat_module):
@@ -1090,10 +1406,10 @@ def test_fit_rate_unknown_option_suggests_metric(ecat_module):
 def test_fit_peak_potential_accepts_dataclass_options_at_public_boundary(ecat_module):
     options = ecat_module.FitPeakPotentialOptions.from_options({"plot": False, "print": False})
 
-    data, fits = ecat_module.fit_peak_potential([], options)
+    result = ecat_module.fit_peak_potential([], options)
 
-    assert data is None
-    assert fits is None
+    assert result.table is None
+    assert result.fits is None
 
 
 def test_fit_peak_potential_unknown_option_suggests_segment(ecat_module):
@@ -1184,7 +1500,8 @@ def test_fit_peak_potential_handles_multiple_segments(ecat_module, cv_factory):
         },
     )
 
-    data, fits = result
+    data = result.table
+    fits = result.fits
 
     assert isinstance(result, ecat_module.ScatterFitResult)
     assert "Seg 1 Ep (V)" in data.columns
@@ -1266,6 +1583,45 @@ def test_fit_peak_potential_plot_all_accepts_plot_segment_without_analysis_leak(
     assert "plot segment" not in peak_calls[0]
 
 
+def test_fit_peak_potential_per_cv_guesses_seed_running_guess(
+    ecat_module,
+    cv_factory,
+    monkeypatch,
+):
+    cvs = [
+        cv_factory(name="50mVs_sample_CO2_MeCN_10mM_Fc_run01"),
+        cv_factory(name="100mVs_sample_CO2_MeCN_10mM_Fc_run02"),
+        cv_factory(name="200mVs_sample_CO2_MeCN_10mM_Fc_run03"),
+    ]
+    observed = []
+
+    def fake_peak_potential(self, options=None):
+        opts = dict(options or {})
+        observed.append((self.name, opts.get("segment"), opts.get("guess potential")))
+        guess = float(opts.get("guess potential", 0.0))
+        ep = guess + (0.01 if opts.get("segment") == 1 else 0.02)
+        return {"Ep": ep, "index": 0, "current": 0.0}
+
+    monkeypatch.setattr(ecat_module.cv, "peak_potential", fake_peak_potential)
+
+    ecat_module.fit_peak_potential(
+        cvs,
+        {
+            "plot": False,
+            "print": False,
+            "segments": [1, 2],
+            "guess potentials": [-0.11, -0.22, -0.33],
+        },
+    )
+
+    assert observed[0] == (cvs[0].name, 1, pytest.approx(-0.11))
+    assert observed[1] == (cvs[0].name, 2, pytest.approx(-0.10))
+    assert observed[2] == (cvs[1].name, 1, pytest.approx(-0.22))
+    assert observed[3] == (cvs[1].name, 2, pytest.approx(-0.21))
+    assert observed[4] == (cvs[2].name, 1, pytest.approx(-0.33))
+    assert observed[5] == (cvs[2].name, 2, pytest.approx(-0.32))
+
+
 def test_fit_peak_current_formats_concentration_transform_symbolically(
     ecat_module,
     cv_factory,
@@ -1284,7 +1640,7 @@ def test_fit_peak_current_formats_concentration_transform_symbolically(
             "plot all": True,
             "legend": False,
             "exact potential": 0.2,
-            "x power": 0.5,
+            "x transform": "^0.5",
             "noise window": 5,
             "noise polyorder": 2,
             "peak prominence": 1e-7,
@@ -1316,7 +1672,7 @@ def test_fit_peak_current_fit_model_uses_requested_model(ecat_module, cv_factory
         {
             "plot": False,
             "print": False,
-            "x power": None,
+            "x transform": "identity",
             "fit model": "power",
         },
     )
@@ -1339,7 +1695,7 @@ def test_fit_peak_current_print_uses_shared_fit_model_output(ecat_module, cv_fac
         {
             "plot": False,
             "print": True,
-            "x power": None,
+            "x transform": "identity",
             "fit model": "linear",
         },
     )
@@ -1373,7 +1729,7 @@ def test_fit_peak_current_multi_series_detailed_print_uses_two_tables(ecat_modul
             "plot": False,
             "print": True,
             "segments": [1, 2],
-            "x power": None,
+            "x transform": "identity",
             "fit model": "linear",
             "fit bounds": {"m": [-np.inf, np.inf], "b": [-np.inf, np.inf]},
             "fit init": {"m": 1.0, "b": 0.0},
@@ -1431,6 +1787,38 @@ def test_fit_peak_current_plot_all_accepts_plot_segment_without_analysis_leak(
     assert "plot segment" not in peak_calls[0]
 
 
+def test_fit_peak_current_passes_per_cv_potential_options(
+    ecat_module,
+    cv_factory,
+    monkeypatch,
+):
+    cvs = [
+        cv_factory(name="50mVs_sample_CO2_MeCN_10mM_Fc_run01"),
+        cv_factory(name="100mVs_sample_CO2_MeCN_10mM_Fc_run02"),
+    ]
+    observed = []
+
+    def fake_peak_current(self, options=None):
+        observed.append(dict(options or {}))
+        return {"ip": float(self.scan_rate) * 1e-6, "tangent line": [0.0, 0.0], "tangent start": 0}
+
+    monkeypatch.setattr(ecat_module.cv, "peak_current", fake_peak_current)
+
+    ecat_module.fit_peak_current(
+        cvs,
+        {
+            "plot": False,
+            "print": False,
+            "guess potentials": [-0.11, -0.22],
+            "tangent potentials": [-0.31, -0.42],
+            "x transform": "identity",
+        },
+    )
+
+    assert [opts["guess potential"] for opts in observed] == pytest.approx([-0.11, -0.22])
+    assert [opts["tangent potential"] for opts in observed] == pytest.approx([-0.31, -0.42])
+
+
 def test_fit_peak_current_infers_varying_mole_fraction_with_constant_molar_species(
     ecat_module,
     cv_factory,
@@ -1476,10 +1864,11 @@ def test_fit_rate_infers_varying_mole_fraction_with_duplicate_species_tokens(
         }
     )
 
-    data, _fits = ecat_module.fit_rate(
+    result = ecat_module.fit_rate(
         df,
         {"plot": False, "print": False, "plot log-log": True},
     )
+    data = result.table
 
     assert data["x raw"].tolist() == pytest.approx([0.2, 0.5, 0.8])
     assert data["x label"].iloc[0] == "D2O"
@@ -1549,6 +1938,379 @@ def test_sevcik_plot_all_routes_only_multiplot_options(
     assert "guess potential" not in multiplot_calls[0]
     assert "segment" in peak_current_calls[0]
     assert "guess potential" in peak_current_calls[0]
+
+
+def test_sevcik_plot_all_diagnostics_use_multiplot_axis_scaling(
+    ecat_module,
+    cv_factory,
+):
+    plt.close("all")
+    potential = np.linspace(-0.25, 0.25, 51)
+    current = (
+        0.4e-6
+        + 0.5e-6 * potential
+        + 6.0e-6 * np.exp(-((potential - 0.15) / 0.035) ** 2)
+    )
+    cvs = [
+        cv_factory(
+            name="50mVs_sample_CO2_MeCN_10mM_Fc_run01",
+            potential=potential,
+            current=current,
+            options={"electrode area": 0.5},
+        ),
+        cv_factory(
+            name="100mVs_sample_CO2_MeCN_10mM_Fc_run02",
+            potential=potential,
+            current=current,
+            options={"electrode area": 0.5},
+        ),
+        cv_factory(
+            name="200mVs_sample_CO2_MeCN_10mM_Fc_run03",
+            potential=potential,
+            current=current,
+            options={"electrode area": 0.5},
+        ),
+    ]
+
+    ecat_module.sevcik_analysis(
+        cvs,
+        {
+            "plot": False,
+            "print": False,
+            "plot all": True,
+            "segment": 1,
+            "exact potential": 0.15,
+            "tangent range": [0.1, 0.25],
+            "percent threshold": 100,
+            "x unit": "mV",
+            "y unit": "nA",
+        },
+    )
+
+    ax = plt.gcf().axes[0]
+    try:
+        vertical_segments = [
+            np.asarray(segment)
+            for collection in ax.collections
+            for segment in getattr(collection, "get_segments", lambda: [])()
+            if len(segment) == 2
+            and np.isclose(segment[0][0], segment[1][0])
+            and collection.get_linestyle()
+        ]
+        peak_segment = max(
+            vertical_segments,
+            key=lambda segment: abs(segment[1][1] - segment[0][1]),
+        )
+
+        assert peak_segment[0][0] == pytest.approx(150.0)
+        assert np.nanmax(peak_segment[:, 1]) > 1000.0
+    finally:
+        plt.close("all")
+
+
+def test_sevcik_plot_all_diagnostics_use_common_auto_y_unit(
+    ecat_module,
+    cv_factory,
+):
+    plt.close("all")
+    potential = np.linspace(-0.25, 0.25, 51)
+    current_large = (
+        0.4e-6
+        + 0.5e-6 * potential
+        + 6.0e-6 * np.exp(-((potential - 0.15) / 0.035) ** 2)
+    )
+    current_small = current_large * 1e-3
+    cvs = [
+        cv_factory(
+            name="50mVs_sample_CO2_MeCN_10mM_Fc_run01",
+            potential=potential,
+            current=current_small,
+        ),
+        cv_factory(
+            name="100mVs_sample_CO2_MeCN_10mM_Fc_run02",
+            potential=potential,
+            current=current_large,
+        ),
+    ]
+
+    ecat_module.sevcik_analysis(
+        cvs,
+        {
+            "plot": False,
+            "print": False,
+            "plot all": True,
+            "segment": 1,
+            "exact potential": 0.15,
+            "tangent range": [0.1, 0.25],
+            "percent threshold": 100,
+        },
+    )
+
+    ax = plt.gcf().axes[0]
+    try:
+        vertical_lengths = [
+            abs(segment[1][1] - segment[0][1])
+            for collection in ax.collections
+            for segment in getattr(collection, "get_segments", lambda: [])()
+            if len(segment) == 2
+            and np.isclose(segment[0][0], segment[1][0])
+            and collection.get_linestyle()
+        ]
+
+        assert min(vertical_lengths) < 0.02
+    finally:
+        plt.close("all")
+
+
+def test_fit_peak_current_plot_all_diagnostics_use_multiplot_axis_scaling(
+    ecat_module,
+    cv_factory,
+):
+    plt.close("all")
+    potential = np.linspace(-0.25, 0.25, 51)
+    current = (
+        0.4e-6
+        + 0.5e-6 * potential
+        + 6.0e-6 * np.exp(-((potential - 0.15) / 0.035) ** 2)
+    )
+    cvs = [
+        cv_factory(
+            name="50mVs_sample_CO2_MeCN_10mM_Fc_run01",
+            potential=potential,
+            current=current,
+        ),
+        cv_factory(
+            name="100mVs_sample_CO2_MeCN_10mM_Fc_run02",
+            potential=potential,
+            current=current,
+        ),
+        cv_factory(
+            name="200mVs_sample_CO2_MeCN_10mM_Fc_run03",
+            potential=potential,
+            current=current,
+        ),
+    ]
+
+    ecat_module.fit_peak_current(
+        cvs,
+        {
+            "plot": False,
+            "print": False,
+            "plot all": True,
+            "segment": 1,
+            "exact potential": 0.15,
+            "tangent range": [0.1, 0.25],
+            "percent threshold": 100,
+            "x unit": "mV",
+            "y unit": "nA",
+        },
+    )
+
+    ax = plt.gcf().axes[0]
+    try:
+        vertical_segments = [
+            np.asarray(segment)
+            for collection in ax.collections
+            for segment in getattr(collection, "get_segments", lambda: [])()
+            if len(segment) == 2
+            and np.isclose(segment[0][0], segment[1][0])
+            and collection.get_linestyle()
+        ]
+        peak_segment = max(
+            vertical_segments,
+            key=lambda segment: abs(segment[1][1] - segment[0][1]),
+        )
+
+        assert peak_segment[0][0] == pytest.approx(150.0)
+        assert np.nanmax(peak_segment[:, 1]) > 1000.0
+    finally:
+        plt.close("all")
+
+
+def test_fit_peak_potential_plot_all_markers_use_common_auto_y_unit(
+    ecat_module,
+    cv_factory,
+):
+    plt.close("all")
+    potential = np.linspace(-0.25, 0.25, 51)
+    current_large = (
+        0.4e-6
+        + 0.5e-6 * potential
+        + 6.0e-6 * np.exp(-((potential - 0.15) / 0.035) ** 2)
+    )
+    current_small = current_large * 1e-3
+    cvs = [
+        cv_factory(
+            name="50mVs_sample_CO2_MeCN_10mM_Fc_run01",
+            potential=potential,
+            current=current_small,
+        ),
+        cv_factory(
+            name="100mVs_sample_CO2_MeCN_10mM_Fc_run02",
+            potential=potential,
+            current=current_large,
+        ),
+    ]
+
+    ecat_module.fit_peak_potential(
+        cvs,
+        {
+            "plot": False,
+            "print": False,
+            "plot all": True,
+            "segment": 1,
+            "exact potential": 0.15,
+        },
+    )
+
+    try:
+        marker_offsets = [
+            np.asarray(collection.get_offsets())
+            for fig_num in plt.get_fignums()
+            for ax in plt.figure(fig_num).axes
+            for collection in ax.collections
+            if len(collection.get_offsets()) > 0
+        ]
+        y_offsets = np.concatenate([offsets[:, 1] for offsets in marker_offsets])
+
+        assert np.nanmin(np.abs(y_offsets[np.isfinite(y_offsets)])) < 0.02
+    finally:
+        plt.close("all")
+
+
+def test_sevcik_passes_per_cv_potential_options(
+    ecat_module,
+    cv_factory,
+    monkeypatch,
+):
+    cvs = [
+        cv_factory(name="50mVs_sample_CO2_MeCN_10mM_Fc_run01"),
+        cv_factory(name="100mVs_sample_CO2_MeCN_10mM_Fc_run02"),
+    ]
+    observed = []
+
+    def fake_peak_current(self, options=None):
+        observed.append(dict(options or {}))
+        return {"ip": float(self.scan_rate) * 1e-6, "tangent line": [0.0, 0.0], "tangent start": 0}
+
+    monkeypatch.setattr(ecat_module.cv, "peak_current", fake_peak_current)
+
+    ecat_module.sevcik_analysis(
+        cvs,
+        {
+            "plot": False,
+            "print": False,
+            "guess potentials": [-0.11, -0.22],
+            "tangent potentials": [-0.31, -0.42],
+        },
+    )
+
+    assert [opts["guess potential"] for opts in observed] == pytest.approx([-0.11, -0.22])
+    assert [opts["tangent potential"] for opts in observed] == pytest.approx([-0.31, -0.42])
+
+
+def test_sevcik_auto_selects_one_segment_from_anchor(
+    ecat_module,
+    cv_factory,
+    monkeypatch,
+):
+    cvs = [
+        cv_factory(name="50mVs_sample_CO2_MeCN_10mM_Fc_run01"),
+        cv_factory(name="100mVs_sample_CO2_MeCN_10mM_Fc_run02"),
+        cv_factory(name="200mVs_sample_CO2_MeCN_10mM_Fc_run03"),
+    ]
+    peak_current_calls = []
+    peak_potential_calls = []
+
+    def fake_peak_potential(self, options=None):
+        opts = dict(options or {})
+        segment = opts.get("segment")
+        peak_potential_calls.append(segment)
+        ep = -0.15 if segment == 1 else 0.05
+        return {"Ep": ep, "index": 5, "current": 1e-6}
+
+    def fake_peak_current(self, options=None):
+        opts = dict(options or {})
+        segment = opts.get("segment")
+        peak_current_calls.append(segment)
+        ep = -0.15 if segment == 1 else 0.05
+        return {
+            "ip": float(self.scan_rate) * 1e-6,
+            "Ep": ep,
+            "tangent line": [0.0, 0.0],
+            "tangent start": 0,
+        }
+
+    monkeypatch.setattr(ecat_module.cv, "peak_potential", fake_peak_potential)
+    monkeypatch.setattr(ecat_module.cv, "peak_current", fake_peak_current)
+
+    result = ecat_module.sevcik_analysis(
+        cvs,
+        {
+            "plot": False,
+            "print": False,
+            "guess potential": -0.15,
+        },
+    )
+
+    assert "Seg 1 Peaks" in result.table.columns
+    assert "Seg 2 Peaks" not in result.table.columns
+    assert result.summary["segment selection"]["mode"] == "auto"
+    assert result.summary["segment selection"]["selected segment"] == 1
+    assert result.summary["segment selection"]["support"] == {1: 3}
+    assert peak_potential_calls
+    assert peak_current_calls == [1, 1, 1]
+
+
+def test_sevcik_auto_segment_selection_routes_only_peak_options(
+    ecat_module,
+    cv_factory,
+    monkeypatch,
+):
+    cvs = [
+        cv_factory(name="50mVs_sample_CO2_MeCN_10mM_Fc_run01"),
+        cv_factory(name="100mVs_sample_CO2_MeCN_10mM_Fc_run02"),
+    ]
+    forbidden = {"num electrons", "fit label", "return stats"}
+    observed_peak_options = []
+
+    def fake_peak_potential(self, options=None):
+        opts = dict(options or {})
+        observed_peak_options.append(opts)
+        assert not forbidden.intersection(opts)
+        segment = opts.get("segment")
+        ep = -0.15 if segment == 1 else 0.05
+        return {"Ep": ep, "index": 5, "current": 1e-6}
+
+    def fake_peak_current(self, options=None):
+        opts = dict(options or {})
+        segment = opts.get("segment")
+        ep = -0.15 if segment == 1 else 0.05
+        return {
+            "ip": float(self.scan_rate) * 1e-6,
+            "Ep": ep,
+            "tangent line": [0.0, 0.0],
+            "tangent start": 0,
+        }
+
+    monkeypatch.setattr(ecat_module.cv, "peak_potential", fake_peak_potential)
+    monkeypatch.setattr(ecat_module.cv, "peak_current", fake_peak_current)
+
+    result = ecat_module.sevcik_analysis(
+        cvs,
+        {
+            "plot": False,
+            "print": False,
+            "guess potential": -0.15,
+            "num electrons": 1,
+            "fit label": True,
+            "return stats": True,
+        },
+    )
+
+    assert result.summary["segment selection"]["selected segment"] == 1
+    assert observed_peak_options
+    assert all(opts["guess potential"] == pytest.approx(-0.15) for opts in observed_peak_options)
 
 
 def test_sevcik_fit_color_matches_points_by_default(
@@ -1859,8 +2621,8 @@ def test_peak_current_defaults_to_ip0_axis_for_normalized_current_copy(
     assert normalized_ip == pytest.approx(raw_ip / 1e-6)
 
 
-def test_fit_peak_current_unknown_option_suggests_x_power(ecat_module):
-    with pytest.raises(ValueError, match="x power"):
+def test_fit_peak_current_unknown_option_suggests_unknown(ecat_module):
+    with pytest.raises(ValueError, match="Unknown option"):
         ecat_module.fit_peak_current([], {"x powr": 0.5, "plot": False, "print": False})
 
 
@@ -1898,13 +2660,103 @@ def test_trumpet_analysis_uses_temperature_attribute_not_legacy_T(ecat_module):
 
     data = result.table
     fits = result.fits
-    ks = result._legacy_return[2]
 
     assert list(data["Scan Rates (V/s)"]) == [0.1, 1.0, 10.0]
     assert "Seg 1 Peak Potential (V)" in data.columns
     assert "Seg 2 Peak Potential (V)" in data.columns
     assert len(fits) == 2
-    assert ks == 0
+    k0_row = result.fit_table.loc[result.fit_table["Parameter"] == "k0", "Value"].iloc[0]
+    assert k0_row == "not computed (D not provided)"
+
+
+def test_trumpet_analysis_preserves_shared_flat_paired_guess_for_more_than_two_cvs(ecat_module):
+    class FakeCV:
+        def __init__(self, scan_rate):
+            self.scan_rate = scan_rate
+            self.temperature = 298
+            self.observed_options = None
+
+        def half_wave_potential(self, options=None):
+            self.observed_options = dict(options or {})
+            return {
+                "E(1/2)": 0.0,
+                "ΔE": 0.1,
+                "peak 1": {"Ep": 0.30},
+                "peak 2": {"Ep": -0.30},
+            }
+
+    cvs = [FakeCV(0.1), FakeCV(1.0), FakeCV(10.0)]
+
+    ecat_module.trumpet_analysis(
+        cvs,
+        {"plot": False, "print": False, "segment": 1, "guess potential": [-0.1, 0.1]},
+    )
+
+    assert [cv.observed_options["guess potential"] for cv in cvs] == [
+        [-0.1, 0.1],
+        [-0.1, 0.1],
+        [-0.1, 0.1],
+    ]
+
+
+def test_trumpet_analysis_two_cv_flat_guess_is_per_cv_scalar(ecat_module):
+    class FakeCV:
+        def __init__(self, scan_rate):
+            self.scan_rate = scan_rate
+            self.temperature = 298
+            self.observed_options = None
+
+        def half_wave_potential(self, options=None):
+            self.observed_options = dict(options or {})
+            return {
+                "E(1/2)": 0.0,
+                "ΔE": 0.1,
+                "peak 1": {"Ep": 0.30},
+                "peak 2": {"Ep": -0.30},
+            }
+
+    cvs = [FakeCV(0.1), FakeCV(1.0)]
+
+    ecat_module.trumpet_analysis(
+        cvs,
+        {"plot": False, "print": False, "segment": 1, "guess potential": [-0.1, -0.2]},
+    )
+
+    assert [cv.observed_options["guess potential"] for cv in cvs] == pytest.approx([-0.1, -0.2])
+
+
+def test_trumpet_analysis_supports_nested_per_cv_paired_guesses(ecat_module):
+    class FakeCV:
+        def __init__(self, scan_rate):
+            self.scan_rate = scan_rate
+            self.temperature = 298
+            self.observed_options = None
+
+        def half_wave_potential(self, options=None):
+            self.observed_options = dict(options or {})
+            return {
+                "E(1/2)": 0.0,
+                "ΔE": 0.1,
+                "peak 1": {"Ep": 0.30},
+                "peak 2": {"Ep": -0.30},
+            }
+
+    cvs = [FakeCV(0.1), FakeCV(1.0)]
+
+    ecat_module.trumpet_analysis(
+        cvs,
+        {
+            "plot": False,
+            "print": False,
+            "segment": 1,
+            "guess potential": [[-0.1, 0.1], [-0.2, 0.2]],
+        },
+    )
+
+    assert [cv.observed_options["guess potential"] for cv in cvs] == [
+        [-0.1, 0.1],
+        [-0.2, 0.2],
+    ]
 
 
 def test_trumpet_analysis_is_public_scatterfit_wrapper(ecat_module):
@@ -1934,6 +2786,60 @@ def test_trumpet_analysis_is_public_scatterfit_wrapper(ecat_module):
     assert isinstance(result, ecat_module.ScatterFitResult)
     assert result.summary["analysis"] == "trumpet"
     assert len(result.fits) == 2
+
+
+def test_trumpet_auto_segment_pair_uses_closest_adjacent_segment(ecat_module, cv_factory):
+    class ThreeSegmentCV:
+        def __init__(self, name, scan_rate):
+            self.name = name
+            self.scan_rate = scan_rate
+            self.temperature = 298
+            self.segments = 3
+            self._segment_x = {
+                1: np.linspace(-0.6, -0.2, 100),
+                2: np.linspace(-0.6, -0.2, 100),
+                3: np.linspace(-0.6, -0.2, 100),
+            }
+
+        def analysis_segment_data(self, options=None):
+            segment = int((options or {}).get("segment", 1))
+            x = self._segment_x[segment]
+            return x, np.zeros_like(x)
+
+        def peak_potential(self, options=None):
+            segment = int((options or {}).get("segment", 1))
+            if segment == 2:
+                return {"Ep": -0.4, "index": 2}
+            if segment == 1:
+                return {"Ep": -0.42, "index": 99}
+            return {"Ep": -0.38, "index": 0}
+
+        def half_wave_potential(self, options=None):
+            segments = list((options or {}).get("segments", [2, 1]))
+            self.last_half_wave_segments = segments
+            logv = np.log10(float(self.scan_rate))
+            return {
+                "E(1/2)": 0.0,
+                "ΔE": 0.1,
+                "peak 1": {"segment": segments[0], "Ep": 0.30 - 0.05 * logv},
+                "peak 2": {"segment": segments[1], "Ep": -0.30 + 0.05 * logv},
+            }
+
+    cvs = [
+        ThreeSegmentCV("cv1", 0.1),
+        ThreeSegmentCV("cv2", 1.0),
+        ThreeSegmentCV("cv3", 10.0),
+    ]
+
+    result = ecat_module.trumpet_analysis(
+        cvs,
+        {"plot": False, "print": False, "guess potential": -0.4},
+    )
+
+    selection = result.summary["segment selection"]
+    assert selection["selected segment"] == 2
+    assert selection["paired segment"] == 1
+    assert [cv.last_half_wave_segments for cv in cvs] == [[2, 1], [2, 1], [2, 1]]
 
 
 def test_trumpet_analysis_print_uses_summary_and_shared_fit_model_output(
@@ -2029,7 +2935,7 @@ def test_trumpet_analysis_plot_all_uses_multiplot_for_diagnostics(ecat_module, m
     assert multiplot_calls[0][0] == cvs
 
 
-def test_trumpet_analysis_fit_indices_include_last_requested_index(ecat_module):
+def test_trumpet_analysis_fit_indices_use_python_exclusive_stop(ecat_module):
     class FakeCV:
         def __init__(self, scan_rate, ep1, ep2):
             self.scan_rate = scan_rate
@@ -2056,8 +2962,8 @@ def test_trumpet_analysis_fit_indices_include_last_requested_index(ecat_module):
         {"plot": False, "print": False, "segment": 1, "fit indices": [0, 2]},
     )
 
-    assert result.fits[0][0] == pytest.approx(-0.1, rel=1e-6)
-    assert result.fits[1][0] == pytest.approx(0.1, rel=1e-6)
+    assert result.fits[0][0] == pytest.approx(-0.05, rel=1e-6)
+    assert result.fits[1][0] == pytest.approx(0.05, rel=1e-6)
 
 
 def test_trumpet_analysis_reports_untrusted_alpha_beta_region(ecat_module):
@@ -2134,6 +3040,103 @@ def test_legacy_trumpet_plot_public_name_removed(ecat_module):
 def test_nicholson_unknown_option_suggests_num_electrons(ecat_module):
     with pytest.raises(ValueError, match="num electrons"):
         ecat_module.nicholson_analysis([], {"num electons": 1, "plot": False, "print": False})
+
+
+def test_nicholson_auto_segment_pair_is_reported_in_summary(ecat_module):
+    class ThreeSegmentCV:
+        def __init__(self, name, scan_rate):
+            self.name = name
+            self.scan_rate = scan_rate
+            self.temperature = 298
+            self.segments = 3
+            self._segment_x = {
+                1: np.linspace(-0.6, -0.2, 100),
+                2: np.linspace(-0.6, -0.2, 100),
+                3: np.linspace(-0.6, -0.2, 100),
+            }
+
+        def analysis_segment_data(self, options=None):
+            segment = int((options or {}).get("segment", 1))
+            x = self._segment_x[segment]
+            return x, np.zeros_like(x)
+
+        def peak_potential(self, options=None):
+            segment = int((options or {}).get("segment", 1))
+            if segment == 2:
+                return {"Ep": -0.4, "index": 2}
+            if segment == 1:
+                return {"Ep": -0.42, "index": 99}
+            return {"Ep": -0.38, "index": 0}
+
+        def half_wave_potential(self, options=None):
+            segments = list((options or {}).get("segments", [2, 1]))
+            self.last_half_wave_segments = segments
+            return {
+                "E(1/2)": -0.45,
+                "ΔE": 0.1,
+                "peak 1": {"segment": segments[0], "Ep": -0.50},
+                "peak 2": {"segment": segments[1], "Ep": -0.40},
+            }
+
+    cvs = [
+        ThreeSegmentCV("cv1", 0.1),
+        ThreeSegmentCV("cv2", 0.2),
+        ThreeSegmentCV("cv3", 0.5),
+    ]
+
+    result = ecat_module.nicholson_analysis(
+        cvs,
+        {
+            "plot": False,
+            "print": False,
+            "D": 2e-5,
+            "guess potential": -0.4,
+            "warn ir drop": False,
+        },
+    )
+
+    selection = result["summary"]["segment selection"]
+    assert selection["selected segment"] == 2
+    assert selection["paired segment"] == 1
+    assert [cv.last_half_wave_segments for cv in cvs] == [[2, 1], [2, 1], [2, 1]]
+
+
+def test_nicholson_analysis_supports_nested_per_cv_paired_guesses(ecat_module):
+    class FakeCV:
+        def __init__(self, name, scan_rate):
+            self.name = name
+            self.scan_rate = scan_rate
+            self.temperature = 298
+            self.observed_options = None
+
+        def half_wave_potential(self, options=None):
+            self.observed_options = dict(options or {})
+            return {
+                "E(1/2)": 0.0,
+                "ΔE": 0.1,
+                "peak 1": {"Ep": 0.05},
+                "peak 2": {"Ep": -0.05},
+            }
+
+    cvs = [FakeCV("cv1", 0.1), FakeCV("cv2", 1.0)]
+
+    ecat_module.nicholson_analysis(
+        cvs,
+        {
+            "plot": False,
+            "print": False,
+            "D": 2e-5,
+            "warn ir drop": False,
+            "segment": 1,
+            "guess potentials": [[-0.1, 0.1], [-0.2, 0.2]],
+            "exclude invalid delta ep": False,
+        },
+    )
+
+    assert [cv.observed_options["guess potential"] for cv in cvs] == [
+        [-0.1, 0.1],
+        [-0.2, 0.2],
+    ]
 
 
 def test_tafel_accepts_options_and_preserves_user_color(ecat_module):
@@ -2437,6 +3440,50 @@ def test_fit_rate_fit_label_uses_sig_figs_for_r2(ecat_module):
     assert any("R^2 = 0.99779" in label for label in labels)
 
 
+def test_fit_rate_log_residual_fit_label_uses_ln_r2(ecat_module):
+    x = np.asarray([1.0, 2.0, 3.0, 4.0])
+    df = pd.DataFrame({"x": x, "kobs": np.exp(0.5 + 0.4 * x)})
+
+    ecat_module.fit_rate(
+        df,
+        {
+            "plot": True,
+            "print": False,
+            "x column": "x",
+            "metric": "kobs",
+            "fit model": "exponential",
+            "fit residual": "log",
+            "fit label": True,
+        },
+    )
+
+    labels = [text.get_text() for text in plt.gca().get_legend().get_texts()]
+    assert any(r"\ln R^2 =" in label for label in labels)
+    assert not any("\n$R^2 =" in label for label in labels)
+
+
+def test_fit_rate_log10_residual_fit_label_uses_log_r2(ecat_module):
+    x = np.asarray([1.0, 2.0, 3.0, 4.0])
+    df = pd.DataFrame({"x": x, "kobs": 10 ** (0.5 + 0.4 * x)})
+
+    ecat_module.fit_rate(
+        df,
+        {
+            "plot": True,
+            "print": False,
+            "x column": "x",
+            "metric": "kobs",
+            "fit model": "exponential",
+            "fit residual": "log10",
+            "fit label": True,
+        },
+    )
+
+    labels = [text.get_text() for text in plt.gca().get_legend().get_texts()]
+    assert any(r"\log R^2 =" in label for label in labels)
+    assert not any("\n$R^2 =" in label for label in labels)
+
+
 def test_fit_rate_fit_label_uses_display_friendly_default_sig_figs(ecat_module):
     x = np.asarray([0.18, 0.35, 0.7, 1.4, 2.8])
     df = pd.DataFrame(
@@ -2461,6 +3508,34 @@ def test_fit_rate_fit_label_uses_display_friendly_default_sig_figs(ecat_module):
     labels = [text.get_text() for text in plt.gca().get_legend().get_texts()]
     assert any("y = 3.142x + 2.718" in label for label in labels)
     assert not any("3.14159" in label or "2.71828" in label for label in labels)
+
+
+def test_fit_rate_fit_label_formats_scientific_notation_as_mathtext(ecat_module):
+    x = np.asarray([0.0, 1.0, 2.0, 3.0])
+    df = pd.DataFrame(
+        {
+            "x": x,
+            "kobs": 3.2e5 * x + 1.1e-5,
+        }
+    )
+
+    ecat_module.fit_rate(
+        df,
+        {
+            "plot": True,
+            "print": False,
+            "x column": "x",
+            "metric": "kobs",
+            "fit model": "linear",
+            "fit label": True,
+            "sig figs": 3,
+        },
+    )
+
+    labels = [text.get_text() for text in plt.gca().get_legend().get_texts()]
+    assert any(r"3.2\times 10^{5}" in label for label in labels)
+    assert any(r"1.1\times 10^{-5}" in label for label in labels)
+    assert not any("e+05" in label or "e-05" in label for label in labels)
 
 
 def test_fit_rate_accepts_sig_fig_alias_for_fit_label(ecat_module):
@@ -2515,6 +3590,33 @@ def test_fit_rate_named_fit_ranges_produce_multiple_loglog_fits(ecat_module):
     assert result.fit_table["series"].drop_duplicates().tolist() == ["early", "tail split"]
     assert result.fit_table.drop_duplicates("series")["slope"].tolist() == pytest.approx([2.0, 2.0])
     assert result.fit_table.drop_duplicates("series")["Fit Points"].tolist() == [5, 6]
+
+
+def test_fit_rate_named_fit_indices_produce_multiple_fits_with_open_ended_windows(ecat_module):
+    df = pd.DataFrame(
+        {
+            "Scan Rate": np.arange(1, 9, dtype=float),
+            "kobs": 3.0 * np.arange(1, 9, dtype=float) + 2.0,
+        }
+    )
+
+    result = ecat_module.fit_rate(
+        df,
+        {
+            "plot": False,
+            "print": False,
+            "metric": "kobs",
+            "fit indices": {
+                "early": [0, 3],
+                "late": [4, None],
+            },
+        },
+    )
+
+    assert list(result.fits) == ["early", "late"]
+    assert result.fit_table["series"].drop_duplicates().tolist() == ["early", "late"]
+    assert result.fit_table.drop_duplicates("series")["slope"].tolist() == pytest.approx([3.0, 3.0])
+    assert result.fit_table.drop_duplicates("series")["Fit Points"].tolist() == [3, 4]
 
 
 def test_fit_rate_named_fit_ranges_support_model_fits_and_plot_lines(ecat_module):
@@ -2817,6 +3919,40 @@ def test_multi_scatterplot_plots_labeled_dataframes_with_explicit_columns(ecat_m
     assert result.table["series"].tolist() == ["Fe only"] * 3 + ["cyclen"] * 3
 
 
+def test_multi_scatterplot_uses_scatterfit_raw_table_as_default_source(ecat_module):
+    result = ecat_module.ScatterFitResult(
+        table=pd.DataFrame({"x raw": [999.0], "kobs": [999.0]}),
+        raw_table=pd.DataFrame({"concentration": [1.0, 2.0], "kobs": [10.0, 20.0]}),
+        transformed_table=pd.DataFrame({"x transformed": [100.0], "y transformed": [200.0]}),
+        fit_table=None,
+        fit_model_results=None,
+    )
+
+    plotted = ecat_module.multi_scatterplot(
+        {"sample": result},
+        {
+            "x column": "concentration",
+            "y column": "kobs",
+            "fit": False,
+            "legend": False,
+            "title": False,
+        },
+    )
+
+    assert plotted.raw_table["x raw"].tolist() == [1.0, 2.0]
+    assert plotted.raw_table["y raw"].tolist() == [10.0, 20.0]
+    assert plotted.table["x"].tolist() == [1.0, 2.0]
+    assert plotted.table["y"].tolist() == [10.0, 20.0]
+    plt.close(plotted.figure)
+
+
+def test_scatter_fit_result_is_not_tuple_iterable(ecat_module):
+    result = ecat_module.ScatterFitResult(table=pd.DataFrame({"x": [1.0]}), fits={})
+
+    with pytest.raises(TypeError):
+        iter(result)
+
+
 def test_multi_scatterplot_accepts_dataclass_options(ecat_module):
     datasets = {
         "Fe only": pd.DataFrame({"x": [1.0, 2.0, 3.0], "kobs": [2.0, 4.0, 6.0]}),
@@ -2881,6 +4017,64 @@ def test_multi_scatterplot_plot_scale_log_log_sets_both_axes(ecat_module):
 
     assert result.axes.get_xscale() == "log"
     assert result.axes.get_yscale() == "log"
+    plt.close(result.figure)
+
+
+def test_multi_scatterplot_accepts_scatterfit_modes_for_loglog_kobs(ecat_module):
+    datasets = {
+        "sample": pd.DataFrame({"x raw": [1.0, 10.0, 100.0], "kobs": [2.0, 20.0, 200.0]}),
+    }
+
+    result = ecat_module.multi_scatterplot(
+        datasets,
+        {
+            "x column": "x raw",
+            "y column": "kobs",
+            "y mode": "raw",
+            "transform mode": "log-log",
+            "fit": True,
+            "legend": False,
+            "title": False,
+        },
+    )
+
+    assert result.table["x"].tolist() == pytest.approx([0.0, 1.0, 2.0])
+    assert result.table["y"].tolist() == pytest.approx(np.log10([2.0, 20.0, 200.0]))
+    assert result.fit_table.loc[0, "slope"] == pytest.approx(1.0)
+    plt.close(result.figure)
+
+
+def test_multi_scatterplot_scatterfit_modes_use_scatterfit_axis_labels(ecat_module):
+    df = pd.DataFrame({"Scan Rate": [1.0, 2.0, 3.0], "kobs": [2.0, 4.0, 8.0]})
+    rate_result = ecat_module.fit_rate(
+        df,
+        {
+            "plot": False,
+            "print": False,
+            "metric": "kobs",
+            "y mode": "enhancement",
+            "transform mode": "log-log",
+            "fit": False,
+        },
+    )
+
+    result = ecat_module.multi_scatterplot(
+        {"rate": rate_result},
+        {
+            "x column": "x raw",
+            "y column": "kobs",
+            "y mode": "enhancement",
+            "transform mode": "log-log",
+            "fit": False,
+            "legend": False,
+            "title": False,
+        },
+    )
+
+    assert result.axes.get_xlabel() == r"$\log_{10}$(Scan Rate / V/s)"
+    assert result.axes.get_ylabel() == (
+        r"$\log_{10}$($k_{\mathrm{obs}}$/$k_{\mathrm{obs}}^{0}$ - 1)"
+    )
     plt.close(result.figure)
 
 
@@ -2977,7 +4171,7 @@ def test_multi_scatterplot_print_true_displays_reused_fit_table(
     assert displayed["table"].loc[0, "slope"] == pytest.approx(2.0)
 
 
-def test_multi_scatterplot_reused_fits_respect_result_fit_indices(ecat_module):
+def test_multi_scatterplot_fits_from_scatter_result_use_plotted_points(ecat_module):
     df = pd.DataFrame({"Scan Rate": [1.0, 2.0, 3.0, 4.0], "kobs": [2.0, 4.0, 20.0, 30.0]})
     rate_result = ecat_module.fit_rate(
         df,
@@ -2996,7 +4190,8 @@ def test_multi_scatterplot_reused_fits_respect_result_fit_indices(ecat_module):
 
     line_x = result.axes.lines[0].get_xdata()
     assert np.nanmin(line_x) == pytest.approx(1.0)
-    assert np.nanmax(line_x) == pytest.approx(2.0)
+    assert np.nanmax(line_x) == pytest.approx(4.0)
+    assert result.fit_table.loc[0, "slope"] == pytest.approx(10.0)
     plt.close(result.figure)
 
 
@@ -3038,7 +4233,7 @@ def test_multi_scatterplot_auto_resolves_transformed_columns(ecat_module):
     np.testing.assert_allclose(result.axes.collections[0].get_offsets()[:, 0], [0.0, 0.3, 0.48])
 
 
-def test_multi_scatterplot_data_mode_raw_uses_raw_columns_and_backtransformed_fit(ecat_module):
+def test_multi_scatterplot_plot_fits_from_explicit_raw_columns(ecat_module):
     df = pd.DataFrame({"Scan Rate": [1.0, 2.0, 4.0], "kobs": [3.0, 12.0, 48.0]})
     rate_result = ecat_module.fit_rate(
         df,
@@ -3052,18 +4247,24 @@ def test_multi_scatterplot_data_mode_raw_uses_raw_columns_and_backtransformed_fi
 
     result = ecat_module.multi_scatterplot(
         {"rate": rate_result},
-        {"data mode": "raw", "legend": False, "title": False},
+        {
+            "x column": "x raw",
+            "y column": "kobs",
+            "legend": False,
+            "title": False,
+        },
     )
 
     assert result.table["x column"].unique().tolist() == ["x raw"]
     assert result.table["y column"].unique().tolist() == ["kobs"]
     line = result.axes.lines[0]
-    assert len(line.get_xdata()) > 3
-    np.testing.assert_allclose(line.get_ydata(), 3 * line.get_xdata() ** 2, rtol=1e-6)
+    assert len(line.get_xdata()) >= 2
+    expected = np.poly1d(np.polyfit([1.0, 2.0, 4.0], [3.0, 12.0, 48.0], 1))
+    np.testing.assert_allclose(line.get_ydata(), expected(line.get_xdata()), rtol=1e-6)
     plt.close(result.figure)
 
 
-def test_multi_scatterplot_data_modes_transformed_and_adjusted(ecat_module):
+def test_multi_scatterplot_selects_transformed_or_adjusted_columns(ecat_module):
     df = pd.DataFrame({"Scan Rate": [1.0, 2.0, 3.0], "kobs": [2.0, 4.0, 8.0]})
     rate_result = ecat_module.fit_rate(
         df,
@@ -3078,11 +4279,23 @@ def test_multi_scatterplot_data_modes_transformed_and_adjusted(ecat_module):
 
     transformed = ecat_module.multi_scatterplot(
         {"rate": rate_result},
-        {"data mode": "transformed", "plot fit": False, "legend": False, "title": False},
+        {
+            "x column": "x transformed",
+            "y column": "y transformed",
+            "plot fit": False,
+            "legend": False,
+            "title": False,
+        },
     )
     adjusted = ecat_module.multi_scatterplot(
         {"rate": rate_result},
-        {"data mode": "adjusted", "plot fit": False, "legend": False, "title": False},
+        {
+            "x column": "x raw",
+            "y column": "y adjusted",
+            "plot fit": False,
+            "legend": False,
+            "title": False,
+        },
     )
 
     assert transformed.table["x column"].unique().tolist() == ["x transformed"]
@@ -3090,7 +4303,7 @@ def test_multi_scatterplot_data_modes_transformed_and_adjusted(ecat_module):
     assert adjusted.table["x column"].unique().tolist() == ["x raw"]
     assert adjusted.table["y column"].unique().tolist() == ["y adjusted"]
     np.testing.assert_allclose(adjusted.axes.collections[0].get_offsets()[:, 1], [1.0, 3.0])
-    assert adjusted.axes.get_ylabel() == "kobs/kobs$^{0}$ - 1"
+    assert adjusted.axes.get_ylabel() == r"$k_{\mathrm{obs}}$/$k_{\mathrm{obs}}^{0}$ - 1"
     assert transformed.axes.get_ylabel() == (
         r"$\log_{10}$($k_{\mathrm{obs}}$/$k_{\mathrm{obs}}^{0}$ - 1)"
     )
@@ -3098,33 +4311,9 @@ def test_multi_scatterplot_data_modes_transformed_and_adjusted(ecat_module):
     plt.close(adjusted.figure)
 
 
-def test_multi_scatterplot_rejects_reused_fractional_fit_on_raw_metric_column(ecat_module):
-    df = pd.DataFrame({"Scan Rate": [1.0, 2.0, 3.0], "kobs": [2.0, 4.0, 8.0]})
-    rate_result = ecat_module.fit_rate(
-        df,
-        {
-            "plot": False,
-            "print": False,
-            "metric": "kobs",
-            "y mode": "enhancement",
-            "transform mode": "log-log",
-        },
-    )
-
-    with pytest.raises(ValueError, match="does not match the selected multi_scatterplot columns"):
-        ecat_module.multi_scatterplot(
-            {"rate": rate_result},
-            {
-                "data mode": "raw",
-                "y column": "kobs",
-                "print": False,
-                "legend": False,
-                "title": False,
-            },
-        )
-
-
-def test_multi_scatterplot_can_plot_raw_metric_points_without_reusing_fractional_fit(ecat_module):
+def test_multi_scatterplot_raw_points_from_metric_series(
+    ecat_module,
+):
     df = pd.DataFrame({"Scan Rate": [1.0, 2.0, 3.0], "kobs": [2.0, 4.0, 8.0]})
     rate_result = ecat_module.fit_rate(
         df,
@@ -3139,78 +4328,25 @@ def test_multi_scatterplot_can_plot_raw_metric_points_without_reusing_fractional
 
     result = ecat_module.multi_scatterplot(
         {"rate": rate_result},
-            {
-                "data mode": "raw",
-                "y column": "kobs",
-                "plot fit": False,
-                "print": False,
-                "legend": False,
-                "title": False,
-            },
+        {
+            "x column": "x raw",
+            "y column": "kobs",
+            "plot fit": False,
+            "print": False,
+            "legend": False,
+            "title": False,
+        },
     )
 
+    assert result.table["x column"].unique().tolist() == ["x raw"]
     assert result.table["y column"].unique().tolist() == ["kobs"]
     assert len(result.axes.lines) == 0
+    np.testing.assert_allclose(result.axes.collections[0].get_offsets()[:, 0], [2.0, 3.0])
     np.testing.assert_allclose(result.axes.collections[0].get_offsets()[:, 1], [4.0, 8.0])
     plt.close(result.figure)
 
 
-def test_multi_scatterplot_infers_axis_labels_from_scatter_fit_result(ecat_module):
-    df = pd.DataFrame({"Scan Rate": [1.0, 2.0, 4.0, 8.0], "kobs": [2.0, 4.0, 8.0, 16.0]})
-    rate_result = ecat_module.fit_rate(
-        df,
-        {
-            "plot": False,
-            "print": False,
-            "metric": "kobs",
-            "plot log-log": True,
-        },
-    )
-
-    result = ecat_module.multi_scatterplot(
-        {"rate": rate_result},
-        {"legend": False, "title": False},
-    )
-
-    assert result.table["x column"].unique().tolist() == ["x transformed"]
-    assert result.table["y column"].unique().tolist() == ["y transformed"]
-    assert result.axes.get_xlabel() != "x transformed"
-    assert result.axes.get_ylabel() != "y transformed"
-    assert result.axes.get_xlabel() == ecat_module._format_fit_rate_x_label(
-        "Scan Rate",
-        unit="V/s",
-        x_kind="scan rate",
-        transform="log10",
-        log=True,
-    )
-    assert result.axes.get_ylabel() == ecat_module._format_fit_rate_metric_label("kobs", log=True)
-    plt.close(result.figure)
-
-
-def test_fit_rate_stores_y_label_for_transformed_multi_scatterplot(ecat_module):
-    df = pd.DataFrame({"Scan Rate": [1.0, 2.0, 4.0], "TOFmax": [5.0, 10.0, 20.0]})
-    rate_result = ecat_module.fit_rate(
-        df,
-        {
-            "plot": False,
-            "print": False,
-            "metric": "TOFmax",
-            "plot log-log": True,
-        },
-    )
-
-    assert rate_result.table["y label"].unique().tolist() == ["TOFmax"]
-
-    result = ecat_module.multi_scatterplot(
-        {"rate": rate_result},
-        {"legend": False, "title": False},
-    )
-
-    assert result.axes.get_ylabel() == ecat_module._format_fit_rate_metric_label("TOFmax", log=True)
-    plt.close(result.figure)
-
-
-def test_fit_peak_current_multi_scatterplot_uses_stored_axis_labels(
+def test_multi_scatterplot_infers_axis_labels_from_scatter_fit_result(
     ecat_module,
     cv_factory,
 ):
@@ -3246,6 +4382,24 @@ def test_fit_peak_current_multi_scatterplot_uses_stored_axis_labels(
     plt.close(result.figure)
 
 
+def test_multi_scatterplot_raw_peak_current_label(ecat_module):
+    ip = pd.DataFrame({"x raw": [1.0, 2.0], "ip": [1e-6, 2e-6]})
+
+    result = ecat_module.multi_scatterplot(
+        {"trace": ip},
+        {
+            "x column": "x raw",
+            "y column": "ip",
+            "legend": False,
+            "title": False,
+        },
+    )
+
+    assert result.table["y column"].unique().tolist() == ["ip"]
+    assert result.axes.get_ylabel() == r"$i_p$"
+    plt.close(result.figure)
+
+
 def test_multi_scatterplot_auto_resolves_common_rate_ip_ep_columns(ecat_module):
     rate = pd.DataFrame({"x raw": [1.0, 2.0], "kobs": [4.0, 8.0]})
     ip = pd.DataFrame({"x raw": [1.0, 2.0], "ip": [1e-6, 2e-6]})
@@ -3258,19 +4412,6 @@ def test_multi_scatterplot_auto_resolves_common_rate_ip_ep_columns(ecat_module):
         )
         assert result.table["y column"].unique().tolist() == [expected]
         plt.close(result.figure)
-
-
-def test_multi_scatterplot_data_mode_raw_formats_peak_current_label(ecat_module):
-    ip = pd.DataFrame({"x raw": [1.0, 2.0], "ip": [1e-6, 2e-6]})
-
-    result = ecat_module.multi_scatterplot(
-        {"trace": ip},
-        {"data mode": "raw", "legend": False, "title": False},
-    )
-
-    assert result.table["y column"].unique().tolist() == ["ip"]
-    assert result.axes.get_ylabel() == r"$i_p$"
-    plt.close(result.figure)
 
 
 def test_multi_scatterplot_raw_axis_labels_use_chemical_formula_formatting(ecat_module):
@@ -3308,7 +4449,7 @@ def test_multi_scatterplot_supports_line_and_line_marker_styles(ecat_module):
 
     line_result = ecat_module.multi_scatterplot(
         {"line": df},
-        {"plot style": "line", "legend": False, "title": False},
+        {"plot style": "line", "fit": False, "legend": False, "title": False},
     )
     assert len(line_result.axes.lines) == 1
     assert line_result.axes.lines[0].get_marker() == "None"
@@ -3316,7 +4457,7 @@ def test_multi_scatterplot_supports_line_and_line_marker_styles(ecat_module):
 
     marker_result = ecat_module.multi_scatterplot(
         {"markers": df},
-        {"plot style": "line+markers", "legend": False, "title": False},
+        {"plot style": "line+markers", "fit": False, "legend": False, "title": False},
     )
     assert len(marker_result.axes.lines) == 1
     assert marker_result.axes.lines[0].get_marker() == "o"

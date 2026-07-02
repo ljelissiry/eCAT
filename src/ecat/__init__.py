@@ -1,10 +1,11 @@
-"""eCAT: electroCatalysis Analysis Tools.
+"""eCAT: electroChemical Analysis Tools.
 
 Common starting points:
     echem.from_file(path)
     get_data({"folder path": path})
     get_CVs({"folder path": path})
     multiplot(objects)
+    animate(obj_or_list)
     open_app()
     describe_options()
 
@@ -37,6 +38,7 @@ from . import (
     parsers,
     plotting,
     reference,
+    results,
     simulation,
     utils,
 )
@@ -54,6 +56,7 @@ from .analysis_batch import (
     trumpet_analysis,
 )
 from .analysis_cv import normalize, normalize_current, scale_current
+from .animation import animate
 from .app import open_app
 from .collection import (
     filter,
@@ -65,9 +68,10 @@ from .collection import (
 )
 from .utils import describe_options
 from .export import save_data
-from .io import create_cv_objects_from_excel, get_CVs, get_CVs_from_excel, get_data
-from .objects import CVAnalysisResult, ca, cp, cv, dpv, echem
+from .io import get_CVs, get_data, get_data_from_excel, parse_file
+from .objects import CVAnalysisResult, ChronoAnalysisResult, ca, cp, cv, dpv, echem
 from .plotting import (
+    ScatterFitResult,
     multimultiplot,
     multiplot,
     multi_scatterplot,
@@ -76,6 +80,8 @@ from .plotting import (
     show_groups,
     show_objects,
 )
+from .results import AnalysisResult
+from .parsers import ParseResult
 from .options import (
     FilterOptions,
     FitPeakCurrentOptions,
@@ -110,19 +116,24 @@ from .options import (
 __all__ = [
     "__version__",
     "simulation",
+    "AnalysisResult",
+    "ParseResult",
     "CVAnalysisResult",
+    "ChronoAnalysisResult",
+    "ScatterFitResult",
     "echem",
     "cv",
     "ca",
     "cp",
     "dpv",
     "get_data",
+    "parse_file",
     "get_CVs",
-    "get_CVs_from_excel",
-    "create_cv_objects_from_excel",
+    "get_data_from_excel",
     "multiplot",
     "multimultiplot",
     "multi_scatterplot",
+    "animate",
     "filter",
     "sort",
     "group",

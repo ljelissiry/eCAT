@@ -12,8 +12,10 @@ class _PlateauDummyCV:
         self.temperature = 298
         self.electrode_area = 0
         self._current = current
+        self.peak_current_calls = []
 
     def peak_current(self, options):
+        self.peak_current_calls.append(dict(options or {}))
         return {"ip": self._current, "tangent line": None, "tangent start": None}
 
 
@@ -33,6 +35,10 @@ def _synthetic_fowa_cv(ecat_module, blank_echem_factory, name, scale):
     obj = blank_echem_factory(ecat_module.cv)
     obj.manual_init(name, data, options={})
     return obj
+
+
+def _analysis_table(result):
+    return result.table
 
 
 def _synthetic_multisegment_fowa_cv(ecat_module, blank_echem_factory, name, scale):
@@ -105,8 +111,34 @@ def test_plateau_current_uses_peak_current_without_fowa_only_options(ecat_module
         },
     )
 
-    assert result["ilim source"].iloc[0] == "peak_current"
-    assert result["formula mode"].iloc[0] == "normalized"
+    assert result.table["ilim source"].iloc[0] == "peak_current"
+    assert result.table["formula mode"].iloc[0] == "normalized"
+
+
+def test_plateau_current_passes_per_cv_potential_options(ecat_module):
+    cvs = [
+        _PlateauDummyCV("cat low", 0.1, -1.0e-5),
+        _PlateauDummyCV("cat high", 1.0, -1.1e-5),
+    ]
+
+    ecat_module.plateau_current(
+        cvs,
+        {
+            "plot": False,
+            "plot all": False,
+            "print": False,
+            "guess potentials": [-0.11, -0.22],
+            "tangent potentials": [-0.31, -0.42],
+            "require plateau": False,
+            "validate plateau": False,
+            "formula mode": "normalized",
+            "ip0": 1.0e-6,
+            "ip0 scan rate": 0.1,
+        },
+    )
+
+    assert [cv.peak_current_calls[0]["guess potential"] for cv in cvs] == pytest.approx([-0.11, -0.22])
+    assert [cv.peak_current_calls[0]["tangent potential"] for cv in cvs] == pytest.approx([-0.31, -0.42])
 
 
 def test_fowa_table_column_labels_preserve_electrochemical_notation(ecat_module):
@@ -158,7 +190,7 @@ def test_fowa_table_includes_fit_range_when_ranges_differ(
     )
 
     with pytest.warns(UserWarning, match="non-positive slope"):
-        table = ecat_module.fowa(
+        table = _analysis_table(ecat_module.fowa(
             cvs,
             {
                 "plot": False,
@@ -173,7 +205,7 @@ def test_fowa_table_includes_fit_range_when_ranges_differ(
                 "min r2": 0,
                 "ecat shift warning threshold": False,
             },
-        )
+        ))
 
     assert "Fit Basis" in table.columns
     assert table["Fit Basis"].tolist() == ["x", "y"]
@@ -197,7 +229,7 @@ def test_fowa_status_summarizes_all_issues_and_hides_warning_details(
     )
 
     with pytest.warns(UserWarning):
-        table = ecat_module.fowa(
+        table = _analysis_table(ecat_module.fowa(
             [cv_obj],
             {
                 "plot": False,
@@ -212,7 +244,7 @@ def test_fowa_status_summarizes_all_issues_and_hides_warning_details(
                 "min r2": 1.01,
                 "ecat shift warning threshold": False,
             },
-        )
+        ))
 
     status = table["Status"].iloc[0]
     assert "fit points < threshold" in status
@@ -244,7 +276,7 @@ def test_fowa_warnings_option_suppresses_python_warnings_but_keeps_status(
 
     with warnings.catch_warnings(record=True) as captured:
         warnings.simplefilter("always")
-        table = ecat_module.fowa(
+        table = _analysis_table(ecat_module.fowa(
             [cv_obj],
             {
                 "plot": False,
@@ -260,7 +292,7 @@ def test_fowa_warnings_option_suppresses_python_warnings_but_keeps_status(
                 "min r2": 1.01,
                 "ecat shift warning threshold": False,
             },
-        )
+        ))
 
     assert captured == []
     assert "multiple issues" not in table["Status"].iloc[0]
@@ -284,7 +316,7 @@ def test_fowa_result_tables_include_unit_metadata(
     )
 
     with pytest.warns(UserWarning, match="non-positive slope"):
-        table = ecat_module.fowa(
+        table = _analysis_table(ecat_module.fowa(
             [cv_obj],
             {
                 "plot": False,
@@ -299,7 +331,7 @@ def test_fowa_result_tables_include_unit_metadata(
                 "min r2": 0,
                 "ecat shift warning threshold": False,
             },
-        )
+        ))
 
     assert table.attrs["units"]["kobs"] == "s^-1"
     assert table.attrs["units"]["ip0"] == "A"
@@ -404,7 +436,7 @@ def test_fowa_accepts_manual_wave_range(
     )
 
     with pytest.warns(UserWarning, match="non-positive slope"):
-        table = ecat_module.fowa(
+        table = _analysis_table(ecat_module.fowa(
             [cv_obj],
             {
                 "plot": False,
@@ -420,7 +452,7 @@ def test_fowa_accepts_manual_wave_range(
                 "min r2": 0,
                 "ecat shift warning threshold": False,
             },
-    )
+    ))
 
     full = table.attrs["full_results_df"]
     potential = cv_obj.x()
@@ -456,7 +488,7 @@ def test_fowa_manual_redox_still_reports_ecat_half_shift(
     )
 
     with pytest.warns(UserWarning, match="non-positive slope"):
-        table = ecat_module.fowa(
+        table = _analysis_table(ecat_module.fowa(
             [cv_obj],
             {
                 "plot": False,
@@ -470,7 +502,7 @@ def test_fowa_manual_redox_still_reports_ecat_half_shift(
                 "min r2": 0,
                 "ecat shift warning threshold": False,
             },
-        )
+        ))
 
     full = table.attrs["full_results_df"]
     assert full.loc[0, "Catalytic Ecat/2"] == pytest.approx(0.12)
@@ -606,6 +638,40 @@ def test_fowa_summary_pretty_print_uses_styled_dataframe(ecat_module, monkeypatc
     assert "R<sup>2</sup>" in rendered
 
 
+def test_fowa_results_display_respects_sig_figs_and_formats_kobs_scientific(
+    ecat_module,
+    monkeypatch,
+):
+    displayed = {}
+
+    def capture_display(obj):
+        displayed["object"] = obj
+
+    monkeypatch.setattr(ecat_module, "display", capture_display)
+
+    table = pd.DataFrame(
+        {
+            "Name": ["cat"],
+            "Redox Potential": [0.123456],
+            "R2": [0.987654],
+            "kobs": [12345.6789],
+        }
+    )
+
+    returned = ecat_module._display_fowa_results_table(
+        table,
+        {"pretty print": True, "sig figs": 3},
+    )
+
+    assert returned is table
+    rendered = displayed["object"].to_html()
+    assert "0.123" in rendered
+    assert "0.988" in rendered
+    assert "1.23e+04" in rendered
+    assert "12345.6789" not in rendered
+    assert "k<sub>obs</sub>" in rendered
+
+
 def test_fowa_summary_plain_print_uses_dataframe_text(ecat_module, monkeypatch, capsys):
     monkeypatch.setattr(ecat_module, "display", None)
 
@@ -677,7 +743,7 @@ def test_fowa_accepts_option_dataclass(ecat_module, blank_echem_factory, monkeyp
     )
 
     with pytest.warns(UserWarning, match="non-positive slope"):
-        table = ecat_module.fowa([cv_obj], options)
+        table = _analysis_table(ecat_module.fowa([cv_obj], options))
 
     assert "FOWA Fit" in table.attrs["shared_summary"]
     assert "Slope" in table.attrs["full_results_df"].columns
@@ -704,7 +770,7 @@ def test_fowa_table_combines_line_and_wave_range_columns(
     )
 
     with pytest.warns(UserWarning, match="non-positive slope"):
-        table = ecat_module.fowa(
+        table = _analysis_table(ecat_module.fowa(
             [cv_obj],
             {
                 "plot": False,
@@ -719,7 +785,7 @@ def test_fowa_table_combines_line_and_wave_range_columns(
                 "min r2": 0,
                 "ecat shift warning threshold": False,
             },
-        )
+        ))
 
     shared_summary = table.attrs["shared_summary"]
     assert "Background Tangent" in shared_summary
@@ -764,7 +830,7 @@ def test_fowa_shared_analysis_columns_move_to_summary(
     )
 
     with pytest.warns(UserWarning, match="non-positive slope"):
-        table = ecat_module.fowa(
+        table = _analysis_table(ecat_module.fowa(
             cvs,
             {
                 "plot": False,
@@ -779,7 +845,7 @@ def test_fowa_shared_analysis_columns_move_to_summary(
                 "min r2": 0,
                 "ecat shift warning threshold": False,
             },
-        )
+        ))
 
     shared_summary = table.attrs["shared_summary"]
     assert "Fit Basis" not in table.columns
@@ -811,7 +877,7 @@ def test_fowa_table_uses_operation_order_for_analysis_columns(
     )
 
     with pytest.warns(UserWarning, match="non-positive slope"):
-        table = ecat_module.fowa(
+        table = _analysis_table(ecat_module.fowa(
             [cv_obj],
             {
                 "plot": False,
@@ -826,7 +892,7 @@ def test_fowa_table_uses_operation_order_for_analysis_columns(
                 "min r2": 0,
                 "ecat shift warning threshold": 999,
             },
-        )
+        ))
 
     expected_order = [
         "Name",
@@ -838,6 +904,47 @@ def test_fowa_table_uses_operation_order_for_analysis_columns(
 
     visible_expected = [col for col in expected_order if col in table.columns]
     assert list(table.columns) == visible_expected
+
+
+def test_fowa_applies_per_cv_tangent_and_redox_potentials(
+    ecat_module,
+    blank_echem_factory,
+    monkeypatch,
+):
+    cvs = [
+        _synthetic_fowa_cv(ecat_module, blank_echem_factory, "100mVs_cat_run01", 1.0),
+        _synthetic_fowa_cv(ecat_module, blank_echem_factory, "100mVs_cat_run02", 1.2),
+    ]
+    monkeypatch.setattr(
+        ecat_module,
+        "build_object_table",
+        lambda object_list, options=None: (
+            pd.DataFrame({"Name": [obj.name for obj in object_list]}),
+            {},
+        ),
+    )
+
+    with pytest.warns(UserWarning, match="non-positive slope"):
+        table = _analysis_table(ecat_module.fowa(
+            cvs,
+            {
+                "plot": False,
+                "print": False,
+                "non-catalytic current": 1e-6,
+                "redox mode": "manual",
+                "redox potentials": [0.0, 0.01],
+                "background correction": "tangent",
+                "tangent potentials": [-0.1, -0.05],
+                "fit range": [0.1, 0.5],
+                "min fit points": 5,
+                "min r2": 0,
+                "ecat shift warning threshold": False,
+            },
+        ))
+
+    full_results = table.attrs["full_results_df"]
+    assert full_results["Redox Potential"].tolist() == pytest.approx([0.0, 0.01])
+    assert full_results["Background Tangent Potential"].tolist() == pytest.approx([-0.1, -0.05])
 
 
 def test_fowa_transformed_plot_respects_multiplot_legend_toggle(
@@ -963,9 +1070,9 @@ def test_fowa_uses_raw_current_when_input_cv_is_already_normalized(
     }
 
     with pytest.warns(UserWarning, match="non-positive slope"):
-        raw_result = ecat_module.fowa([cv_obj], common_options)
+        raw_result = _analysis_table(ecat_module.fowa([cv_obj], common_options))
     with pytest.warns(UserWarning, match="non-positive slope"):
-        normalized_result = ecat_module.fowa([normalized_cv], common_options)
+        normalized_result = _analysis_table(ecat_module.fowa([normalized_cv], common_options))
 
     raw_full = raw_result.attrs["full_results_df"]
     normalized_full = normalized_result.attrs["full_results_df"]
@@ -996,7 +1103,7 @@ def test_fowa_accepts_ip0_alias_for_non_catalytic_current(
     )
 
     with pytest.warns(UserWarning, match="non-positive slope"):
-        table = ecat_module.fowa(
+        table = _analysis_table(ecat_module.fowa(
             [cv_obj],
             {
                 "plot": False,
@@ -1010,7 +1117,7 @@ def test_fowa_accepts_ip0_alias_for_non_catalytic_current(
                 "min r2": 0,
                 "ecat shift warning threshold": False,
             },
-        )
+        ))
 
     assert "FOWA Fit" in table.attrs["shared_summary"]
     assert "Slope" in table.attrs["full_results_df"].columns
@@ -1346,7 +1453,7 @@ def test_fowa_plot_all_shows_multiplot_legend_by_default(
     plt.close(fig)
 
 
-def test_fowa_plot_all_passes_resolved_auto_labels_to_normalized_multiplot(
+def test_fowa_plot_all_leaves_auto_labels_to_multiplot(
     ecat_module,
     blank_echem_factory,
     monkeypatch,
@@ -1403,12 +1510,11 @@ def test_fowa_plot_all_passes_resolved_auto_labels_to_normalized_multiplot(
                 "min r2": 0,
                 "ecat shift warning threshold": False,
             },
-        )
+    )
 
     assert captured_options
-    assert captured_options[-1]["labels"] == ["Background", "10 mM H2O", "20 mM H2O"]
+    assert captured_options[-1].get("labels") is None
     assert captured_options[-1]["min gradient entries"] == 4
-    assert not any("[Zn]" in label or "Fc" in label for label in captured_options[-1]["labels"])
 
     plt.close("all")
 

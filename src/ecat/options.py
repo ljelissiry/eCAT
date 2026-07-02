@@ -41,17 +41,29 @@ def normalize_key(key):
 
 _OPTION_KEY_ALIASES = {
     "colorbar_height": "colorbar_height_scale",
+    "exact_potentials": "exact_potential",
+    "fit_colors": "fit_color",
+    "guess_potentials": "guess_potential",
     "in_place": "inplace",
     "minimum_gradient_entries": "min_gradient_entries",
+    "non_catalytic_guess_potentials": "non_catalytic_guess_potential",
+    "peak_potentials": "peak_potential",
+    "plot_labels": "labels",
+    "redox_potentials": "redox_potential",
+    "scan_rates": "scan_rate",
     "sig_fig": "sig_figs",
     "sigfig": "sig_figs",
     "sigfigs": "sig_figs",
     "significant_figure": "sig_figs",
     "significant_figures": "sig_figs",
+    "tangent_potentials": "tangent_potential",
 }
 
 _SECTION_ALIASES = {
     "import_data": "get_data",
+    "get_cvs": "get_data",
+    "get_data_from_excel": "get_data",
+    "nicholson_analysis": "nicholson",
     "peak_potential": "cv_analysis",
     "sevcik": "sevcik_analysis",
     "trumpet": "trumpet_analysis",
@@ -59,7 +71,10 @@ _SECTION_ALIASES = {
 }
 
 _METHOD_SECTION_ALIASES = {
+    "animate": "plot",
     "echem.from_file": "get_data",
+    "get_cvs": "get_data",
+    "get_data_from_excel": "get_data",
     "echem.x": "plot",
     "echem.y": "plot",
     "echem.xy": "plot",
@@ -107,6 +122,35 @@ def _canonical_section_key(key):
     return _SECTION_ALIASES.get(norm, norm)
 
 
+def _option_values_equivalent(first, second):
+    if first is second:
+        return True
+    try:
+        return bool(first == second)
+    except (TypeError, ValueError):
+        return False
+
+
+def _drop_legacy_alias_mirrors(options):
+    """Remove mirrored legacy alias keys from an already-normalized option dict."""
+    cleaned = dict(options or {})
+    for canonical_key, alias_key in (
+        ("labels", "plot labels"),
+        ("fit color", "fit colors"),
+        ("scan rate", "scan rates"),
+    ):
+        if canonical_key not in cleaned or alias_key not in cleaned:
+            continue
+        canonical_value = cleaned[canonical_key]
+        alias_value = cleaned[alias_key]
+        if canonical_value is None or _option_values_equivalent(canonical_value, alias_value):
+            cleaned[canonical_key] = alias_value if canonical_value is None else canonical_value
+            cleaned.pop(alias_key, None)
+        elif alias_value is None:
+            cleaned.pop(alias_key, None)
+    return cleaned
+
+
 def _friendly_key(key):
     return str(key).replace("_", " ")
 
@@ -118,6 +162,331 @@ _DISPLAY_KEY_OVERRIDES = {
     "ehalf": "Ehalf",
     "follow_e1_2": "follow e1/2",
     "plot_cv": "plot CV",
+}
+
+_SECTION_OPTION_DISPLAY_OVERRIDES = {
+    "fowa": {
+        "exact_potential": "exact potential(s)",
+        "fit_color": "fit color(s)",
+        "guess_potential": "guess potential(s)",
+        "non_catalytic_cv": "non-catalytic cv(s)",
+        "non_catalytic_cvs": "non-catalytic cv(s)",
+        "non_catalytic_guess_potential": "non-catalytic guess potential(s)",
+        "peak_potential": "peak potential(s)",
+        "redox_potential": "redox potential(s)",
+        "tangent_potential": "tangent potential(s)",
+    },
+    "fit_peak_current": {
+        "exact_potential": "exact potential(s)",
+        "fit_color": "fit color(s)",
+        "guess_potential": "guess potential(s)",
+        "tangent_potential": "tangent potential(s)",
+    },
+    "fit_peak_potential": {
+        "exact_potential": "exact potential(s)",
+        "fit_color": "fit color(s)",
+        "guess_potential": "guess potential(s)",
+    },
+    "fit_rate": {
+        "fit_color": "fit color(s)",
+    },
+    "nicholson": {
+        "exact_potential": "exact potential(s)",
+        "guess_potential": "guess potential(s)",
+        "scan_rate": "scan rate(s)",
+        "tangent_potential": "tangent potential(s)",
+    },
+    "plateau_current": {
+        "exact_potential": "exact potential(s)",
+        "fit_color": "fit color(s)",
+        "guess_potential": "guess potential(s)",
+        "non_catalytic_cv": "non-catalytic cv(s)",
+        "non_catalytic_cvs": "non-catalytic cv(s)",
+        "non_catalytic_guess_potential": "non-catalytic guess potential(s)",
+        "peak_potential": "peak potential(s)",
+        "redox_potential": "redox potential(s)",
+        "tangent_potential": "tangent potential(s)",
+    },
+    "sevcik_analysis": {
+        "exact_potential": "exact potential(s)",
+        "fit_color": "fit color(s)",
+        "guess_potential": "guess potential(s)",
+        "tangent_potential": "tangent potential(s)",
+    },
+    "trumpet_analysis": {
+        "exact_potential": "exact potential(s)",
+        "fit_color": "fit color(s)",
+        "guess_potential": "guess potential(s)",
+        "tangent_potential": "tangent potential(s)",
+    },
+}
+
+_ANIMATION_OPTION_DEFAULTS = {
+    "trace_mode": "auto",
+    "schedule": "auto",
+    "timing_mode": "auto",
+    "normalized_duration": 2.0,
+    "speedup": 1.0,
+    "fps": 20,
+    "stride": 1,
+    "stagger_time": 0.5,
+    "end_hold": 2,
+    "loop": True,
+    "include_quiet_time": False,
+    "progress": True,
+}
+
+_ANIMATE_OPTION_KEYS = (
+    "title",
+    "subtitle",
+    "labels",
+    "label_alterations",
+    "plot_convention",
+    "x_axis",
+    "y_axis",
+    "x_unit",
+    "y_unit",
+    "color",
+    "color_mode",
+    "gradient_by",
+    "gradient_species",
+    "gradient_scale",
+    "gradient_colormap",
+    "gradient_colormaps",
+    "gradient_colors",
+    "gradient_gamma",
+    "gradient_reverse",
+    "min_gradient_entries",
+    "legend",
+    "legend_mode",
+    "legend_loc",
+    "legend_outside",
+    "legend_fontsize",
+    "colorbar_style",
+    "colorbar_height_scale",
+    "colorbar_reverse",
+    "colorbar_tick_labels",
+    "colorbar_trace_ticks",
+    "plot_segments",
+    "segment_color_mode",
+    "segment_color_groups",
+    "trace_mode",
+    "schedule",
+    "timing_mode",
+    "normalized_duration",
+    "speedup",
+    "fps",
+    "stride",
+    "stagger_time",
+    "end_hold",
+    "loop",
+    "include_quiet_time",
+    "progress",
+    "sig_figs",
+    "print",
+    "pretty_print",
+)
+
+_SIMULATION_OPTION_SCHEMAS = {
+    "simulation.cv_data": {
+        "potential window": {
+            "category": "Selection/filtering",
+            "default": None,
+            "type": "list[float] or None",
+            "description": "Potential window used to select measured CV data before simulation or fitting. With trim mode='expand', eCAT keeps connected scan data needed to preserve segment continuity.",
+        },
+        "trim mode": {
+            "category": "Selection/filtering",
+            "default": "expand",
+            "type": "str",
+            "choices": ["expand", "pointwise", "strict"],
+            "description": "How potential-window trimming is handled: expand preserves connected CV segments, pointwise keeps only points inside the requested window, and strict raises if the requested window would disconnect the CV.",
+        },
+        "segments": {
+            "category": "Selection/filtering",
+            "default": None,
+            "type": "int or list[int] or None",
+            "description": "CV segment or segments to extract. If omitted, eCAT uses the selected CV data according to the window and trim mode.",
+        },
+        "points": {
+            "category": "Selection/filtering",
+            "default": None,
+            "type": "int or None",
+            "description": "Target number of extracted points. When supplied without stride, eCAT chooses an automatic stride from the selected potential span.",
+        },
+        "stride": {
+            "category": "Selection/filtering",
+            "default": "auto",
+            "type": "int or str",
+            "description": "'auto' chooses a downsampling stride from points, points per volt, and min/max point targets; an integer keeps every nth selected point.",
+        },
+        "points per volt": {
+            "category": "Selection/filtering",
+            "default": "auto",
+            "type": "float or str",
+            "description": "Point-density target used by automatic stride selection when points is omitted.",
+        },
+        "estimate Cdl": {
+            "category": "Fitting/analysis",
+            "default": "auto",
+            "type": "bool or str",
+            "description": "'auto' estimates Cdl from measured current separation near the start potential when measured current and scan-rate metadata are available; False skips the estimate.",
+        },
+        "Cdl window": {
+            "category": "Fitting/analysis",
+            "default": "auto",
+            "type": "float or str or None",
+            "description": "Potential width around the start potential used for Cdl estimation; auto derives a small local window from the CV span.",
+        },
+        "Cdl method": {
+            "category": "Fitting/analysis",
+            "default": "median",
+            "type": "str",
+            "choices": ["median", "mean"],
+            "description": "Aggregation method used for automatic Cdl estimation.",
+        },
+    },
+    "simulation.simulate_cv": {
+        "plot": {
+            "category": "Plotting",
+            "default": True,
+            "type": "bool",
+            "description": "Plot the simulated CV immediately after the backend simulation completes.",
+        },
+        "plot all": {
+            "category": "Plotting",
+            "default": False,
+            "type": "bool",
+            "description": "Also plot backend/debug current columns when present.",
+        },
+        "current sign": {
+            "category": "Fitting/analysis",
+            "default": "auto",
+            "type": "str or int",
+            "choices": ["auto", "backend", "native", "flip", 1, -1],
+            "description": "'auto' matches simulated-current sign to measured current when measured data are present; otherwise the backend current sign is preserved.",
+        },
+        "use quiet time": {
+            "category": "Data/input",
+            "default": True,
+            "type": "bool",
+            "description": "Materialize quiet-time metadata only for the backend simulation input. Stored SimulationInput arrays remain unchanged.",
+        },
+        "print setup": {
+            "category": "Output/display",
+            "default": False,
+            "type": "bool or str",
+            "description": "Print simulation input/mechanism setup before or after simulation; use 'raw' for debugging-style output.",
+        },
+        "print params": {
+            "category": "Output/display",
+            "default": False,
+            "type": "bool or str",
+            "description": "Print prepared simulation parameters. True uses the default pretty table; 'compact' groups related parameters; 'raw' prints raw dictionaries.",
+        },
+        "check params": {
+            "category": "Output/display",
+            "default": False,
+            "type": "bool",
+            "description": "Print diagnostic checks for likely simulation-parameter interpretation issues such as missing diffusion values or mechanism/species mismatches.",
+        },
+        "plot options": {
+            "category": "Plotting",
+            "default": None,
+            "type": "dict or None",
+            "description": "Nested plotting options passed to the simulated-CV plot; omitted values reuse the top-level simulation options.",
+        },
+    },
+    "simulation.fit_cv": {
+        "residual": {
+            "category": "Fitting/analysis",
+            "default": "direct",
+            "type": "str",
+            "choices": ["direct", "scale", "scale linear baseline"],
+            "description": "Residual model used during optimization. Post corrections are final-only unless the residual mode itself includes scale or baseline terms.",
+        },
+        "post correction": {
+            "category": "Fitting/analysis",
+            "default": None,
+            "type": "str or None",
+            "choices": [None, "scale", "vertical shift", "scale linear baseline"],
+            "description": "Final-only nuisance correction applied after optimization for reporting/plotting; it is not written back into mechanism parameters.",
+        },
+        "residual normalization": {
+            "category": "Fitting/analysis",
+            "default": "max_abs_measured",
+            "type": "str or None",
+            "choices": [None, "max_abs_measured"],
+            "description": "Residual normalization used to make optimizer cost less dependent on current magnitude; it helps compare fits within a workflow but is not a universal goodness-of-fit statistic.",
+        },
+        "max nfev": {
+            "category": "Fitting/analysis",
+            "default": None,
+            "type": "int or None",
+            "description": "Maximum optimizer function evaluations. Structured method dictionaries can override this budget.",
+        },
+        "progress": {
+            "category": "Output/display",
+            "default": "notebook",
+            "type": "bool or str",
+            "description": "Show fit progress. Notebook mode uses eCAT's progress display; False disables it.",
+        },
+        "progress label": {
+            "category": "Output/display",
+            "default": "Fitting CV",
+            "type": "str",
+            "description": "Label shown next to the fit progress indicator.",
+        },
+        "print setup": {
+            "category": "Output/display",
+            "default": True,
+            "type": "bool or str",
+            "description": "Print fitting setup, including method, residual, correction, budget, and varied/fixed parameter targets.",
+        },
+        "print progress": {
+            "category": "Output/display",
+            "default": False,
+            "type": "bool or str",
+            "choices": [False, True, "summary", "all"],
+            "description": "Print the fitting progression table. Use 'all' to show every recorded evaluation; otherwise eCAT shows a compact summary.",
+        },
+        "print stats": {
+            "category": "Output/display",
+            "default": False,
+            "type": "bool",
+            "description": "Print fit statistics such as cost, residual norm, point count, and evaluation count.",
+        },
+        "print corrections": {
+            "category": "Output/display",
+            "default": False,
+            "type": "bool",
+            "description": "Print final-only residual/post-correction terms separately from mechanism parameters.",
+        },
+        "print params": {
+            "category": "Output/display",
+            "default": True,
+            "type": "bool or str",
+            "description": "Print initial/final fit parameter tables with fit status and parameter paths.",
+        },
+        "plot": {
+            "category": "Plotting",
+            "default": True,
+            "type": "bool",
+            "description": "Plot measured data and fitted simulated current after fitting.",
+        },
+        "plot all": {
+            "category": "Plotting",
+            "default": False,
+            "type": "bool",
+            "description": "Also plot raw backend current alongside the fitted/corrected current.",
+        },
+        "cv data": {
+            "category": "Data/input",
+            "default": None,
+            "type": "dict or None",
+            "description": "Nested options passed to simulation.cv_data when fit_cv receives a real eCAT CV object.",
+        },
+    },
 }
 
 
@@ -132,6 +501,7 @@ OPTION_CATEGORY_ORDER = (
     "Colorbar",
     "Legend",
     "Plotting",
+    "Animation",
     "Fitting/analysis",
     "Output/display",
     "Advanced",
@@ -143,6 +513,8 @@ OPTION_CATEGORIES = set(OPTION_CATEGORY_ORDER)
 _OPTION_CATEGORY_BY_KEY = {
     # Data and metadata inputs
     "folder_path": "Data/input",
+    "file_name": "Data/input",
+    "format": "Data/input",
     "delimiter": "Data/input",
     "decimal": "Data/input",
     "columns": "Data/input",
@@ -164,10 +536,12 @@ _OPTION_CATEGORY_BY_KEY = {
     "y_column": "Data/input",
     "y_columns": "Data/input",
     "group_keys": "Data/input",
-    "data_mode": "Data/input",
     "scan_rate": "Data/input",
     "scan_rates": "Data/input",
     "species": "Data/input",
+    "metadata_columns": "Selection/filtering",
+    "data_columns": "Selection/filtering",
+    "share_x_axes": "Output/display",
 
     # Selection and filtering
     "segment": "Selection/filtering",
@@ -286,6 +660,7 @@ _OPTION_CATEGORY_BY_KEY = {
     "gradient_colors": "Plotting",
     "gradient_gamma": "Plotting",
     "gradient_reverse": "Plotting",
+    "directional_arrows": "Plotting",
     "min_gradient_entries": "Plotting",
     "plot_style": "Plotting",
     "fit_color": "Plotting",
@@ -308,6 +683,18 @@ _OPTION_CATEGORY_BY_KEY = {
     "animate": "Plotting",
     "animate_minrate": "Plotting",
     "animate_repeat": "Plotting",
+    "trace_mode": "Animation",
+    "schedule": "Animation",
+    "timing_mode": "Animation",
+    "normalized_duration": "Animation",
+    "speedup": "Animation",
+    "fps": "Animation",
+    "stride": "Animation",
+    "stagger_time": "Animation",
+    "end_hold": "Animation",
+    "loop": "Animation",
+    "include_quiet_time": "Animation",
+    "progress": "Output/display",
     "plot_options": "Plotting",
     "minor_ticks": "Plotting",
     "symbol_labels": "Axes",
@@ -332,7 +719,6 @@ _OPTION_CATEGORY_BY_KEY = {
     "diagnostic_y_axis": "Fitting/analysis",
     "catalyst_electrons": "Fitting/analysis",
     "turnover_electrons": "Fitting/analysis",
-    "x_power": "Fitting/analysis",
     "x_transform": "Fitting/analysis",
     "y_transform": "Fitting/analysis",
     "transform_mode": "Fitting/analysis",
@@ -401,6 +787,7 @@ _OPTION_CATEGORY_BY_SECTION = {
     "plot": {
         "scan_rate": "Data/input",
         "derivative": "Fitting/analysis",
+        "directional_arrows": "Plotting",
     },
     "multiplot": {
         "x_axis": "Axes",
@@ -447,6 +834,39 @@ _OPTION_CATEGORY_BY_SECTION = {
         "colorbar_tick_pad": "Colorbar",
         "colorbar_tick_labels": "Colorbar",
         "colorbar_trace_ticks": "Colorbar",
+        "directional_arrows": "Plotting",
+    },
+    "animate": {
+        "x_axis": "Axes",
+        "y_axis": "Axes",
+        "x_unit": "Axes",
+        "y_unit": "Axes",
+        "plot_labels": "Labels/titles",
+        "label_alterations": "Labels/titles",
+        "title": "Labels/titles",
+        "subtitle": "Labels/titles",
+        "title_fontsize": "Labels/titles",
+        "subtitle_fontsize": "Labels/titles",
+        "legend": "Legend",
+        "legend_mode": "Legend",
+        "legend_loc": "Legend",
+        "legend_outside": "Legend",
+        "legend_fontsize": "Legend",
+        "color_mode": "Color mapping",
+        "gradient_by": "Color mapping",
+        "gradient_species": "Color mapping",
+        "gradient_scale": "Color mapping",
+        "gradient_colormap": "Color mapping",
+        "gradient_colormaps": "Color mapping",
+        "gradient_colors": "Color mapping",
+        "gradient_gamma": "Color mapping",
+        "gradient_reverse": "Color mapping",
+        "min_gradient_entries": "Color mapping",
+        "colorbar_height_scale": "Colorbar",
+        "colorbar_reverse": "Colorbar",
+        "colorbar_style": "Colorbar",
+        "colorbar_tick_labels": "Colorbar",
+        "colorbar_trace_ticks": "Colorbar",
     },
     "tafel_analysis": {
         "overpotential_range": "Fitting/analysis",
@@ -460,6 +880,17 @@ OPTION_DESCRIPTIONS = {
     "animate": "Animate the CV scan instead of making a static plot.",
     "animate_minrate": "Minimum frame rate used for CV animation playback.",
     "animate_repeat": "Repeat the animation after the final frame.",
+    "trace_mode": "How each animated trace appears after its scheduled start time.",
+    "schedule": "How multiple traces are offset relative to one another during animation playback.",
+    "timing_mode": "Whether animation timing uses experiment-derived timing, normalized timing, or auto selection.",
+    "normalized_duration": "Per-trace display duration in seconds when animation timing resolves to normalized mode.",
+    "speedup": "Playback speed factor applied when animation timing resolves to physical mode.",
+    "fps": "Animation playback frame rate in frames per second.",
+    "stride": "Use every nth plotted point when building animation traces. This reduces render size without mutating source data.",
+    "stagger_time": "Delay in seconds between staggered animation trace starts.",
+    "end_hold": "Seconds to hold the final fully rendered frame before looping or ending.",
+    "loop": "Whether animation playback loops after the final frame.",
+    "include_quiet_time": "Whether animation timing includes quiet time holds when timing metadata supports them.",
     "baseline_correction": "Baseline-current correction for CA charge integration: False, True, tail, or threshold.",
     "baseline_tail_fraction": "Final fraction of a CA trace used for tail baseline correction.",
     "baseline_threshold": "Current threshold in A used for threshold CA baseline correction.",
@@ -486,8 +917,8 @@ OPTION_DESCRIPTIONS = {
     "custom_reader": "User-provided file reader for custom import formats.",
     "custom_parser": "User-provided filename metadata parser.",
     "custom_parser_mode": "How a custom filename metadata parser combines with the built-in filename metadata parser.",
+    "data_columns": "Data columns included in Excel exports: 'all', 'x', 'y', or an explicit column/list of columns.",
     "d": "Diffusion coefficient in cm^2/s.",
-    "data_mode": "Whether multi_scatterplot uses automatic, raw, adjusted, or transformed result-table columns.",
     "decimal": "Decimal separator used in imported text files.",
     "default_colors": "Default discrete colors used for multi-trace plots.",
     "default_discrete_colormap": "Default colormap used for discrete color legends.",
@@ -495,13 +926,16 @@ OPTION_DESCRIPTIONS = {
     "deduplicate_labels": "Append distinguishing metadata to duplicate multiplot labels; True uses scan window and segments.",
     "delimiter": "Column delimiter used in imported text files.",
     "diagnostic_y_axis": "Y axis used for FOWA diagnostic multiplot output.",
+    "directional_arrows": "Draw scan-direction arrowhead markers at selected potentials. Use one dict or a list of dicts; each dict requires potential and may include segment, color, alpha, arrowstyle, and size. If segment is omitted, arrows are added to every segment containing that potential. color defaults to the trace color. arrowstyle is passed to Matplotlib, e.g. ->, -|>, fancy, simple, or wedge. size controls arrowhead scale.",
     "e0": "Formal potential used for physical dimensionless CV normalization.",
     "ecat_shift_warning_threshold": "Potential-shift threshold for warning that catalytic and reference waves may not align.",
     "electrode_area": "Electrode area in cm^2.",
     "electrode_diameter": "Electrode diameter in cm.",
     "ehalf": "Half-wave potential used for display or multi-panel analysis.",
     "empirical_psi_equation": "Empirical Nicholson psi equation used when not using the table lookup.",
-    "exact_potential": "Exact potential to use for peak or current extraction.",
+    "exact_potential": "Exact potential to use for peak or current extraction. In complex CV analyses, the plural alias 'exact potentials' accepts per-CV values.",
+    "file_name": "Base output filename without extension.",
+    "format": "Export file format, such as 'csv' or 'xlsx'.",
     "exclude_invalid_delta_ep": "Exclude Nicholson points outside the valid nDelta Ep range from fitting.",
     "exclude_low_r2": "Exclude fits whose R2 is below the requested threshold.",
     "exclude_warnings": "Exclude rows or fits that emitted analysis warnings.",
@@ -509,23 +943,22 @@ OPTION_DESCRIPTIONS = {
     "fit": "Whether to fit the analysis result.",
     "fit_alpha": "Alpha transparency for plotted fit lines.",
     "fit_basis": "Axis or quantity used to select the fit region.",
-    "fit_color": "Color of plotted fit lines.",
+    "fit_color": "Color of plotted fit lines. Use a single color or a list for multiple fits; the plural alias 'fit colors' is accepted.",
     "fit_colors": "Sequence of colors for plotted fit lines when multiple fits are drawn.",
-    "fit_indices": "Indices, mask, or index windows included in a fit.",
+    "fit_indices": "Row/position-based fit selection. Use [start, stop] with Python-style exclusive stop, None for an open-ended side, a boolean mask, explicit indices, multiple windows for one disconnected fit, or a dict for named fits.",
     "fit_label": "Whether to label the fit line, or custom label text.",
     "fit_model": "Fit model name, callable, or formula string.",
     "fit_params": "Parameter names for a custom callable or formula fit model.",
-    "fit_equation": "Optional display equation for custom fit model printouts.",
     "fit_init": "Initial parameter guesses for a fit model.",
-    "fit_bounds": "Lower and upper bounds for a fit model.",
+    "fit_bounds": "Lower and upper bounds for a fit model; use None for an unbounded side.",
     "fit_residual": "Residual mode used for model fitting.",
     "fit_max_evals": "Maximum function evaluations for model fitting.",
     "print_fit": "Fit print style: auto, summary, or details.",
     "print_fit_details": "If True, force detailed two-table fit printing.",
-    "fit_ranges": "Named or unnamed x-value windows for multiple fits. Use a dict for named fits or a list for generated labels.",
+    "fit_ranges": "Multiple x-value fit windows on the resolved/transformed x axis. Use a dict for named fits, a list for generated labels, or nested windows when one fit should use disconnected x regions.",
     "fit_linestyle": "Line style for plotted fit lines.",
     "fit_linewidth": "Line width for plotted fit lines.",
-    "fit_range": "Range of the transformed or raw axis included in fitting.",
+    "fit_range": "Single x-value fit window [x_min, x_max] on the resolved/transformed x axis. Bounds are inclusive; use None for an open-ended side where supported.",
     "fit_through_origin": "Fit the model through the origin rather than fitting an intercept.",
     "folder_path": "Folder path searched for electrochemical data files.",
     "follow_e1_2": "Use or follow E1/2 values when fitting peak-potential trends.",
@@ -544,7 +977,7 @@ OPTION_DESCRIPTIONS = {
     "gradient_species": "Species used to resolve concentration-based gradient coloring.",
     "grid": "Whether to show major grid lines on plots.",
     "group_keys": "Metadata field or fields used to group objects before summarizing.",
-    "guess_potential": "Initial potential guess for peak or wave selection.",
+    "guess_potential": "Initial potential guess for peak or wave selection. In complex CV analyses, the plural alias 'guess potentials' accepts per-CV values; scalar guesses keep running-guess behavior where supported.",
     "ic": "Manual catalytic plateau current.",
     "ilim": "Manual limiting or plateau current.",
     "integrate": "Integrate the selected signal when supported.",
@@ -557,7 +990,7 @@ OPTION_DESCRIPTIONS = {
     "ip0_sqrt_scan_rate_slope": "Forced-origin slope for ip0 versus sqrt(scan rate).",
     "label": "Label for a plotted trace or analysis output.",
     "label_alterations": "Text replacements applied to generated labels.",
-    "labels": "Explicit labels for plotted objects.",
+    "labels": "Explicit labels for plotted objects. The legacy alias 'plot labels' is accepted; use only one spelling.",
     "legend": "Whether to show a plot legend.",
     "legend_bbox_to_anchor": "Matplotlib legend anchor box.",
     "legend_fontsize": "Font size for plot legends.",
@@ -571,6 +1004,7 @@ OPTION_DESCRIPTIONS = {
     "log_log_plot": "Plot the fit result on log-log axes.",
     "logic": "Logical rule used to combine filter criteria.",
     "mechanism": "Electrocatalytic mechanism label or model choice.",
+    "metadata_columns": "Object metadata columns included in exported manifests: 'used', 'all', or an explicit column/list of columns.",
     "metric": "Metric column or quantity to analyze.",
     "min_fit_points": "Minimum recommended number of fit points.",
     "min_gradient_entries": "Minimum number of entries before using gradient color mapping.",
@@ -587,7 +1021,7 @@ OPTION_DESCRIPTIONS = {
     "non_catalytic_current": "Manual non-catalytic reference current.",
     "non_catalytic_cv": "Single non-catalytic reference CV.",
     "non_catalytic_cvs": "List of non-catalytic reference CVs.",
-    "non_catalytic_guess_potential": "Potential guess used for non-catalytic reference extraction.",
+    "non_catalytic_guess_potential": "Potential guess used for non-catalytic reference extraction. The plural alias 'non-catalytic guess potentials' accepts per-CV values.",
     "normalize": "Whether to normalize current or axes during processing.",
     "normalize_params": "Parameters used for legacy normalization.",
     "n": "Number of electrons used in dimensionless or kinetic equations.",
@@ -596,7 +1030,7 @@ OPTION_DESCRIPTIONS = {
     "one_column": "Use a one-column plot or document layout when supported.",
     "area": "Electrode area used for physical dimensionless CV normalization.",
     "overpotential_range": "Potential range used for Tafel or overpotential analysis.",
-    "peak_potential": "Manual peak potential.",
+    "peak_potential": "Manual peak potential. In complex CV analyses, the plural alias 'peak potentials' accepts per-CV values.",
     "peak_fallback": "Fallback used by peak_current when peak_potential cannot find a local extremum.",
     "peak_prominence": "Minimum peak prominence for automatic peak detection.",
     "parser_settings": "Advanced settings for filename metadata parsing such as prefer file metadata, compound stopwords, and recognized gases/solvents.",
@@ -618,7 +1052,7 @@ OPTION_DESCRIPTIONS = {
     "plot_log_log": "Whether to include a log-log plot.",
     "plot_scale": "Convenience axis-scale preset for scatter plots, such as log-log, semilogx, semilogy, symlog, or linear. Uses Matplotlib axis scaling and does not transform fit values.",
     "plot_options": "Nested plotting options passed through to plot helpers.",
-    "scale_bar": "Scale-bar options for plots. Use False to hide, True or a dict to draw, with length in displayed y-axis units; dicts may include loc, label, fontsize, color, linewidth, cap width, and label pad.",
+    "scale_bar": "Draw a vertical scale bar on plot axes. Use False to hide, True to auto-pick a nice round length near 20-25% of the displayed y-axis range, a numeric value as the displayed y-axis length, or a dict with length, loc, label, unit, color, linewidth, cap width, label pad, fontsize/font size, ha, va, and remove y ticks. loc may be lower right, lower left, upper right, upper left, or an explicit (x, y) data-coordinate pair.",
     "potential_window": "Two-value potential window used to select or trim CV data.",
     "_provided_options": "Internal record of explicitly provided options.",
     "plot_peak_potential": "Whether peak-potential diagnostics are plotted during peak-current extraction.",
@@ -628,13 +1062,14 @@ OPTION_DESCRIPTIONS = {
     "plot_target": "Mark the requested charge target on charge or chronoamperometry plots.",
     "pretty_print": "Use rich table display when printing object lists or summaries. False uses plain-text output when print is True.",
     "print": "Whether to emit output. False suppresses output; it is independent of pretty print.",
+    "progress": "Whether to show a rendering/export progress bar when animations are displayed or saved.",
     "print_all": "Whether child helper calls should print their own summaries.",
     "print_conditions": "Whether to include condition columns in printed object tables.",
     "print_local_slopes": "Whether to print local slope diagnostics.",
     "psi_source": "Source used to resolve Nicholson psi values.",
     "recursive_search": "Recursively search subfolders during import.",
     "redox_mode": "Method used to resolve the reference redox potential.",
-    "redox_potential": "Manual redox reference potential.",
+    "redox_potential": "Manual redox reference potential. In FOWA, the plural alias 'redox potentials' accepts per-CV values.",
     "reference_file": "Explicit file used as a reference-shift source.",
     "reference_guess": "Potential guess used to locate a reference wave.",
     "reference_cv": "Single reference CV used for current normalization or scaling.",
@@ -651,7 +1086,7 @@ OPTION_DESCRIPTIONS = {
     "return_stats": "Return a statistics dictionary instead of only a compact fit result.",
     "return": "Return the options table or menu as a pandas DataFrame.",
     "scan_dependence": "Exponent applied to scan rate.",
-    "scan_rate": "Scan rate in V/s.",
+    "scan_rate": "Scan rate in V/s. In Nicholson analysis, the plural alias 'scan rates' accepts per-CV values.",
     "scan_rates": "Manual scan rates in V/s.",
     "s": "Electrode area alias used for physical dimensionless CV normalization.",
     "scale": "Multiplier applied to raw current columns by scale_current.",
@@ -667,6 +1102,7 @@ OPTION_DESCRIPTIONS = {
     "shift_target_delta_ep": "Target reference peak separation used during reference matching.",
     "shift_window": "Potential window used to locate reference-shift peaks.",
     "sig_figs": "Significant figures used for reported values.",
+    "share_x_axes": "In Excel export, combine objects with equivalent x axes into shared x-axis blocks.",
     "sigma": "Stoichiometric or pathway exponent used in FOWA kinetics.",
     "software": "Instrument software or parser to use during import.",
     "solvent": "Solvent metadata for the electrochemical object.",
@@ -677,7 +1113,7 @@ OPTION_DESCRIPTIONS = {
     "subtitle_fontsize": "Font size for subtitles.",
     "subtitles": "Subtitles for multiple plots or panels.",
     "tangent_min_points": "Minimum number of points used for tangent baseline fitting.",
-    "tangent_potential": "Potential at which to anchor tangent baseline fitting.",
+    "tangent_potential": "Potential at which to anchor tangent baseline fitting. In complex CV analyses, the plural alias 'tangent potentials' accepts per-CV values.",
     "tangent_range": "Potential range for tangent baseline fitting.",
     "temperature": "Temperature in K.",
     "target_charge": "Target cumulative charge in Coulombs.",
@@ -690,6 +1126,7 @@ OPTION_DESCRIPTIONS = {
     "transform_mode": "Transform mode applied to x and/or y data.",
     "troubleshoot": "Print additional troubleshooting output.",
     "turnover_electrons": "Catalyst equivalents or electrons used per turnover in kinetic equations.",
+    "units": "Column-specific unit overrides, as a dict mapping column names to target units.",
     "validate_plateau": "Validate plateau-current scan-rate independence.",
     "v": "Scan-rate alias used for physical dimensionless CV normalization.",
     "k_homo": "Homogeneous rate constant used for EC' dimensionless CV normalization.",
@@ -700,7 +1137,7 @@ OPTION_DESCRIPTIONS = {
     "x_axis": "Column or axis used as x data.",
     "x_column": "DataFrame column used as x data.",
     "x_column_index": "Column index used as x data.",
-    "x_power": "Power applied to x values.",
+    "x_mode": "X-series adjustment mode for multi-scatter plots before x transforms.",
     "x_scale": "Scale factor applied to x values for plotting.",
     "xscale": "Matplotlib x-axis scale such as linear, log, symlog, or logit. This changes axis spacing only; use x transform to change fit values.",
     "x_transform": "Transform applied to x values.",
@@ -738,6 +1175,9 @@ OPTION_CHOICES = {
     "colorbar_tick_labels": ["endpoints", "all", "none"],
     "legend_mode": ["auto", "colorbar", "discrete"],
     "colorbar_style": ["auto", "continuous", "discrete"],
+    "trace_mode": ["auto", "draw", "instant"],
+    "schedule": ["auto", "simultaneous", "staggered", "sequential"],
+    "timing_mode": ["auto", "physical", "normalized"],
     "local_slope_mode": ["adjacent", "gradient"],
     "logic": ["AND", "OR"],
     "mode": ["include", "exclude"],
@@ -760,6 +1200,11 @@ OPTION_CHOICES_BY_SECTION = {
     },
     "nicholson": {
         "fit_model": ["origin", "linear"],
+    },
+    "save_data": {
+        "format": ["csv", "xlsx", "excel"],
+        "metadata_columns": ["used", "all"],
+        "data_columns": ["all", "x", "y"],
     },
 }
 
@@ -854,6 +1299,39 @@ def _build_option_metadata():
         },
     })
 
+    update("save_data", {
+        "format": {
+            "description": "Output format. 'csv' writes one wide table; 'xlsx'/'excel' writes a workbook-style manifest and class-specific data sheets.",
+        },
+        "folder_path": {
+            "description": "Folder where the exported file should be written.",
+        },
+        "file_name": {
+            "description": "Base output filename without extension; eCAT appends .csv or .xlsx from the selected format.",
+        },
+        "x_unit": {
+            "description": "Optional x-axis unit override applied to exported x columns when conversion is available.",
+        },
+        "y_unit": {
+            "description": "Optional y-axis unit override applied to exported y columns when conversion is available.",
+        },
+        "units": {
+            "description": "Column-specific unit overrides, as a dict mapping column names to target units.",
+        },
+        "metadata_columns": {
+            "description": "Metadata columns included in the export manifest: 'used', 'all', or an explicit column/list of columns.",
+        },
+        "data_columns": {
+            "description": "Data columns included in Excel data sheets: 'all', 'x', 'y', or an explicit column/list of columns.",
+        },
+        "share_x_axes": {
+            "description": "When True, Excel export combines objects with equivalent x axes into shared x-axis blocks.",
+        },
+        "sig_figs": {
+            "description": "Significant figures used in exported metadata/manifest values.",
+        },
+    })
+
     update("filter", {
         "mode": {
             "choices": ["include", "exclude"],
@@ -901,6 +1379,39 @@ def _build_option_metadata():
         "scan_rate": {
             "description": "Scan rate in V/s used for animation or normalization helpers; plotting otherwise uses the object's stored scan_rate when needed.",
         },
+        "trace_mode": {
+            "description": "'auto' resolves to 'draw' for single traces and for multi-trace animations with mixed scan rates; otherwise it resolves to 'instant'. 'draw' progressively reveals each trace, while 'instant' shows each trace fully at its scheduled start.",
+        },
+        "schedule": {
+            "description": "'auto' resolves to simultaneous for multi-trace animations with mixed scan rates and to staggered otherwise; single-object animations do not use a schedule. Simultaneous starts all traces together, staggered offsets each start by stagger time, and sequential waits for one trace to finish before the next begins.",
+        },
+        "timing_mode": {
+            "description": "'auto' resolves to physical when every animated object has usable timing metadata such as scan rate or time columns; otherwise it resolves to normalized. Physical uses experiment-derived timing, while normalized scales traces to a shared display duration.",
+        },
+        "normalized_duration": {
+            "description": "Per-trace display duration in seconds when timing mode resolves to normalized.",
+        },
+        "speedup": {
+            "description": "Playback speed factor for physical timing; values above 1 shorten the rendered animation relative to experiment time.",
+        },
+        "fps": {
+            "description": "Animation playback frame rate in frames per second.",
+        },
+        "stride": {
+            "description": "Use every nth plotted point when building animation traces. This reduces render size without mutating source data.",
+        },
+        "stagger_time": {
+            "description": "Delay in seconds between staggered animation trace starts.",
+        },
+        "end_hold": {
+            "description": "Seconds to hold the final fully rendered frame before looping or ending.",
+        },
+        "loop": {
+            "description": "Whether animation playback loops after the final frame.",
+        },
+        "include_quiet_time": {
+            "description": "Whether animation timing includes quiet time holds when timing metadata supports them.",
+        },
     })
 
     update("multiplot", {
@@ -917,10 +1428,7 @@ def _build_option_metadata():
             "description": "'auto' builds panel subtitles from grouped-object metadata.",
         },
         "labels": {
-            "description": "Explicit labels for plotted objects. If omitted, labels are generated from object metadata.",
-        },
-        "plot_labels": {
-            "description": "Explicit labels for plotted objects. If omitted, labels are generated from object metadata.",
+            "description": "Explicit labels for plotted objects. If omitted, labels are generated from object metadata. The legacy alias 'plot labels' is accepted; use only one spelling.",
         },
         "color_mode": {
             "description": "'auto' detects scan-rate or concentration gradients and colors those groups by gradient; remaining traces use discrete colors.",
@@ -967,17 +1475,14 @@ def _build_option_metadata():
     })
 
     update("multi_scatterplot", {
-        "data_mode": {
-            "description": "'auto' lets x/y column resolution prefer transformed result columns while falling back to raw or common metric columns. This selects existing result data; it does not recompute upstream fits.",
-        },
         "x_column": {
-            "description": "'auto' auto prefers transformed/raw x columns and falls back to the first sensible x column. Explicit columns control plotted points; stored fit overlays are reused only when compatible.",
+            "description": "'auto' auto prefers transformed/raw x columns and falls back to the first sensible x column. Explicit columns control plotted points.",
         },
         "y_column": {
-            "description": "'auto' auto prefers transformed, metric, kobs, TOFmax, ip, then Ep result columns. Explicit columns control plotted points; stored fit overlays are reused only when compatible.",
+            "description": "'auto' auto prefers transformed, metric, kobs, TOFmax, ip, then Ep result columns. Explicit columns control plotted points.",
         },
         "y_columns": {
-            "description": "Explicit y columns to plot; when omitted, y-column auto-resolution is used. Selecting a raw metric from a non-raw upstream fit requires 'plot fit': False or a matching upstream fit.",
+            "description": "Explicit y columns to plot; when omitted, y-column auto-resolution is used.",
         },
         "metric": {
             "description": "Preferred metric column used during y-column auto-resolution.",
@@ -1004,10 +1509,10 @@ def _build_option_metadata():
             "description": "Fallback used by peak_current when no local peak is detected. 'highest current' uses the largest absolute current in the selected segment; 'guess potential' treats the guess as an exact potential; None/'none' keeps the strict error.",
         },
         "guess_potential": {
-            "description": "Initial potential guess for automatic peak or wave selection; omitted values let eCAT choose from the selected segment.",
+            "description": "Initial potential guess for automatic peak or wave selection. In complex CV analyses, the plural alias 'guess potentials' accepts per-CV values; scalar guesses keep running-guess behavior where supported.",
         },
         "exact_potential": {
-            "description": "Exact potential for current extraction; when provided it bypasses peak-location auto-selection.",
+            "description": "Exact potential for current extraction; when provided it bypasses peak-location auto-selection. In complex CV analyses, the plural alias 'exact potentials' accepts per-CV values.",
         },
         "plot_cv": {
             "description": "When plotting CV analysis diagnostics, draw the underlying CV trace before adding markers and lines.",
@@ -1023,7 +1528,7 @@ def _build_option_metadata():
             "description": "Minimum points for tangent fitting; when omitted, eCAT derives a minimum from the pre-peak data length.",
         },
         "tangent_potential": {
-            "description": "Manual tangent anchor potential; when omitted, eCAT anchors from the resolved tangent region.",
+            "description": "Manual tangent anchor potential; when omitted, eCAT anchors from the resolved tangent region. In complex CV analyses, the plural alias 'tangent potentials' accepts per-CV values.",
         },
     })
 
@@ -1127,7 +1632,7 @@ def _build_option_metadata():
             "description": "Method used to resolve redox potential: half-wave, half-peak, or manual redox potential.",
         },
         "redox_potential": {
-            "description": "Manual redox potential; required only when redox mode is manual.",
+            "description": "Manual redox potential; required only when redox mode is manual. The plural alias 'redox potentials' accepts per-CV values.",
         },
         "ip0": {
             "description": "Manual non-catalytic peak current. If omitted, FOWA can extract ip0 from non-catalytic CV inputs.",
@@ -1142,10 +1647,13 @@ def _build_option_metadata():
             "description": "Non-catalytic CVs paired with catalytic CVs to extract reference currents automatically.",
         },
         "non_catalytic_guess_potential": {
-            "description": "Guess potential used only for non-catalytic reference-current extraction; omitted values fall back to guess potential.",
+            "description": "Guess potential used only for non-catalytic reference-current extraction; omitted values fall back to guess potential. The plural alias 'non-catalytic guess potentials' accepts per-CV values.",
         },
         "wave_range": {
             "description": "Manual catalytic-wave window. If omitted, FOWA auto-selects a wave region from the transformed diagnostic curve.",
+        },
+        "fit_range": {
+            "description": "Single FOWA fit window on the selected fit basis. Use [min, max] for one shared window, or one [min, max] window per CV where supported.",
         },
         "tangent_range": {
             "description": "'auto' is passed to peak_current so background/current extraction uses automatic tangent-baseline selection.",
@@ -1220,22 +1728,19 @@ def _build_option_metadata():
             "description": "Species used when auto-resolving concentration-based x data from CV compounds/concentrations metadata.",
         },
         "fit_indices": {
-            "description": "Explicit rows or index windows included in the fit; when omitted, all resolved points are included.",
+            "description": "Row/position-based fit selection on the resolved points. Use [start, stop] with Python-style exclusive stop; when omitted, all resolved points are included.",
         },
         "fit_range": {
-            "description": "Single x-value window included in the fit, [x_min, x_max].",
+            "description": "Single x-value fit window [x_min, x_max] on the resolved/transformed x axis.",
         },
         "fit_ranges": {
-            "description": "Named or unnamed x-value windows for multiple fits; each range is fitted and plotted separately.",
+            "description": "Multiple x-value fit windows on the resolved/transformed x axis. Use a dict for named fits, a list for generated labels, or nested windows when one fit should use disconnected x regions.",
         },
         "fit_model": {
             "description": "Model fit on the resolved x/y values. Supported models are linear, power, power offset, exponential, michaelis menten, logistic, callables, and restricted formulas such as k0 + k1*x + k2*x^2.",
         },
         "fit_params": {
             "description": "Parameter names for a custom callable or formula model; formula strings infer names when omitted.",
-        },
-        "fit_equation": {
-            "description": "Optional display equation for custom model printouts.",
         },
         "fit_init": {
             "description": "'auto' chooses model-specific initial guesses from the resolved data; a list or dict overrides one or more parameter guesses.",
@@ -1269,9 +1774,6 @@ def _build_option_metadata():
     update("fit_peak_current", {
         **cv_auto,
         **scatter_fit_auto,
-        "x_power": {
-            "description": "Power applied to auto-resolved x values; default 0.5 gives sqrt(scan rate) behavior.",
-        },
         "tangent_range": {
             "description": "'auto' is passed to peak_current so peak-current extraction uses automatic tangent-baseline selection.",
         },
@@ -1301,10 +1803,7 @@ def _build_option_metadata():
             "description": "Nicholson fit model. 'origin' uses the theoretical ψ = k0 x relation; 'linear' adds a fitted intercept as a diagnostic backup.",
         },
         "scan_rate": {
-            "description": "Manual scan rate in V/s. If omitted, nicholson_analysis uses each CV's scan_rate metadata.",
-        },
-        "scan_rates": {
-            "description": "Manual scan rates in V/s. If omitted, nicholson_analysis uses each CV's scan_rate metadata.",
+            "description": "Manual scan rate(s) in V/s. Use a scalar for all CVs or a list matching the CV list; if omitted, nicholson_analysis uses each CV's scan_rate metadata.",
         },
         "temperature": {
             "description": "Temperature in K. If omitted, nicholson_analysis uses each CV's temperature metadata before the option default.",
@@ -1333,19 +1832,19 @@ def _build_option_metadata():
             "description": "Metric column to fit; if omitted from plotting helpers, common rate/output metric columns are preferred.",
         },
         "fit_indices": {
-            "description": "Explicit point indices included in the fit; when omitted, all resolved points are included unless fit ranges are supplied.",
+            "description": "Row/position-based fit selection on the resolved rate table. Use [start, stop] with Python-style exclusive stop; dict entries create named fits, matching fit ranges behavior.",
+        },
+        "fit_range": {
+            "description": "Single x-value fit window [x_min, x_max] on the resolved/transformed x axis.",
         },
         "fit_ranges": {
-            "description": "Named or unnamed x-value fit windows; when supplied, each window is fitted separately.",
+            "description": "Multiple x-value fit windows on the resolved/transformed x axis. Use a dict for named fits, a list for generated labels, or nested windows when one fit should use disconnected x regions.",
         },
         "fit_model": {
             "description": "Model fit on resolved x/y values. Supported models are linear, power, power offset, exponential, michaelis menten, logistic, callables, and restricted formulas such as k0 + k1*x + k2*x^2.",
         },
         "fit_params": {
             "description": "Parameter names for a custom callable or formula model; formula strings infer names when omitted.",
-        },
-        "fit_equation": {
-            "description": "Optional display equation for custom model printouts.",
         },
         "fit_init": {
             "description": "'auto' chooses model-specific initial guesses from the resolved data; a list or dict overrides one or more parameter guesses.",
@@ -1546,17 +2045,17 @@ def _expanded_global_option_defaults():
 
 def load_defaults(path):
     """Load user defaults from a TOML file for this Python session.
-    
+
     Parameters
     ----------
     path : str or path-like
         TOML file containing eCAT defaults sections.
-    
+
     Returns
     -------
     dict
         Merged defaults after loading the file.
-    
+
     Examples
     --------
     >>> e.load_defaults("lab_ecat_defaults.toml")
@@ -1569,19 +2068,19 @@ def load_defaults(path):
 
 def set_defaults(section_or_mapping, updates=None):
     """Set runtime defaults for an eCAT options section or global option name.
-    
+
     Parameters
     ----------
     section_or_mapping : str or mapping
         Section name, global option name, or mapping of sections to updates.
     updates : object, optional
         Updates for the section or value for a global option shorthand.
-    
+
     Returns
     -------
     dict
         Current merged defaults after applying the update.
-    
+
     Examples
     --------
     >>> e.set_defaults("plot", {"legend mode": "colorbar"})
@@ -1603,17 +2102,17 @@ def set_defaults(section_or_mapping, updates=None):
 
 def get_defaults(section=None):
     """Return merged eCAT defaults for all sections or one section.
-    
+
     Parameters
     ----------
     section : str, optional
         Public defaults section name, such as ``"get_data"`` or ``"multiplot"``.
-    
+
     Returns
     -------
     dict
         Defaults after package, user, session, and global overrides are merged.
-    
+
     Examples
     --------
     >>> e.get_defaults("fowa")
@@ -1631,17 +2130,17 @@ def get_defaults(section=None):
 
 def reset_defaults(section=None):
     """Reset user-loaded and session defaults for all sections or one target.
-    
+
     Parameters
     ----------
     section : str, optional
         Section or global option shorthand to reset.
-    
+
     Returns
     -------
     dict
         Current defaults after reset.
-    
+
     Examples
     --------
     >>> e.reset_defaults()
@@ -1687,6 +2186,54 @@ def _field_names(cls):
     return {field.name for field in fields(cls)}
 
 
+def _choice_token(value):
+    return str(value).strip().lower().replace("_", " ").replace("-", " ")
+
+
+def _choice_lookup_token(value):
+    return _choice_token(value).replace(" ", "").replace("-", "")
+
+
+def _choices_for_option(option_key, sections):
+    option_key = _canonical_option_key(option_key)
+    choices = OPTION_CHOICES.get(option_key)
+    for section in sections:
+        section_choices = OPTION_CHOICES_BY_SECTION.get(_canonical_section_key(section), {})
+        for key, section_values in section_choices.items():
+            if _canonical_option_key(key) == option_key:
+                choices = section_values
+    return list(choices) if choices else None
+
+
+def _canonicalize_choice_value(option_key, value, sections):
+    choices = _choices_for_option(option_key, sections)
+    if not choices:
+        return value
+
+    canonical_by_token = {}
+    for choice in choices:
+        canonical_by_token[_choice_token(choice)] = choice
+        canonical_by_token[_choice_lookup_token(choice)] = choice
+
+    none_choice = canonical_by_token.get("none")
+    if none_choice is not None:
+        if value is None or value is False:
+            return none_choice
+        if isinstance(value, str) and _choice_token(value) in {"none", "null", "off", "false", "no", "0"}:
+            return none_choice
+
+    if isinstance(value, str):
+        token = _choice_token(value)
+        return canonical_by_token.get(token, canonical_by_token.get(_choice_lookup_token(value), value))
+
+    if isinstance(value, list):
+        return [_canonicalize_choice_value(option_key, item, sections) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_canonicalize_choice_value(option_key, item, sections) for item in value)
+
+    return value
+
+
 def _coerce_options(cls, raw, sections):
     if isinstance(raw, cls):
         return raw
@@ -1712,7 +2259,13 @@ def _coerce_options(cls, raw, sections):
             else:
                 hint = ""
             raise OptionError(f"Unknown option '{key}' for {cls.__name__}.{hint}")
-        normalized[norm] = value
+        if norm in normalized:
+            first_key = original_keys[norm]
+            raise OptionError(
+                f"Options '{first_key}' and '{key}' both resolve to "
+                f"'{_friendly_key(norm)}'. Use only one spelling."
+            )
+        normalized[norm] = _canonicalize_choice_value(norm, value, sections)
         original_keys[norm] = key
 
     defaults = {}
@@ -1959,7 +2512,7 @@ class PlotOptions:
     y_col: int = -1
     y_flip: bool = False
     invert_y: bool = False
-    plot_convention: str = "US"
+    plot_convention: str = "IUPAC"
     sig_figs: int = 4
     offset: float = 0
     stacking: bool = False
@@ -2007,6 +2560,18 @@ class PlotOptions:
     animate: bool = False
     animate_minrate: float | int = 0
     animate_repeat: bool = False
+    trace_mode: str = "auto"
+    schedule: str = "auto"
+    timing_mode: str = "auto"
+    normalized_duration: int | float = 2.0
+    speedup: int | float = 1.0
+    fps: int | float = 20
+    stride: int = 1
+    stagger_time: int | float = 0.5
+    end_hold: int | float = 2
+    loop: bool = True
+    include_quiet_time: bool = False
+    progress: bool | str = True
     scan_rate: float | None = None
     normalize: bool = False
     normalize_params: dict | None = None
@@ -2016,6 +2581,7 @@ class PlotOptions:
     reference_cvs: object | None = None
     plot_options: dict | None = None
     scale_bar: object = False
+    directional_arrows: object = False
     minor_ticks: bool | int = 2
     symbol_labels: bool | str = "auto"
 
@@ -2024,6 +2590,21 @@ class PlotOptions:
         return _coerce_options(cls, options, ["plot", "normalize_current"])
 
     def validate(self):
+        def _normalized_choice(value):
+            return str(value).strip().lower().replace("_", " ").replace("-", " ")
+
+        def _require_non_negative_number(label, value):
+            try:
+                numeric = float(value)
+            except (TypeError, ValueError):
+                raise OptionError(f"'{label}' must be a non-negative number.")
+            if numeric < 0:
+                raise OptionError(f"'{label}' must be a non-negative number.")
+
+        def _require_bool(label, value):
+            if value is not True and value is not False:
+                raise OptionError(f"'{label}' must be True or False.")
+
         sources = [
             self.ip0 is not None,
             self.reference_cv is not None,
@@ -2032,7 +2613,7 @@ class PlotOptions:
         ]
         if sum(bool(source) for source in sources) > 1:
             raise OptionError("Use only one ip0/reference source for i/ip0 plotting.")
-        mode = str(self.segment_color_mode).strip().lower().replace("_", " ").replace("-", " ")
+        mode = _normalized_choice(self.segment_color_mode)
         if mode in {"none", "false", "0"}:
             mode = "off"
         if mode not in {"auto", "off", "discrete", "discrete gradient", "continuous gradient"}:
@@ -2040,21 +2621,52 @@ class PlotOptions:
                 "'segment color mode' must be 'auto', 'off', 'discrete', "
                 "'discrete gradient', or 'continuous gradient'."
             )
-        legend_mode = str(self.legend_mode).strip().lower()
+        legend_mode = _normalized_choice(self.legend_mode)
         if legend_mode not in {"auto", "colorbar", "discrete"}:
             raise OptionError("'legend mode' must be 'auto', 'colorbar', or 'discrete'.")
-        color_mode = str(self.color_mode).strip().lower()
+        color_mode = _normalized_choice(self.color_mode)
         if color_mode not in {"auto", "gradient", "discrete"}:
             raise OptionError("'color mode' must be 'auto', 'gradient', or 'discrete'.")
-        gradient_scale = str(self.gradient_scale).strip().lower()
+        gradient_scale = _normalized_choice(self.gradient_scale)
         if gradient_scale not in {"auto", "linear", "sqrt", "log", "index"}:
             raise OptionError("'gradient scale' must be 'auto', 'linear', 'sqrt', 'log', or 'index'.")
-        colorbar_style = str(self.colorbar_style).strip().lower().replace("_", " ").replace("-", " ")
+        colorbar_style = _normalized_choice(self.colorbar_style)
         if colorbar_style not in {"auto", "continuous", "discrete", "swatch", "swatches"}:
             raise OptionError("'colorbar style' must be 'auto', 'continuous', or 'discrete'.")
+        trace_mode = _normalized_choice(self.trace_mode)
+        if trace_mode not in {"auto", "draw", "instant"}:
+            raise OptionError("'trace mode' must be 'auto', 'draw', or 'instant'.")
+        schedule = _normalized_choice(self.schedule)
+        if schedule not in {"auto", "simultaneous", "staggered", "sequential"}:
+            raise OptionError(
+                "'schedule' must be 'auto', 'simultaneous', 'staggered', or 'sequential'."
+            )
+        timing_mode = _normalized_choice(self.timing_mode)
+        if timing_mode not in {"auto", "physical", "normalized"}:
+            raise OptionError("'timing mode' must be 'auto', 'physical', or 'normalized'.")
+        try:
+            if float(self.normalized_duration) <= 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            raise OptionError("'normalized duration' must be a positive number.")
+        try:
+            if float(self.speedup) <= 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            raise OptionError("'speedup' must be a positive number.")
+        _require_non_negative_number("fps", self.fps)
+        try:
+            if int(self.stride) <= 0:
+                raise ValueError
+        except (TypeError, ValueError):
+            raise OptionError("'stride' must be a positive integer.")
+        _require_non_negative_number("stagger time", self.stagger_time)
+        _require_non_negative_number("end hold", self.end_hold)
+        _require_bool("loop", self.loop)
+        _require_bool("include quiet time", self.include_quiet_time)
         baseline_correction = self.baseline_correction
         if isinstance(baseline_correction, str):
-            baseline_correction = baseline_correction.strip().lower().replace("_", " ").replace("-", " ")
+            baseline_correction = _normalized_choice(baseline_correction)
             if baseline_correction not in {"tail", "threshold", "true", "false", "on", "off"}:
                 raise OptionError(
                     "'baseline correction' must be True, False, 'tail', or 'threshold'."
@@ -2070,9 +2682,17 @@ class PlotOptions:
                     raise ValueError
             except (TypeError, ValueError):
                 raise OptionError("'minor ticks' must be True, False, or a non-negative integer.")
-        symbol_labels = str(self.symbol_labels).strip().lower()
+        symbol_labels = _normalized_choice(self.symbol_labels)
         if self.symbol_labels is not True and self.symbol_labels is not False and symbol_labels != "auto":
             raise OptionError("'symbol labels' must be True, False, or 'auto'.")
+
+        # Import locally to avoid importing plotting helpers at module import time.
+        from ._plot_helpers import _normalize_directional_arrows_options
+
+        try:
+            _normalize_directional_arrows_options({"directional arrows": self.directional_arrows})
+        except ValueError as exc:
+            raise OptionError(str(exc)) from exc
 
     def to_legacy_dict(self):
         data = {
@@ -2145,11 +2765,23 @@ class PlotOptions:
         data["baseline tail fraction"] = self.baseline_tail_fraction
         data["animate minrate"] = self.animate_minrate
         data["animate repeat"] = self.animate_repeat
+        data["trace mode"] = self.trace_mode
+        data["schedule"] = self.schedule
+        data["timing mode"] = self.timing_mode
+        data["normalized duration"] = self.normalized_duration
+        data["speedup"] = self.speedup
+        data["fps"] = self.fps
+        data["stagger time"] = self.stagger_time
+        data["end hold"] = self.end_hold
+        data["loop"] = self.loop
+        data["include quiet time"] = self.include_quiet_time
+        data["progress"] = self.progress
         data["scan rate"] = self.scan_rate
         data["normalize params"] = self.normalize_params
         data["reference index"] = self.reference_index
         data["reference cv"] = self.reference_cv
         data["reference cvs"] = self.reference_cvs
+        data["directional arrows"] = self.directional_arrows
         data["plot options"] = {} if self.plot_options is None else dict(self.plot_options)
         return data
 
@@ -2197,7 +2829,9 @@ class MultiplotOptions(PlotOptions):
     def to_legacy_dict(self):
         data = PlotOptions.to_legacy_dict(self)
         data["_deduplicate labels explicit"] = "deduplicate_labels" in self._provided_options
-        data["plot labels"] = self.plot_labels
+        labels = self.labels if self.labels is not None else self.plot_labels
+        data["labels"] = labels
+        data["plot labels"] = labels
         data["deduplicate labels"] = self.deduplicate_labels
         data["legend loc"] = self.legend_loc
         data["legend outside"] = self.legend_outside
@@ -2255,7 +2889,23 @@ class MultiScatterplotOptions(MultiplotOptions):
     y_column: str | int | None = "auto"
     y_columns: object | None = None
     metric: str | None = None
-    data_mode: str = "auto"
+    x_mode: str | None = None
+    y_mode: str | None = None
+    transform_mode: str | None = None
+    x_transform: str | float | int | None = None
+    y_transform: str | float | int | None = None
+    floor: bool | str | float | int | None = None
+    x_floor: bool | str | float | int | None = None
+    y_floor: bool | str | float | int | None = None
+    y0: object | None = None
+    fit: bool | str | None = True
+    fit_model: object | None = "linear"
+    fit_params: object | None = None
+    fit_init: object | None = "auto"
+    fit_bounds: object | None = "auto"
+    fit_residual: str = "direct"
+    fit_max_evals: int = 10000
+    sig_figs: int = 4
     plot_style: str = "scatter"
     xscale: str | None = None
     yscale: str | None = None
@@ -2270,9 +2920,6 @@ class MultiScatterplotOptions(MultiplotOptions):
         return _coerce_options(cls, options, ["plot", "multiplot", "multi_scatterplot"])
 
     def validate(self):
-        data_mode = str(self.data_mode).strip().lower()
-        if data_mode not in {"auto", "raw", "adjusted", "transformed"}:
-            raise OptionError("'data mode' must be 'auto', 'raw', 'adjusted', or 'transformed'.")
         style = str(self.plot_style).strip().lower()
         if style not in {"scatter", "line", "line+markers", "line markers", "line-and-markers"}:
             raise OptionError("'plot style' must be 'scatter', 'line', or 'line+markers'.")
@@ -2291,7 +2938,23 @@ class MultiScatterplotOptions(MultiplotOptions):
         data["y column"] = self.y_column
         data["y columns"] = self.y_columns
         data["metric"] = self.metric
-        data["data mode"] = self.data_mode
+        data["x mode"] = self.x_mode
+        data["y mode"] = self.y_mode
+        data["transform mode"] = self.transform_mode
+        data["x transform"] = self.x_transform
+        data["y transform"] = self.y_transform
+        data["floor"] = self.floor
+        data["x floor"] = self.x_floor
+        data["y floor"] = self.y_floor
+        data["y0"] = self.y0
+        data["fit"] = self.fit
+        data["fit model"] = self.fit_model
+        data["fit params"] = self.fit_params
+        data["fit init"] = self.fit_init
+        data["fit bounds"] = self.fit_bounds
+        data["fit residual"] = self.fit_residual
+        data["fit max evals"] = self.fit_max_evals
+        data["sig figs"] = self.sig_figs
         data["plot style"] = self.plot_style
         data["xscale"] = self.xscale
         data["yscale"] = self.yscale
@@ -2327,8 +2990,8 @@ class PeakPotentialOptions:
     noise_polyorder: int | str = "auto"
     sig_figs: int = 4
     peak_prominence: float | None = None
-    guess_potential: float | None = None
-    exact_potential: float | None = None
+    guess_potential: float | list[float] | list[list[float]] | None = None
+    exact_potential: float | list[float] | None = None
     troubleshoot: bool = False
     internal_call: bool = False
     offset: float = 0
@@ -2367,7 +3030,7 @@ class PeakPotentialOptions:
 class PeakCurrentOptions(PeakPotentialOptions):
     tangent_range: str | float | list[float] | tuple[float, float] = "auto"
     tangent_min_points: int | None = None
-    tangent_potential: float | None = None
+    tangent_potential: float | list[float] | None = None
     percent_threshold: float | None = None
     plot_peak_potential: bool = True
     peak_fallback: str | None = "highest current"
@@ -2547,8 +3210,9 @@ class NormalizationOptions:
         data["legend"] = self.legend
         data["title"] = self.title
         data["subtitle"] = self.subtitle
-        data["labels"] = self.labels
-        data["plot labels"] = self.plot_labels
+        labels = self.labels if self.labels is not None else self.plot_labels
+        data["labels"] = labels
+        data["plot labels"] = labels
         data["noise window"] = self.noise_window
         data["noise polyorder"] = self.noise_polyorder
         data["sig figs"] = self.sig_figs
@@ -2681,14 +3345,14 @@ class FOWAOptions:
     noise_polyorder: int | str = "auto"
     sig_figs: int = 4
     peak_prominence: float | None = None
-    guess_potential: float | list[float] | None = None
-    exact_potential: float | None = None
+    guess_potential: float | list[float] | list[list[float]] | None = None
+    exact_potential: float | list[float] | None = None
     tangent_range: str | float | list[float] | tuple[float, float] = "auto"
     tangent_min_points: int | None = None
-    tangent_potential: float | None = None
+    tangent_potential: float | list[float] | None = None
     percent_threshold: float | None = None
     peak_fallback: str | None = "highest current"
-    peak_potential: float | None = None
+    peak_potential: float | list[float] | None = None
     troubleshoot: bool = False
     fit_basis: str = "x"
     fit_range: list[float] | tuple[float, float] = (0.0, 0.2)
@@ -2720,7 +3384,7 @@ class FOWAOptions:
     non_catalytic_current: float | None = None
     non_catalytic_cv: object | None = None
     non_catalytic_cvs: object | None = None
-    non_catalytic_guess_potential: float | None = None
+    non_catalytic_guess_potential: float | list[float] | None = None
 
     @classmethod
     def from_options(cls, options=None):
@@ -2769,6 +3433,8 @@ class FOWAOptions:
                 )
         if self.ip0 is not None and self.non_catalytic_current is not None:
             raise OptionError("Use either 'ip0' or 'non-catalytic current', not both.")
+        if self.non_catalytic_cv is not None and self.non_catalytic_cvs is not None:
+            raise OptionError("Use either 'non-catalytic cv' or 'non-catalytic cvs', not both.")
         _validate_common_cv(self)
 
     def for_peak_current(self):
@@ -2783,7 +3449,9 @@ class FOWAOptions:
         data = {field.name.replace("_", " "): getattr(self, field.name) for field in fields(self)}
         data["plot all"] = self.plot_all
         data["print all"] = self.print_all
-        data["plot labels"] = self.plot_labels
+        labels = self.labels if self.labels is not None else self.plot_labels
+        data["labels"] = labels
+        data["plot labels"] = labels
         data["colorbar height scale"] = self.colorbar_height_scale
         data["min gradient entries"] = self.min_gradient_entries
         data["new plot"] = self.new_plot
@@ -2925,7 +3593,6 @@ class FitRateOptions:
     log_fit_indices: object | None = None
     fit_model: object | None = "linear"
     fit_params: object | None = None
-    fit_equation: str | None = None
     fit_init: object | None = "auto"
     fit_bounds: object | None = "auto"
     fit_residual: str = "direct"
@@ -2991,7 +3658,6 @@ class FitRateOptions:
         data["log fit indices"] = self.log_fit_indices
         data["fit model"] = self.fit_model
         data["fit params"] = self.fit_params
-        data["fit equation"] = self.fit_equation
         data["fit init"] = self.fit_init
         data["fit bounds"] = self.fit_bounds
         data["fit residual"] = self.fit_residual
@@ -3032,7 +3698,6 @@ class FitPeakPotentialOptions(PeakPotentialOptions):
     fit_ranges: object | None = None
     fit_model: object | None = "linear"
     fit_params: object | None = None
-    fit_equation: str | None = None
     fit_init: object | None = "auto"
     fit_bounds: object | None = "auto"
     fit_residual: str = "direct"
@@ -3074,7 +3739,6 @@ class FitPeakPotentialOptions(PeakPotentialOptions):
         data["fit ranges"] = self.fit_ranges
         data["fit model"] = self.fit_model
         data["fit params"] = self.fit_params
-        data["fit equation"] = self.fit_equation
         data["fit init"] = self.fit_init
         data["fit bounds"] = self.fit_bounds
         data["fit residual"] = self.fit_residual
@@ -3157,9 +3821,13 @@ class SevcikAnalysisOptions(PeakCurrentOptions):
                 "plot all": self.plot_all,
                 "print all": self.print_all,
                 "segment": self.segment if segment is None else segment,
+                "x axis": self.x_axis,
+                "y axis": self.y_axis,
                 "noise window": self.noise_window,
                 "noise polyorder": self.noise_polyorder,
                 "sig figs": self.sig_figs,
+                "x unit": self.x_unit,
+                "y unit": self.y_unit,
                 "peak prominence": self.peak_prominence,
                 "guess potential": self.guess_potential,
                 "exact potential": self.exact_potential,
@@ -3177,7 +3845,6 @@ class FitPeakCurrentOptions(PeakCurrentOptions):
     x_unit: str | None = "auto"
     y_unit: str | None = "auto"
     species: str | None = None
-    x_power: int | float | None = 0.5
     x_transform: str | float | int | None = None
     y_transform: str | float | int | None = None
     transform_mode: str | None = None
@@ -3194,7 +3861,6 @@ class FitPeakCurrentOptions(PeakCurrentOptions):
     fit_ranges: object | None = None
     fit_model: object | None = "linear"
     fit_params: object | None = None
-    fit_equation: str | None = None
     fit_init: object | None = "auto"
     fit_bounds: object | None = "auto"
     fit_residual: str = "direct"
@@ -3234,7 +3900,6 @@ class FitPeakCurrentOptions(PeakCurrentOptions):
         data["x unit"] = self.x_unit
         data["y unit"] = self.y_unit
         data["species"] = self.species
-        data["x power"] = self.x_power
         data["x transform"] = self.x_transform
         data["y transform"] = self.y_transform
         data["transform mode"] = self.transform_mode
@@ -3251,7 +3916,6 @@ class FitPeakCurrentOptions(PeakCurrentOptions):
         data["fit ranges"] = self.fit_ranges
         data["fit model"] = self.fit_model
         data["fit params"] = self.fit_params
-        data["fit equation"] = self.fit_equation
         data["fit init"] = self.fit_init
         data["fit bounds"] = self.fit_bounds
         data["fit residual"] = self.fit_residual
@@ -3279,6 +3943,10 @@ class FitPeakCurrentOptions(PeakCurrentOptions):
                 "plot all": self.plot_all,
                 "print all": self.print_all,
                 "segment": self.segment if segment is None else segment,
+                "x axis": self.x_axis,
+                "y axis": self.y_axis,
+                "x unit": self.x_unit,
+                "y unit": self.y_unit,
                 "noise window": self.noise_window,
                 "noise polyorder": self.noise_polyorder,
                 "sig figs": self.sig_figs,
@@ -3417,8 +4085,9 @@ class NicholsonOptions(PeakCurrentOptions):
         data["plot diagnostic"] = self.plot_diagnostic
         data["empirical psi equation"] = self.empirical_psi_equation
         data["warn ir drop"] = self.warn_ir_drop
-        data["scan rate"] = self.scan_rate
-        data["scan rates"] = self.scan_rates
+        scan_rate = self.scan_rate if self.scan_rate is not None else self.scan_rates
+        data["scan rate"] = scan_rate
+        data["scan rates"] = scan_rate
         return data
 
 
@@ -3517,13 +4186,195 @@ class GroupSummaryOptions:
         }
 
 
-def _display_option_key(key):
-    key = normalize_key(key)
+def _display_option_key(key, section=None):
+    key = _canonical_option_key(key)
+    if section is not None:
+        section_key = _canonical_section_key(section)
+        section_overrides = _SECTION_OPTION_DISPLAY_OVERRIDES.get(section_key, {})
+        if key in section_overrides:
+            return section_overrides[key]
     return _DISPLAY_KEY_OVERRIDES.get(key, _friendly_key(key))
 
 
 def _display_section_key(key):
     return _canonical_section_key(key)
+
+
+_DESCRIBE_WORKFLOW_ORDER = (
+    "Overview",
+    "Import and metadata",
+    "Object plotting",
+    "Overlay plotting",
+    "CV preprocessing",
+    "Single CV analysis",
+    "DPV analysis",
+    "CA/CP analysis",
+    "Batch analysis",
+    "Scatter and fit analysis",
+    "Simulation and fitting",
+    "Collection utilities",
+    "Export",
+    "General options",
+)
+
+
+_DESCRIBE_FUNCTION_WORKFLOWS = {
+    "all": "Overview",
+    "get_data": "Import and metadata",
+    "get_cvs": "Import and metadata",
+    "get_data_from_excel": "Import and metadata",
+    "echem.from_file": "Import and metadata",
+    "plot": "Object plotting",
+    "echem.x": "Object plotting",
+    "echem.y": "Object plotting",
+    "echem.xy": "Object plotting",
+    "echem.plot": "Object plotting",
+    "cv.x": "Object plotting",
+    "cv.y": "Object plotting",
+    "cv.xy": "Object plotting",
+    "cv.plot": "Object plotting",
+    "dpv.x": "Object plotting",
+    "dpv.y": "Object plotting",
+    "dpv.xy": "Object plotting",
+    "dpv.plot": "Object plotting",
+    "ca.plot": "Object plotting",
+    "cp.plot": "Object plotting",
+    "multiplot": "Overlay plotting",
+    "multimultiplot": "Overlay plotting",
+    "multi_scatterplot": "Overlay plotting",
+    "save_data": "Export",
+    "animate": "Overlay plotting",
+    "cv.normalize": "CV preprocessing",
+    "cv.normalize_current": "CV preprocessing",
+    "cv.scale_current": "CV preprocessing",
+    "normalize": "CV preprocessing",
+    "normalize_current": "CV preprocessing",
+    "scale_current": "CV preprocessing",
+    "cv.current_at_potential": "Single CV analysis",
+    "cv.peak_potential": "Single CV analysis",
+    "cv.peak_current": "Single CV analysis",
+    "cv.peak_info": "Single CV analysis",
+    "cv.plateau_current": "Single CV analysis",
+    "cv.half_peak_potential": "Single CV analysis",
+    "cv.half_wave_potential": "Single CV analysis",
+    "cv.wave_info": "Single CV analysis",
+    "cv_analysis": "Single CV analysis",
+    "peak_current": "Single CV analysis",
+    "dpv.peak_potential": "DPV analysis",
+    "ca.charge": "CA/CP analysis",
+    "ca.time_at_charge": "CA/CP analysis",
+    "cp.get_cycles": "CA/CP analysis",
+    "cp.plot_cycles": "CA/CP analysis",
+    "cp.cycling_plot": "CA/CP analysis",
+    "cp.cycle_info": "CA/CP analysis",
+    "fowa": "Batch analysis",
+    "sevcik_analysis": "Batch analysis",
+    "trumpet_analysis": "Batch analysis",
+    "nicholson": "Batch analysis",
+    "nicholson_analysis": "Batch analysis",
+    "tafel_analysis": "Batch analysis",
+    "plateau_current": "Batch analysis",
+    "fit_model": "Scatter and fit analysis",
+    "fit_rate": "Scatter and fit analysis",
+    "fit_peak_current": "Scatter and fit analysis",
+    "fit_peak_potential": "Scatter and fit analysis",
+    "simulation.cv_data": "Simulation and fitting",
+    "simulation.simulate_cv": "Simulation and fitting",
+    "simulation.fit_cv": "Simulation and fitting",
+    "filter": "Collection utilities",
+    "sort_group": "Collection utilities",
+    "group_summary": "Collection utilities",
+}
+
+
+_DESCRIBE_FUNCTION_DESCRIPTIONS = {
+    "all": "Show every registered option table, grouped by workflow and function.",
+    "get_data": "Import supported electrochemistry files, parse filename/file metadata, apply reference handling, and return eCAT objects.",
+    "get_cvs": "Load CV-like text exports from one folder into eCAT CV objects.",
+    "echem.from_file": "Load one supported data file and promote it to the detected eCAT object type when possible.",
+    "get_data_from_excel": "Load worksheet-based exported eCAT data back into eCAT objects.",
+    "plot": "General object plot options shared by echem, CV, DPV, CA, and CP plots. For class-specific controls, use cv.plot, ca.plot, cp.plot, or dpv.plot.",
+    "echem.plot": "Generic echem plot options for axis selection, units, titles, legends, scale bars, and shared plot styling.",
+    "cv.plot": "CV trace plotting options, including segment selection, derivative/smoothing display, current normalization, segment coloring, scale bars, and directional arrows.",
+    "dpv.plot": "DPV trace plotting options for potential-current display plus shared axis, label, legend, and styling controls.",
+    "ca.plot": "Chronoamperometry plotting options, including current traces, charge overlays, target charge markers, and baseline-correction display.",
+    "cp.plot": "Chronopotentiometry plotting options for potential-time traces and cycle-oriented displays.",
+    "echem.x": "Options affecting x-axis extraction and display from generic echem objects.",
+    "echem.y": "Options affecting y-axis extraction and display from generic echem objects.",
+    "echem.xy": "Options affecting paired x/y extraction and display from generic echem objects.",
+    "cv.x": "Options affecting CV x-axis extraction and display.",
+    "cv.y": "Options affecting CV y-axis extraction and display.",
+    "cv.xy": "Options affecting paired CV x/y extraction and display.",
+    "dpv.x": "Options affecting DPV x-axis extraction and display.",
+    "dpv.y": "Options affecting DPV y-axis extraction and display.",
+    "dpv.xy": "Options affecting paired DPV x/y extraction and display.",
+    "multiplot": "Overlay multiple eCAT objects with shared axes, metadata-derived labels, legends, gradients, colorbars, scale bars, and directional arrows.",
+    "multimultiplot": "Create grouped overlay panels from multiple object groups with shared styling, titles, subtitles, and legends.",
+    "multi_scatterplot": "Plot one or more result-table metrics with explicit x/y column selection, grouping, labels, and fit display.",
+    "save_data": "Export eCAT objects to CSV or Excel-style processed tables while preserving units and useful metadata.",
+    "animate": "Animate one object or an object list using eCAT plot styling plus trace timing, scheduling, frame rate, looping, and export controls.",
+    "cv.normalize": "Normalize one CV with physical dimensionless CV variables and metadata-derived parameters when available.",
+    "normalize": "Normalize one or more CVs with physical dimensionless CV variables and metadata-derived parameters when available.",
+    "cv.normalize_current": "Normalize CV current by a reference peak current resolved from ip0, a reference CV, or a reference CV list.",
+    "normalize_current": "Normalize current for one or more CVs by a reference peak current resolved from ip0 or reference CVs.",
+    "cv.scale_current": "Scale one CV current against manual or reference-wave current values.",
+    "scale_current": "Scale CV currents against manual or reference-wave current values.",
+    "cv.current_at_potential": "Extract current from a CV at a requested potential with segment and interpolation controls.",
+    "cv.peak_potential": "Locate a CV peak potential using segment selection, smoothing, prominence, and fallback controls.",
+    "cv.peak_current": "Measure CV peak current with peak selection, tangent/background handling, fallback behavior, plotting, and printing controls.",
+    "cv.peak_info": "Return peak-potential and peak-current details using the peak-current option surface.",
+    "cv.plateau_current": "Analyze plateau current for one CV with optional normalization and plotting controls.",
+    "cv.half_peak_potential": "Estimate a CV half-peak potential from selected peak-current diagnostics.",
+    "cv.half_wave_potential": "Estimate a CV half-wave potential from paired peak diagnostics.",
+    "cv.wave_info": "Return paired-wave information using peak-current and half-wave controls.",
+    "cv_analysis": "Shared CV analysis controls for segment selection, smoothing, peak guesses, exact potentials, diagnostics, and significant figures.",
+    "peak_current": "Shared peak-current controls for tangent baselines, percent thresholds, and peak fallback behavior.",
+    "dpv.peak_potential": "Locate a DPV peak potential near a guess with smoothing, prominence, and diagnostic controls.",
+    "ca.charge": "Integrate chronoamperometry current to cumulative charge and optionally plot current, charge, and target diagnostics.",
+    "ca.time_at_charge": "Find when a chronoamperometry trace reaches a requested target charge.",
+    "cp.get_cycles": "Split chronopotentiometry data into charge/discharge cycles.",
+    "cp.plot_cycles": "Plot selected chronopotentiometry cycles with shared object-plot styling.",
+    "cp.cycling_plot": "Plot chronopotentiometry cycling metrics such as capacity and efficiency versus cycle number.",
+    "cp.cycle_info": "Summarize chronopotentiometry cycle capacity, efficiency, and potential metrics.",
+    "fowa": "Foot-of-the-wave analysis for catalytic CVs, including reference-wave handling, tangent backgrounds, fit windows, and diagnostics.",
+    "sevcik_analysis": "Sevcik-style peak-current trend analysis across scan rates.",
+    "trumpet_analysis": "Trumpet analysis from paired peak potentials across scan rates.",
+    "nicholson": "Nicholson-style heterogeneous electron-transfer analysis from peak separation and scan-rate trends.",
+    "nicholson_analysis": "Nicholson-style heterogeneous electron-transfer analysis from peak separation and scan-rate trends.",
+    "tafel_analysis": "Tafel-style turnover-frequency analysis for one CV or a CV series.",
+    "plateau_current": "Batch plateau-current workflow for identifying scan-rate-independent catalytic limiting currents.",
+    "fit_model": "Fit a generic model to x/y data, a result table, or an existing scatter-fit result.",
+    "fit_rate": "Fit rate or transformed FOWA/result-table data with shared scatter-fit model controls.",
+    "fit_peak_current": "Fit peak-current trends across a CV series using shared scatter-fit model controls.",
+    "fit_peak_potential": "Fit peak-potential trends across a CV series using shared scatter-fit model controls.",
+    "simulation.cv_data": "Convert an imported eCAT CV into simulation/fitting input while preserving measured current and metadata.",
+    "simulation.simulate_cv": "Run an ElectroKitty-backed CV simulation and overlay simulated/measured current.",
+    "simulation.fit_cv": "Fit one measured CV with eCAT simulation least-squares or strategy methods.",
+    "filter": "Include or exclude eCAT objects by exact metadata criteria.",
+    "sort_group": "Sort and group eCAT objects by metadata fields for plotting, summaries, or batch analysis.",
+    "group_summary": "Summarize grouped object metadata in notebook-friendly tables.",
+}
+
+
+def _workflow_for_function(function):
+    return _DESCRIBE_FUNCTION_WORKFLOWS.get(str(function), "General options")
+
+
+def _workflow_sort_key(function):
+    workflow = _workflow_for_function(function)
+    try:
+        workflow_index = _DESCRIBE_WORKFLOW_ORDER.index(workflow)
+    except ValueError:
+        workflow_index = len(_DESCRIBE_WORKFLOW_ORDER)
+    return workflow_index, str(function)
+
+
+def _description_for_function(function):
+    function = str(function)
+    if function in _DESCRIBE_FUNCTION_DESCRIPTIONS:
+        return _DESCRIBE_FUNCTION_DESCRIPTIONS[function]
+    friendly = function.replace("_", " ")
+    return f"Options for the {friendly} workflow."
 
 
 def _type_to_string(annotation):
@@ -3587,8 +4438,11 @@ def _metadata_for_option(key, section=None):
     norm = normalize_key(key)
     metadata = dict(OPTION_METADATA.get("*", {}).get(norm, {}))
     if section is not None:
-        section_norm = _canonical_section_key(section)
+        section_norm = normalize_key(section)
         metadata.update(OPTION_METADATA.get(section_norm, {}).get(norm, {}))
+        canonical_section = _canonical_section_key(section)
+        if canonical_section != section_norm:
+            metadata.update(OPTION_METADATA.get(canonical_section, {}).get(norm, {}))
     return metadata
 
 
@@ -3625,9 +4479,9 @@ def _options_schema_to_dataframe(schema):
 
     rows = []
 
-    def add_schema_rows(section, section_schema):
+    def add_schema_rows(section, section_schema, include_workflow=False):
         for option, entry in section_schema.items():
-            rows.append({
+            row = {
                 "Function": section,
                 "Category": entry.get("category", "Advanced"),
                 "Option": option,
@@ -3635,13 +4489,25 @@ def _options_schema_to_dataframe(schema):
                 "Type": entry.get("type", ""),
                 "Choices": _format_choices_for_display(entry.get("choices", [])),
                 "Description": entry.get("description", ""),
-            })
+            }
+            if include_workflow:
+                row = {"Workflow": _workflow_for_function(section), **row}
+            rows.append(row)
 
     def sort_option_rows(df):
         if df.empty or "Option" not in df.columns:
             return df
         sort_columns = []
         if "Function" in df.columns:
+            if "Workflow" in df.columns:
+                workflow_order = {
+                    workflow: index
+                    for index, workflow in enumerate(_DESCRIBE_WORKFLOW_ORDER)
+                }
+                df = df.assign(
+                    _workflow_order=df["Workflow"].map(workflow_order).fillna(len(workflow_order))
+                )
+                sort_columns.append("_workflow_order")
             sort_columns.append("Function")
         if "Category" in df.columns:
             category_order = {
@@ -3654,8 +4520,9 @@ def _options_schema_to_dataframe(schema):
             sort_columns.append("_category_order")
         sort_columns.append("Option")
         sorted_df = df.sort_values(sort_columns, kind="stable").reset_index(drop=True)
-        if "_category_order" in sorted_df.columns:
-            sorted_df = sorted_df.drop(columns=["_category_order"])
+        for helper_column in ("_workflow_order", "_category_order"):
+            if helper_column in sorted_df.columns:
+                sorted_df = sorted_df.drop(columns=[helper_column])
         return sorted_df
 
     if schema and all(
@@ -3668,7 +4535,7 @@ def _options_schema_to_dataframe(schema):
         for value in schema.values()
     ):
         for section, section_schema in schema.items():
-            add_schema_rows(section, section_schema)
+            add_schema_rows(section, section_schema, include_workflow=True)
         return _drop_empty_display_columns(sort_option_rows(pd.DataFrame(rows)))
 
     add_schema_rows("", schema)
@@ -3677,7 +4544,7 @@ def _options_schema_to_dataframe(schema):
 
 
 def _drop_empty_display_columns(df):
-    protected_columns = {"Function", "Category", "Option"}
+    protected_columns = {"Workflow", "Function", "Category", "Option"}
     empty_columns = []
     for column in df.columns:
         if column in protected_columns:
@@ -3739,46 +4606,77 @@ def _describe_options_method_names():
 
 
 def _describe_options_function_names():
-    return sorted(set(_describe_options_section_names()) | set(_describe_options_method_names()))
+    return sorted(
+        set(_describe_options_section_names())
+        | set(_describe_options_method_names())
+        | set(_SIMULATION_OPTION_SCHEMAS)
+    )
 
 
 def _describe_options_menu_dataframe():
     import pandas as pd
 
+    functions = ["all", *_describe_options_function_names()]
+    functions = sorted(functions, key=_workflow_sort_key)
     rows = [
         {
-            "Function": "all",
-            "Description": "Show options for every function.",
-        }
-    ]
-    rows.extend(
-        {
+            "Workflow": _workflow_for_function(function),
             "Function": function,
-            "Description": f'Show options for "{function}".',
+            "Description": _description_for_function(function),
         }
-        for function in _describe_options_function_names()
-    )
+        for function in functions
+    ]
     return pd.DataFrame(rows)
 
 
-def _describe_options_schema_for_section(section, type_lookup):
-    defaults = get_defaults(section)
-    return {
-        _display_option_key(key): _schema_entry(
+def _describe_options_schema_from_defaults(defaults, type_lookup, section):
+    schema = {}
+    for key, value in defaults.items():
+        display_key = _display_option_key(key, section=section)
+        if display_key in schema:
+            continue
+        schema[display_key] = _schema_entry(
             key,
             value,
             type_lookup.get(key, type(value)),
             section=section,
         )
-        for key, value in defaults.items()
+    return schema
+
+
+def _describe_options_schema_for_animate(type_lookup):
+    defaults = get_defaults("plot")
+    defaults.update(get_defaults("multiplot"))
+    for key, value in _ANIMATION_OPTION_DEFAULTS.items():
+        defaults.setdefault(key, value)
+    return {
+        _display_option_key(key, section="animate"): _schema_entry(
+            key,
+            defaults[key],
+            type_lookup.get(key, type(defaults[key])),
+            section="animate",
+        )
+        for key in _ANIMATE_OPTION_KEYS
+        if key in defaults
     }
+
+
+def _describe_options_schema_for_section(section, type_lookup):
+    return _describe_options_schema_from_defaults(
+        get_defaults(section),
+        type_lookup,
+        section=section,
+    )
 
 
 def _describe_options_all_schema(type_lookup):
-    return {
+    schema = {
         _display_section_key(section): _describe_options_schema_for_section(section, type_lookup)
         for section in sorted(_default_section_names())
     }
+    schema["animate"] = _describe_options_schema_for_animate(type_lookup)
+    schema.update(deepcopy(_SIMULATION_OPTION_SCHEMAS))
+    return schema
 
 
 def _describe_options_invalid_section_message(section):
@@ -3832,7 +4730,18 @@ def describe_options(option_model_or_section=None, options=None):
 
     if isinstance(option_model_or_section, str):
         section = option_model_or_section
+        section_input_key = normalize_key(section)
         section_key = _canonical_section_key(section)
+
+        if section_input_key == "animate":
+            return display_and_return(
+                _options_schema_to_dataframe(_describe_options_schema_for_animate(type_lookup))
+            )
+
+        if section_input_key in _SIMULATION_OPTION_SCHEMAS:
+            return display_and_return(
+                _options_schema_to_dataframe(deepcopy(_SIMULATION_OPTION_SCHEMAS[section_input_key]))
+            )
 
         if section_key == "all":
             return display_and_return(
@@ -3863,7 +4772,7 @@ def describe_options(option_model_or_section=None, options=None):
     schema = {}
     for field in fields(cls):
         default = defaults.get(field.name, _default_for_field(field))
-        schema[_display_option_key(field.name)] = _schema_entry(
+        schema[_display_option_key(field.name, section=metadata_section)] = _schema_entry(
             field.name,
             default,
             hints.get(field.name, field.type),
@@ -3871,3 +4780,58 @@ def describe_options(option_model_or_section=None, options=None):
         )
     return display_and_return(_options_schema_to_dataframe(schema))
 
+__all__ = [
+    'MISSING',
+    'dataclass',
+    'field',
+    'fields',
+    'Path',
+    'resources',
+    'difflib',
+    're',
+    'types',
+    'typing',
+    'deepcopy',
+    'display',
+    'tomllib',
+    'TOMLDecodeError',
+    'OptionError',
+    'normalize_key',
+    'OPTION_CATEGORY_ORDER',
+    'OPTION_CATEGORIES',
+    'OPTION_DESCRIPTIONS',
+    'OPTION_CHOICES',
+    'OPTION_CHOICES_BY_SECTION',
+    'OPTION_METADATA',
+    'load_defaults',
+    'set_defaults',
+    'get_defaults',
+    'reset_defaults',
+    'reset_defaults_option',
+    'reset_defaults_section',
+    'ImportOptions',
+    'import_options_to_legacy_dict',
+    'TrimOptions',
+    'PlotOptions',
+    'MultiplotOptions',
+    'MultiMultiplotOptions',
+    'MultiScatterplotOptions',
+    'PeakPotentialOptions',
+    'PeakCurrentOptions',
+    'NormalizeOptions',
+    'NormalizationOptions',
+    'ScaleCurrentOptions',
+    'FOWAOptions',
+    'PlateauCurrentOptions',
+    'FitRateOptions',
+    'FitPeakPotentialOptions',
+    'SevcikAnalysisOptions',
+    'FitPeakCurrentOptions',
+    'TrumpetAnalysisOptions',
+    'NicholsonOptions',
+    'TafelAnalysisOptions',
+    'FilterOptions',
+    'SortGroupOptions',
+    'GroupSummaryOptions',
+    'describe_options',
+]

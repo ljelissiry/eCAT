@@ -940,7 +940,7 @@ def _apply_current_scale(cv_obj, scale, options):
     return cv_obj
 
 
-def normalize_current(cvs, options={}):
+def normalize_current(cvs, options=None):
     """Return CV copies with an ``i/ip0`` current-normalization column.
     
     Parameters
@@ -1013,7 +1013,7 @@ def _resolve_scale_values(cvs, options):
     return scales, target_ips, measured_ips
 
 
-def scale_current(cvs, options={}):
+def scale_current(cvs, options=None):
     """Return CV copies with raw current columns multiplied by scale factors.
     
     Parameters

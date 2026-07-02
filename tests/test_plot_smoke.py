@@ -6,6 +6,8 @@ import pytest
 
 import matplotlib as mpl
 import matplotlib.pyplot as plt
+from matplotlib.colors import to_rgba
+from matplotlib.text import Annotation
 from matplotlib.collections import LineCollection
 
 
@@ -53,6 +55,16 @@ def test_cv_plot_smoke_with_agg_backend(cv_factory):
     assert ax is not None
     assert len(ax.lines) == 1
     plt.close(fig)
+
+
+def test_cv_plot_with_animate_option_still_returns_axes(cv_factory):
+    obj = cv_factory()
+
+    ax = obj.plot({"animate": True, "legend": False, "title": False})
+
+    assert hasattr(ax, "figure")
+    assert len(ax.lines) == 1
+    plt.close(ax.figure)
 
 
 def test_cv_plot_defaults_to_new_figure(cv_factory):
@@ -109,6 +121,16 @@ def test_cv_plot_respects_explicit_new_plot_false(cv_factory):
     assert ax is existing_ax
     assert len(existing_ax.lines) == 1
     plt.close(existing_fig)
+
+
+def test_multiplot_with_animate_option_still_returns_axes(ecat_module, cv_factory):
+    objs = _plot_cv_triplet(cv_factory)
+
+    ax = ecat_module.multiplot(objs, {"animate": True, "legend": False, "title": False})
+
+    assert hasattr(ax, "figure")
+    assert len(ax.lines) == len(objs)
+    plt.close(ax.figure)
 
 
 def test_plotting_style_can_restore_matplotlib_defaults(ecat_module):
@@ -353,6 +375,94 @@ def test_scale_bar_upper_location_respects_inverted_y_axis(ecat_module, cv_facto
 
     assert ax.yaxis_inverted()
     assert bar_display_y > y_mid
+    plt.close(ax.figure)
+
+
+def test_scale_bar_true_autopicks_nice_length(ecat_module):
+    fig, ax = plt.subplots()
+    ax.set_xlim(-1, 1)
+    ax.set_ylim(0, 120)
+
+    ecat_module._add_scale_bar(ax, {"scale bar": True}, unit="uA")
+
+    vertical_bar = ax.collections[0].get_segments()[0]
+    length = abs(vertical_bar[1, 1] - vertical_bar[0, 1])
+    assert length == pytest.approx(30)
+    assert ax.texts[-1].get_text() == "30 uA"
+    plt.close(fig)
+
+
+def test_directional_arrows_adds_annotations_on_all_matching_segments_when_segment_omitted(
+    cv_factory,
+):
+    obj = _multi_segment_cv(cv_factory)
+
+    ax = obj.plot(
+        {
+            "legend": False,
+            "title": False,
+            "directional arrows": {"potential": 0.8},
+        }
+    )
+
+    annotations = [art for art in ax.texts if isinstance(art, Annotation)]
+    assert len(annotations) == 4
+    plt.close(ax.figure)
+
+
+def test_directional_arrows_respects_segment_filter(cv_factory):
+    obj = _multi_segment_cv(cv_factory)
+
+    ax = obj.plot(
+        {
+            "legend": False,
+            "title": False,
+            "directional arrows": {"potential": 0.8, "segment": 2},
+        }
+    )
+
+    annotations = [art for art in ax.texts if isinstance(art, Annotation)]
+    assert len(annotations) == 1
+    plt.close(ax.figure)
+
+
+def test_directional_arrows_default_to_trace_color(cv_factory):
+    obj = _multi_segment_cv(cv_factory)
+
+    ax = obj.plot(
+        {
+            "legend": False,
+            "title": False,
+            "directional arrows": {"potential": 0.8},
+        }
+    )
+
+    arrows = [art for art in ax.texts if isinstance(art, Annotation)]
+    assert arrows, "expected directional arrows to be added"
+    assert len(ax.lines) >= 1
+    expected_color = ax.lines[0].get_color()
+    arrow_colors = {
+        tuple(to_rgba(ann.arrow_patch.get_edgecolor()))
+        for ann in arrows
+        if ann.arrow_patch is not None
+    }
+    assert to_rgba(expected_color) in arrow_colors
+    plt.close(ax.figure)
+
+
+def test_directional_arrows_apply_to_all_matching_segments_when_segment_omitted(cv_factory):
+    obj = _multi_segment_cv(cv_factory, n_segments=3)
+
+    ax = obj.plot(
+        {
+            "legend": False,
+            "title": False,
+            "directional arrows": {"potential": 0.8},
+        }
+    )
+
+    annotations = [art for art in ax.texts if isinstance(art, Annotation)]
+    assert len(annotations) == 3
     plt.close(ax.figure)
 
 
@@ -2475,6 +2585,57 @@ def test_multiplot_stacked_colorbars_keep_context_after_matching_discrete_line(e
     plt.close(fig)
 
 
+def test_multiplot_colorbar_legend_text_stays_inside_panel_for_long_labels(ecat_module):
+    fig, ax = plt.subplots()
+    ax.plot(
+        [0, 1],
+        [0, 1],
+        label="Background, 3 mM [Fc], 1 mM [Co], 2.8 M H2O",
+    )
+    color_spec = {
+        "gradient groups": [
+            {
+                "indices": [1, 2, 3, 4],
+                "norm": mpl.colors.Normalize(vmin=0, vmax=10),
+                "cmap": plt.get_cmap("viridis"),
+                "ticks": [0, 2.5, 5.0, 10.0],
+                "ticklabels": ["0 mM", "2.5 mM", "5 mM", "10 mM"],
+                "endpoint ticks": [0, 10],
+                "endpoint ticklabels": ["0 mM", "10 mM"],
+                "legend context line": "CO2, 3 mM [Fc], 1 mM [Co], 2.8 M H2O",
+            }
+        ],
+        "plot labels": ["Background"],
+    }
+    options = {
+        "legend mode": "colorbar",
+        "legend loc": "lower left",
+        "legend outside": False,
+        "legend pad": 0.02,
+        "colorbar height scale": 1.0,
+        "colorbar reverse": True,
+        "colorbar tick length": 5,
+        "colorbar tick pad": 8,
+        "colorbar trace ticks": True,
+        "colorbar tick labels": "endpoints",
+    }
+
+    panel_ax = ecat_module._draw_multiplot_legend_and_colorbars(
+        ax,
+        color_spec,
+        options,
+        legend_fs=10,
+    )
+
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+    panel_bbox = panel_ax.get_window_extent(renderer=renderer)
+
+    for text in panel_ax.texts:
+        assert text.get_window_extent(renderer=renderer).x1 <= panel_bbox.x1
+    plt.close(fig)
+
+
 def test_multiplot_discrete_legend_can_be_placed_outside(ecat_module, cv_factory):
     objects = _plot_cv_triplet(cv_factory)[:2]
 
@@ -2743,6 +2904,95 @@ def test_multiplot_colorbar_all_tick_labels_does_not_duplicate_endpoints(ecat_mo
     assert axis_tick_labels.count("10 mV/s") == 1
     assert manual_labels.count("0 mV/s") == 0
     assert manual_labels.count("10 mV/s") == 0
+
+
+def test_attach_gradient_legend_text_prefers_explicit_plot_labels(ecat_module):
+    color_spec = {
+        "gradient groups": [
+            {
+                "indices": [0, 1, 2],
+                "ticklabels": ["0 mM", "", "2.8 M"],
+                "endpoint ticklabels": ["0 mM", "2.8 M"],
+                "legend title": "PhOH",
+                "legend unit": "mol/m^3",
+                "gradient by": "concentration",
+            }
+        ],
+        "plot labels": ["_nolegend_", "_nolegend_", "_nolegend_"],
+    }
+    labels = ["0 mM", "100 mM", "2.8 M"]
+
+    updated = ecat_module._attach_gradient_legend_text(
+        color_spec,
+        labels,
+        user_labels_explicit=True,
+    )
+
+    group = updated["gradient groups"][0]
+    assert group["ticklabels"] == ["0 mM", "100 mM", "2.8 M"]
+    assert group["endpoint ticklabels"] == ["0 mM", "2.8 M"]
+    assert group["legend context line"] == ""
+
+
+def test_multiplot_colorbar_endpoints_fall_back_to_tick_labels_when_no_text_column(
+    ecat_module,
+    monkeypatch,
+):
+    fig, ax = plt.subplots()
+    ax.plot([0, 1], [0, 1], label="Trace A")
+    ax.plot([0, 1], [1, 0], label="Trace B")
+    color_spec = {
+        "gradient groups": [
+            {
+                "indices": [0, 1],
+                "norm": mpl.colors.Normalize(vmin=0, vmax=10),
+                "cmap": plt.get_cmap("viridis"),
+                "ticks": [0, 10],
+                "ticklabels": ["0 mM", "2.8 M"],
+                "endpoint ticks": [0, 10],
+                "endpoint ticklabels": ["0 mM", "2.8 M"],
+                "legend context line": "",
+            }
+        ]
+    }
+    options = {
+        "legend mode": "colorbar",
+        "legend loc": "upper left",
+        "legend outside": False,
+        "legend pad": 0.02,
+        "colorbar height scale": 1.0,
+        "colorbar trace ticks": True,
+        "colorbar tick labels": "endpoints",
+    }
+
+    original_layout = ecat_module._custom_legend_layout
+
+    def no_text_layout(*args, **kwargs):
+        layout = original_layout(*args, **kwargs)
+        layout["text_x"] = None
+        return layout
+
+    monkeypatch.setattr(ecat_module, "_custom_legend_layout", no_text_layout)
+
+    panel_ax = ecat_module._draw_multiplot_legend_and_colorbars(
+        ax,
+        color_spec,
+        options,
+        legend_fs=10,
+    )
+
+    axis_tick_labels = [
+        text.get_text()
+        for child_ax in panel_ax.child_axes
+        for text in child_ax.get_yticklabels()
+    ]
+    manual_labels = [text.get_text() for text in panel_ax.texts]
+
+    assert "0 mM" in axis_tick_labels
+    assert "2.8 M" in axis_tick_labels
+    assert "0 mM" not in manual_labels
+    assert "2.8 M" not in manual_labels
+    plt.close(fig)
     plt.close(fig)
 
 

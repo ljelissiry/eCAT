@@ -39,6 +39,52 @@ def _contains_string_case_insensitive(text, pattern):
     return pattern.lower() in text.lower()
 
 
+def _coerce_reference_mode(mode):
+    if isinstance(mode, str):
+        normalized = mode.strip().lower().replace("_", " ").replace("-", " ")
+    else:
+        normalized = str(mode).strip().lower()
+
+    if normalized in {"off", "false", "0", "none", "null", "no"}:
+        return "none"
+    if normalized in {"auto", "manual", "keyword", "file"}:
+        return normalized
+    if mode is False:
+        return "none"
+    return normalized
+
+
+def _coerce_reference_float(value, *, mode, label):
+    if value is None:
+        raise ValueError(f"{label} is required when reference mode='{mode}'.")
+    try:
+        return float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{label} must be numeric when reference mode='{mode}'.") from exc
+
+
+def _coerce_reference_keyword(value):
+    if value is None:
+        raise ValueError("A reference keyword is required when reference mode='keyword'.")
+    if isinstance(value, bool):
+        raise ValueError("A non-empty 'reference keyword' is required when reference mode='keyword'.")
+    keyword = str(value).strip()
+    if not keyword:
+        raise ValueError("A non-empty 'reference keyword' is required when reference mode='keyword'.")
+    return keyword
+
+
+def _coerce_reference_file(value):
+    if value is None:
+        raise ValueError("'reference file' is required when reference mode='file'.")
+    if not isinstance(value, (str, bytes, os.PathLike)):
+        raise ValueError("'reference file' must be a file path string.")
+    normalized = str(value).strip()
+    if not normalized:
+        raise ValueError("'reference file' is required when reference mode='file'.")
+    return normalized
+
+
 def _format_peak_list(x_vals, idx, max_peaks=6, sig_figs=4):
     """
     Format the first few detected peak potentials for error messages.
@@ -802,7 +848,7 @@ def canonical_reference_label(keyword, default="reference"):
 def resolve_reference_options(options):
     options = normalize_legacy_reference_options(options)
 
-    mode = options.get("reference mode", "none")
+    mode = _coerce_reference_mode(options.get("reference mode", "none"))
     offset = options.get("reference offset")
     ref_file = options.get("reference file")
     ref_keyword = options.get("reference keyword")
@@ -817,11 +863,16 @@ def resolve_reference_options(options):
     if mode == "manual":
         return {
             "mode": "manual",
-            "offset": float(offset),
+            "offset": _coerce_reference_float(
+                offset,
+                mode="manual",
+                label="'reference offset'",
+            ),
             "label": label,
         }
 
     if mode == "file":
+        ref_file = _coerce_reference_file(ref_file)
         return {
             "mode": "file",
             "file": ref_file,
@@ -831,6 +882,7 @@ def resolve_reference_options(options):
         }
 
     if mode == "keyword":
+        ref_keyword = _coerce_reference_keyword(ref_keyword)
         return {
             "mode": "keyword",
             "keyword": ref_keyword,
@@ -843,7 +895,11 @@ def resolve_reference_options(options):
         if offset is not None:
             return {
                 "mode": "manual",
-                "offset": float(offset),
+                "offset": _coerce_reference_float(
+                    offset,
+                    mode="auto",
+                    label="'reference offset'",
+                ),
                 "label": label,
             }
 
@@ -862,7 +918,7 @@ def resolve_reference_options(options):
 
         if ref_keywords:
             keyword_list.extend(ref_keywords)
-        else:
+        if not keyword_list:
             raise ValueError(
                 "reference mode='auto' requires at least one entry in 'reference keywords' "
                 "or 'reference keyword'."

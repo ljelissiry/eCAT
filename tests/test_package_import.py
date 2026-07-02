@@ -1,3 +1,4 @@
+import inspect
 import re
 from pathlib import Path
 
@@ -5,7 +6,7 @@ from pathlib import Path
 def test_package_import_exposes_public_api():
     import ecat
 
-    assert ecat.__version__ == "0.1.0b2"
+    assert ecat.__version__ == "0.1.0b3"
     expected_public = {
         "echem",
         "cv",
@@ -14,11 +15,11 @@ def test_package_import_exposes_public_api():
         "dpv",
         "get_data",
         "get_CVs",
-        "get_CVs_from_excel",
-        "create_cv_objects_from_excel",
+        "get_data_from_excel",
         "multiplot",
         "multimultiplot",
         "multi_scatterplot",
+        "animate",
         "filter",
         "sort",
         "group",
@@ -68,7 +69,6 @@ def test_package_import_hides_obvious_internals_from_public_api():
         "AutoMinorLocator",
         "Path",
         "datetime",
-        "animate",
         "save_animation",
         "default_plotting",
         "use_ecat_plot_style",
@@ -88,6 +88,74 @@ def test_package_import_hides_obvious_internals_from_public_api():
     assert hidden.isdisjoint(ecat.__all__)
     for name in hidden:
         assert not hasattr(ecat, name), name
+
+
+def test_public_options_defaults_are_not_mutable_dicts():
+    import ecat
+
+    public_callables = [
+        ecat.get_data,
+        ecat.get_CVs,
+        ecat.get_data_from_excel,
+        ecat.save_data,
+        ecat.multiplot,
+        ecat.multimultiplot,
+        ecat.multi_scatterplot,
+        ecat.fowa,
+        ecat.sevcik_analysis,
+        ecat.trumpet_analysis,
+        ecat.nicholson_analysis,
+        ecat.tafel_analysis,
+        ecat.fit_rate,
+        ecat.plateau_current,
+        ecat.fit_peak_potential,
+        ecat.fit_peak_current,
+        ecat.normalize_current,
+        ecat.scale_current,
+        ecat.echem.x,
+        ecat.echem.y,
+        ecat.echem.xy,
+        ecat.echem.plot,
+        ecat.cv.x,
+        ecat.cv.y,
+        ecat.cv.xy,
+        ecat.cv.plot,
+        ecat.cv.normalize,
+        ecat.cv.normalize_current,
+        ecat.cv.scale_current,
+        ecat.cv.current_at_potential,
+        ecat.cv.peak_potential,
+        ecat.cv.peak_current,
+        ecat.cv.plateau_current,
+        ecat.cv.half_peak_potential,
+        ecat.cv.peak_info,
+        ecat.cv.half_wave_potential,
+        ecat.cv.wave_info,
+        ecat.dpv.peak_potential,
+        ecat.dpv.fit_overlapping_peaks,
+        ecat.cp.get_cycles,
+        ecat.cp.cycle_info,
+        ecat.cp.plot_cycles,
+        ecat.cp.cycling_plot,
+        ecat.ca.charge,
+        ecat.ca.plot,
+        ecat.ca.time_at_charge,
+    ]
+
+    for func in public_callables:
+        signature = inspect.signature(func)
+        for parameter in signature.parameters.values():
+            assert parameter.default != {}, f"{func.__qualname__}.{parameter.name}"
+
+
+def test_legacy_public_looking_methods_are_removed():
+    import ecat
+    from ecat import utils
+
+    assert not hasattr(utils, "animate")
+    assert not hasattr(utils, "save_animation")
+    assert not hasattr(ecat.cv, "peak_potential_old")
+    assert not hasattr(ecat.cp, "cycling_plot_old")
 
 
 def test_package_help_docstring_points_to_discovery_tools():

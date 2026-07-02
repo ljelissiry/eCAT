@@ -27,6 +27,7 @@ def test_dataclass_options_expose_expected_legacy_defaults(ecat_module):
     assert plot_defaults["legend"] == "auto"
     assert plot_defaults["legend loc"] == "auto"
     assert plot_defaults["grid"] is False
+    assert plot_defaults["plot convention"] == "IUPAC"
     assert plot_defaults["segment color mode"] == "auto"
     assert plot_defaults["new plot"] is False
     assert "normalize" in plot_defaults
@@ -190,7 +191,8 @@ def test_describe_options_multiplot_uses_specific_plotting_categories(ecat_modul
         {"print": False, "return": True},
     )
 
-    assert _option_row(schema, "plot labels")["Category"] == "Labels/titles"
+    assert _option_row(schema, "labels")["Category"] == "Labels/titles"
+    assert "plot labels" not in set(schema["Option"])
     assert _option_row(schema, "legend mode")["Category"] == "Legend"
     assert _option_row(schema, "gradient by")["Category"] == "Color mapping"
     assert _option_row(schema, "gradient scale")["Choices"] == "auto, linear, sqrt, log, index"
@@ -215,6 +217,93 @@ def test_describe_options_lists_iupac_plot_convention_choice(ecat_module):
     df = ecat_module.describe_options("plot", {"print": False, "return": True})
 
     assert _option_row(df, "plot convention")["Choices"] == "US, IUPAC"
+
+
+def test_plot_options_include_animation_defaults(ecat_module):
+    plot_defaults = ecat_module.PlotOptions.from_options({}).to_legacy_dict()
+    multiplot_defaults = ecat_module.MultiplotOptions.from_options({}).to_legacy_dict()
+
+    for defaults in (plot_defaults, multiplot_defaults):
+        assert defaults["trace mode"] == "auto"
+        assert defaults["schedule"] == "auto"
+        assert defaults["timing mode"] == "auto"
+        assert defaults["normalized duration"] == 2.0
+        assert defaults["speedup"] == 1.0
+        assert defaults["fps"] == 20
+        assert defaults["stagger time"] == 0.5
+        assert defaults["end hold"] == 2
+        assert defaults["loop"] is True
+        assert defaults["include quiet time"] is False
+        assert defaults["progress"] is True
+
+
+def test_describe_options_lists_animation_function(ecat_module):
+    menu = ecat_module.describe_options(None, {"print": False, "return": True})
+
+    assert "animate" in set(menu["Function"])
+
+    df = ecat_module.describe_options("animate", {"print": False, "return": True})
+
+    assert _option_row(df, "trace mode")["Category"] == "Animation"
+    assert _option_row(df, "trace mode")["Choices"] == "auto, draw, instant"
+    assert _option_row(df, "fps")["Category"] == "Animation"
+    assert _option_row(df, "loop")["Category"] == "Animation"
+    assert _option_row(df, "include quiet time")["Category"] == "Animation"
+    assert _option_row(df, "normalized duration")["Category"] == "Animation"
+    assert _option_row(df, "speedup")["Category"] == "Animation"
+    assert _option_row(df, "stride")["Category"] == "Animation"
+    assert _option_row(df, "schedule")["Choices"] == "auto, simultaneous, staggered, sequential"
+    assert _option_row(df, "timing mode")["Choices"] == "auto, physical, normalized"
+    assert "quiet time" in _option_row(df, "include quiet time")["Description"]
+    assert _option_row(df, "progress")["Category"] == "Output/display"
+    assert _option_row(df, "gradient by")["Category"] == "Color mapping"
+    assert _option_row(df, "plot convention")["Category"] == "Plotting"
+    assert "animate" not in set(df["Option"])
+    assert "animate minrate" not in set(df["Option"])
+    assert "animate repeat" not in set(df["Option"])
+
+
+def test_describe_options_lists_simulation_option_tables(ecat_module):
+    menu = ecat_module.describe_options(None, {"print": False, "return": True})
+
+    assert "simulation.cv_data" in set(menu["Function"])
+    assert "simulation.simulate_cv" in set(menu["Function"])
+    assert "simulation.fit_cv" in set(menu["Function"])
+
+    cv_data = ecat_module.describe_options("simulation.cv_data", {"print": False, "return": True})
+    simulate = ecat_module.describe_options("simulation.simulate_cv", {"print": False, "return": True})
+    fit = ecat_module.describe_options("simulation.fit_cv", {"print": False, "return": True})
+
+    trim = _option_row(cv_data, "trim mode")
+    assert trim["Default"] == "expand"
+    assert trim["Choices"] == "expand, pointwise, strict"
+    assert "connected CV segments" in trim["Description"]
+    assert "automatic stride" in _option_row(cv_data, "points")["Description"]
+    assert "Cdl" in _option_row(cv_data, "estimate Cdl")["Option"]
+    assert "measured current" in _option_row(cv_data, "estimate Cdl")["Description"]
+
+    current_sign = _option_row(simulate, "current sign")
+    assert current_sign["Choices"] == "auto, backend, native, flip, 1, -1"
+    assert "measured current" in current_sign["Description"]
+    assert _option_row(simulate, "plot")["Default"] is True
+    assert "diagnostic checks" in _option_row(simulate, "check params")["Description"]
+
+    residual = _option_row(fit, "residual")
+    assert residual["Default"] == "direct"
+    assert "Post corrections are final-only" in residual["Description"]
+    assert "final-only" in _option_row(fit, "post correction")["Description"].lower()
+    assert _option_row(fit, "progress label")["Default"] == "Fitting CV"
+    assert _option_row(fit, "print params")["Default"] is True
+
+
+def test_plot_options_reject_invalid_animation_trace_mode(ecat_module):
+    with pytest.raises(ecat_module.OptionError, match="trace mode"):
+        ecat_module.PlotOptions.from_options({"trace mode": "banana"})
+
+
+def test_plot_options_reject_negative_animation_fps(ecat_module):
+    with pytest.raises(ecat_module.OptionError, match="fps"):
+        ecat_module.PlotOptions.from_options({"fps": -1})
 
 
 def test_describe_options_plot_includes_derivative(ecat_module):
@@ -297,7 +386,7 @@ def test_describe_options_documents_auto_retrieval_and_algorithmic_auto_behavior
     assert "uses the catalytic CV's electrode_area" in _option_row(plateau_schema, "electrode area")["Description"]
     assert "chooses direct, slope-normalized, or normalized" in _option_row(plateau_schema, "formula mode")["Description"]
 
-    assert "uses each CV's scan_rate" in _option_row(nicholson_schema, "scan rate")["Description"]
+    assert "uses each CV's scan_rate" in _option_row(nicholson_schema, "scan rate(s)")["Description"]
     assert "uses each CV's temperature" in _option_row(trumpet_schema, "temperature")["Description"]
     assert "filename metadata parser" in _option_row(get_data_schema, "custom parser")["Description"]
     assert "built-in filename parser" in _option_row(get_data_schema, "custom parser mode")["Description"]
@@ -324,6 +413,32 @@ def test_describe_options_documents_auto_result_column_resolution(ecat_module):
     assert "auto chooses a sensible x column" in _option_row(fit_rate_schema, "x column")["Description"]
 
 
+def test_describe_options_distinguishes_fit_range_forms(ecat_module):
+    fit_rate_schema = ecat_module.describe_options("fit_rate", {"print": False, "return": True})
+    fit_peak_schema = ecat_module.describe_options("fit_peak_current", {"print": False, "return": True})
+    fowa_schema = ecat_module.describe_options("fowa", {"print": False, "return": True})
+
+    assert "Row/position-based" in _option_row(fit_rate_schema, "fit indices")["Description"]
+    assert "Python-style exclusive stop" in _option_row(fit_rate_schema, "fit indices")["Description"]
+    assert "Single x-value fit window" in _option_row(fit_rate_schema, "fit range")["Description"]
+    assert "Multiple x-value fit windows" in _option_row(fit_rate_schema, "fit ranges")["Description"]
+
+    assert "Row/position-based" in _option_row(fit_peak_schema, "fit indices")["Description"]
+    assert "Single x-value fit window" in _option_row(fit_peak_schema, "fit range")["Description"]
+    assert "Multiple x-value fit windows" in _option_row(fit_peak_schema, "fit ranges")["Description"]
+
+    assert "Single FOWA fit window" in _option_row(fowa_schema, "fit range")["Description"]
+    assert "fit ranges" not in set(fowa_schema["Option"])
+
+
+def test_describe_options_omits_removed_fit_equation_options(ecat_module):
+    scatter_schema = ecat_module.describe_options("multi_scatterplot", {"print": False, "return": True})
+    fit_rate_schema = ecat_module.describe_options("fit_rate", {"print": False, "return": True})
+
+    assert "fit equation" not in scatter_schema["Option"].tolist()
+    assert "fit equation" not in fit_rate_schema["Option"].tolist()
+
+
 def test_minimum_gradient_entries_alias_routes_to_multiplot_threshold(ecat_module):
     options = ecat_module.MultiplotOptions.from_options({"minimum gradient entries": 5})
 
@@ -336,6 +451,52 @@ def test_reference_mode_choices_are_context_specific(ecat_module):
 
     assert _option_row(get_data_schema, "reference mode")["Choices"] == "auto, manual, keyword, file, none"
     assert _option_row(scale_schema, "reference mode")["Choices"] == "single, both"
+
+
+@pytest.mark.parametrize("value", [None, "None", " none ", "OFF", "False", "No", "0", False])
+def test_get_data_reference_mode_none_aliases_canonicalize_to_none(ecat_module, value):
+    options = ecat_module.ImportOptions.from_options({"reference mode": value}).to_legacy_dict()
+
+    assert options["reference mode"] == "none"
+
+
+def test_option_choice_values_are_case_and_separator_insensitive(ecat_module):
+    plot_options = ecat_module.PlotOptions.from_options(
+        {
+            "plot convention": "iupac",
+            "legend mode": "Color_Bar",
+            "colorbar tick labels": "NONE",
+            "segment color mode": "Discrete-Gradient",
+        }
+    ).to_legacy_dict()
+    scatter_options = ecat_module.MultiScatterplotOptions.from_options(
+        {"plot scale": "Log_Log"}
+    ).to_legacy_dict()
+    filter_options = ecat_module.FilterOptions.from_options(
+        {"mode": "EXCLUDE", "logic": "or"}
+    ).to_legacy_dict()
+
+    assert plot_options["plot convention"] == "IUPAC"
+    assert plot_options["legend mode"] == "colorbar"
+    assert plot_options["colorbar tick labels"] == "none"
+    assert plot_options["segment color mode"] == "discrete gradient"
+    assert scatter_options["plot scale"] == "log-log"
+    assert filter_options["mode"] == "exclude"
+    assert filter_options["logic"] == "OR"
+
+
+def test_section_specific_choices_do_not_allow_none_where_none_is_not_valid(ecat_module):
+    with pytest.raises(ecat_module.OptionError, match="single.*both"):
+        ecat_module.ScaleCurrentOptions.from_options({"reference mode": None})
+
+
+def test_describe_options_scale_current_includes_guess_potential(ecat_module):
+    scale_schema = ecat_module.describe_options("scale_current", {"print": False, "return": True})
+
+    row = _option_row(scale_schema, "guess potential")
+
+    assert row["Option"] == "guess potential"
+    assert "peak or wave selection" in row["Description"]
 
 
 def test_explain_options_is_not_public_api(ecat_module):
@@ -372,8 +533,9 @@ def test_describe_options_no_argument_returns_menu_with_all_first(ecat_module):
     menu = ecat_module.describe_options(None, {"print": False, "return": True})
     functions = menu["Function"].tolist()
 
-    assert list(menu.columns) == ["Function", "Description"]
+    assert list(menu.columns) == ["Workflow", "Function", "Description"]
     assert functions[0] == "all"
+    assert menu.loc[0, "Workflow"] == "Overview"
     assert "cv.peak_current" in functions
     assert "cv.peak_potential" in functions
     assert "dpv.peak_potential" in functions
@@ -447,8 +609,13 @@ def test_describe_options_sorts_by_function_category_and_option(ecat_module):
         category: index
         for index, category in enumerate(option_module.OPTION_CATEGORY_ORDER)
     }
+    workflow_order = {
+        workflow: index
+        for index, workflow in enumerate(option_module._DESCRIBE_WORKFLOW_ORDER)
+    }
     observed = [
         (
+            workflow_order[row["Workflow"]],
             row["Function"],
             category_order[row["Category"]],
             row["Option"],
@@ -483,7 +650,7 @@ def test_describe_options_fowa_includes_tangent_background_controls(ecat_module)
 
     expected_options = [
         "background correction",
-        "tangent potential",
+        "tangent potential(s)",
         "tangent range",
         "tangent min points",
         "percent threshold",
@@ -496,12 +663,226 @@ def test_describe_options_fowa_includes_tangent_background_controls(ecat_module)
     assert "tangent activity fraction" not in df["Option"].tolist()
 
 
+def test_potential_plural_aliases_are_accepted_without_duplicate_describe_rows(ecat_module):
+    options = ecat_module.FitPeakCurrentOptions.from_options(
+        {
+            "guess potentials": [-0.1, -0.2],
+            "tangent potentials": [-0.3, -0.4],
+            "plot": False,
+            "print": False,
+        }
+    ).to_legacy_dict()
+
+    assert options["guess potential"] == [-0.1, -0.2]
+    assert options["tangent potential"] == [-0.3, -0.4]
+
+    df = ecat_module.describe_options("fit_peak_current", {"print": False, "return": True})
+    assert (df["Option"] == "guess potential(s)").sum() == 1
+    assert (df["Option"] == "guess potential").sum() == 0
+    assert (df["Option"] == "guess potentials").sum() == 0
+    assert (df["Option"] == "tangent potential(s)").sum() == 1
+    assert (df["Option"] == "tangent potential").sum() == 0
+    assert (df["Option"] == "tangent potentials").sum() == 0
+    assert "guess potentials" in _option_row(df, "guess potential(s)")["Description"]
+
+
+def test_alias_options_route_to_official_fields(ecat_module):
+    fit = ecat_module.FitPeakCurrentOptions.from_options(
+        {
+            "fit colors": ["black", "tab:orange"],
+            "plot": False,
+            "print": False,
+        }
+    ).to_legacy_dict()
+    multiplot = ecat_module.MultiplotOptions.from_options(
+        {"plot labels": ["Trace A", "Trace B"]}
+    ).to_legacy_dict()
+    normalize_current = ecat_module.NormalizationOptions.from_options(
+        {"plot labels": ["Trace A", "Trace B"]}
+    ).to_legacy_dict()
+    fowa = ecat_module.FOWAOptions.from_options(
+        {"plot labels": ["Trace A", "Trace B"], "plot": False, "print": False}
+    ).to_legacy_dict()
+    nicholson = ecat_module.NicholsonOptions.from_options(
+        {"scan rates": [0.1, 0.2], "plot": False, "print": False}
+    ).to_legacy_dict()
+
+    assert fit["fit color"] == ["black", "tab:orange"]
+    assert multiplot["labels"] == ["Trace A", "Trace B"]
+    assert multiplot["plot labels"] == ["Trace A", "Trace B"]
+    assert normalize_current["labels"] == ["Trace A", "Trace B"]
+    assert normalize_current["plot labels"] == ["Trace A", "Trace B"]
+    assert fowa["labels"] == ["Trace A", "Trace B"]
+    assert fowa["plot labels"] == ["Trace A", "Trace B"]
+    assert nicholson["scan rate"] == [0.1, 0.2]
+
+
+def test_describe_options_uses_plural_capable_labels_without_duplicate_alias_rows(ecat_module):
+    fit_schema = ecat_module.describe_options("fit_peak_current", {"print": False, "return": True})
+    fowa_schema = ecat_module.describe_options("fowa", {"print": False, "return": True})
+    plateau_schema = ecat_module.describe_options("plateau_current", {"print": False, "return": True})
+    nicholson_schema = ecat_module.describe_options("nicholson", {"print": False, "return": True})
+    cv_schema = ecat_module.describe_options("cv.peak_current", {"print": False, "return": True})
+    cv_peak_potential_schema = ecat_module.describe_options("cv.peak_potential", {"print": False, "return": True})
+    normalize_schema = ecat_module.describe_options("normalize", {"print": False, "return": True})
+
+    assert _option_row(fit_schema, "fit color(s)")["Category"] == "Plotting"
+    assert "fit color" not in set(fit_schema["Option"])
+    assert "fit colors" not in set(fit_schema["Option"])
+
+    assert "guess potential(s)" in set(fit_schema["Option"])
+    assert "tangent potential(s)" in set(fit_schema["Option"])
+    assert "guess potential" in set(cv_peak_potential_schema["Option"])
+    assert "tangent potential" in set(cv_schema["Option"])
+    assert "guess potential(s)" not in set(cv_peak_potential_schema["Option"])
+    assert "tangent potential(s)" not in set(cv_schema["Option"])
+
+    assert "redox potential(s)" in set(fowa_schema["Option"])
+    assert "non-catalytic guess potential(s)" in set(fowa_schema["Option"])
+    assert "non-catalytic cv(s)" in set(fowa_schema["Option"])
+    assert "non-catalytic cv" not in set(fowa_schema["Option"])
+    assert "non-catalytic cvs" not in set(fowa_schema["Option"])
+    assert "non-catalytic cv(s)" in set(plateau_schema["Option"])
+
+    assert "scan rate(s)" in set(nicholson_schema["Option"])
+    assert "scan rate" not in set(nicholson_schema["Option"])
+    assert "scan rates" not in set(nicholson_schema["Option"])
+    assert "scan rate" in set(normalize_schema["Option"])
+    assert "scan rate(s)" not in set(normalize_schema["Option"])
+
+
+def test_potential_singular_plural_conflict_errors(ecat_module):
+    with pytest.raises(ecat_module.OptionError, match="guess potential.*guess potentials"):
+        ecat_module.FitPeakCurrentOptions.from_options(
+            {
+                "guess potential": -0.1,
+                "guess potentials": [-0.1, -0.2],
+                "plot": False,
+                "print": False,
+            }
+        )
+
+    with pytest.raises(ecat_module.OptionError, match="fit color.*fit colors"):
+        ecat_module.FitPeakCurrentOptions.from_options(
+            {
+                "fit color": "black",
+                "fit colors": ["black", "tab:orange"],
+                "plot": False,
+                "print": False,
+            }
+        )
+
+    with pytest.raises(ecat_module.OptionError, match="labels.*plot labels"):
+        ecat_module.MultiplotOptions.from_options(
+            {
+                "labels": ["A", "B"],
+                "plot labels": ["A", "B"],
+            }
+        )
+
+    with pytest.raises(ecat_module.OptionError, match="scan rate.*scan rates"):
+        ecat_module.NicholsonOptions.from_options(
+            {
+                "scan rate": 0.1,
+                "scan rates": [0.1, 0.2],
+                "plot": False,
+                "print": False,
+            }
+        )
+
+    with pytest.raises(ecat_module.OptionError, match="C.*c"):
+        ecat_module.NormalizeOptions.from_options({"C": 1.0, "c": 2.0})
+
+    with pytest.raises(ecat_module.OptionError, match="non-catalytic cv.*non-catalytic cvs"):
+        ecat_module.FOWAOptions.from_options(
+            {
+                "non-catalytic cv": object(),
+                "non-catalytic cvs": [object()],
+                "plot": False,
+                "print": False,
+            }
+        )
+
+
 def test_plot_options_accepts_grid_display_option(ecat_module):
     options = ecat_module.PlotOptions.from_options({"grid": True}).to_legacy_dict()
 
     assert options["grid"] is True
     schema = ecat_module.describe_options("plot", {"print": False, "return": True})
     assert _option_row(schema, "grid")["Category"] == "Plotting"
+
+
+def test_plot_schema_includes_directional_arrows():
+    import ecat
+
+    schema = ecat.describe_options("plot", {"print": False, "return": True})
+
+    row = _option_row(schema, "directional arrows")
+    assert row["Category"] == "Plotting"
+    assert "segment" in row["Description"]
+    assert "arrowstyle" in row["Description"]
+    assert "fancy" in row["Description"]
+    assert "size" in row["Description"]
+
+    scale_bar = _option_row(schema, "scale bar")
+    assert scale_bar["Category"] == "Plotting"
+    assert "nice round" in scale_bar["Description"]
+    assert "lower right" in scale_bar["Description"]
+    assert "remove y ticks" in scale_bar["Description"]
+
+
+def test_describe_options_menu_has_workflows_and_specific_descriptions(ecat_module):
+    df = ecat_module.describe_options(None, {"print": False, "return": True})
+
+    assert list(df.columns) == ["Workflow", "Function", "Description"]
+    plot_row = df.loc[df["Function"] == "plot"].iloc[0]
+    cv_plot_row = df.loc[df["Function"] == "cv.plot"].iloc[0]
+    fowa_row = df.loc[df["Function"] == "fowa"].iloc[0]
+
+    assert plot_row["Workflow"] == "Object plotting"
+    assert "shared by echem, CV, DPV, CA, and CP" in plot_row["Description"]
+    assert cv_plot_row["Workflow"] == "Object plotting"
+    assert "segment selection" in cv_plot_row["Description"]
+    assert fowa_row["Workflow"] == "Batch analysis"
+    assert "Foot-of-the-wave" in fowa_row["Description"]
+
+
+def test_describe_options_all_includes_workflow_column(ecat_module):
+    df = ecat_module.describe_options("all", {"print": False, "return": True})
+
+    assert "Workflow" in df.columns
+    plot_rows = df.loc[df["Function"] == "plot"]
+    assert not plot_rows.empty
+    assert set(plot_rows["Workflow"]) == {"Object plotting"}
+
+
+def test_plot_options_rejects_unknown_directional_arrow_fields(ecat_module):
+    with pytest.raises(ecat_module.OptionError) as exc_info:
+        ecat_module.PlotOptions.from_options(
+            {
+                "directional arrows": {
+                    "potential": 0.0,
+                    "direction": "forward",
+                }
+            }
+        )
+
+    assert "unsupported keys" in str(exc_info.value)
+
+
+def test_plot_options_rejects_directional_arrow_linewidth_option(ecat_module):
+    with pytest.raises(ecat_module.OptionError) as exc_info:
+        ecat_module.PlotOptions.from_options(
+            {
+                "directional arrows": {
+                    "potential": 0.0,
+                    "linewidth": 2,
+                }
+            }
+        )
+
+    assert "unsupported keys" in str(exc_info.value)
+    assert "linewidth" in str(exc_info.value)
 
 
 def test_describe_options_all_registered_options_have_allowed_categories(ecat_module):
@@ -539,6 +920,21 @@ def test_describe_options_invalid_section_without_suggestion_returns_possible_se
     assert captured.out == ""
     assert menu["Function"].tolist()[0] == "all"
     assert "get_data" in menu["Function"].tolist()
+
+
+def test_describe_options_public_names_return_specific_option_tables(ecat_module):
+    expected_options = {
+        "nicholson_analysis": "scan rate(s)",
+        "get_data_from_excel": "folder path",
+        "save_data": "format",
+    }
+
+    for public_name, expected_option in expected_options.items():
+        df = ecat_module.describe_options(public_name, {"print": False, "return": True})
+
+        assert "Option" in df.columns, public_name
+        assert "Function" not in df.columns, public_name
+        assert expected_option in df["Option"].tolist(), public_name
 
 
 def test_describe_options_documents_its_own_print_controls(ecat_module):
@@ -742,7 +1138,7 @@ def test_get_data_uses_import_defaults_before_filesystem_work(
 
     result = ecat_module.get_data({"folder path": str(tmp_path / "missing-folder")})
 
-    assert result is None
+    assert result == []
     assert observed["checked_path"].endswith("missing-folder")
 
 
@@ -758,7 +1154,7 @@ def test_get_data_accepts_import_options_dataclass(ecat_module, monkeypatch, tmp
 
     result = ecat_module.get_data(options)
 
-    assert result is None
+    assert result == []
     assert observed["checked_path"].endswith("missing-folder")
 
 
@@ -768,29 +1164,24 @@ def test_describe_options_get_data_includes_sort_keys(ecat_module):
     assert _option_row(df, "sort keys")["Default"] == ["timestamp"]
 
 
-def test_create_cv_objects_from_excel_accepts_import_options_dataclass(ecat_module, monkeypatch):
+def test_get_data_from_excel_accepts_import_options_dataclass(ecat_module, monkeypatch):
     from ecat import io as ecat_io
 
+    class FakeExcelFile:
+        sheet_names = []
+
+    monkeypatch.setattr(ecat_io.pd, "ExcelFile", lambda *args, **kwargs: FakeExcelFile())
     monkeypatch.setattr(ecat_io.pd, "read_excel", lambda *args, **kwargs: {})
     options = ecat_module.ImportOptions.from_options({"print": False})
 
-    assert ecat_io.create_cv_objects_from_excel("fake.xlsx", options) == []
+    assert ecat_io.get_data_from_excel("fake.xlsx", options) == []
 
 
-def test_get_cvs_from_excel_alias_accepts_import_options_dataclass(ecat_module, monkeypatch):
-    from ecat import io as ecat_io
-
-    monkeypatch.setattr(ecat_io.pd, "read_excel", lambda *args, **kwargs: {})
-    options = ecat_module.ImportOptions.from_options({"print": False})
-
-    assert ecat_io.get_CVs_from_excel("fake.xlsx", options) == []
-
-
-def test_create_cv_objects_from_excel_rejects_unknown_import_option(ecat_module):
+def test_get_data_from_excel_rejects_unknown_import_option(ecat_module):
     from ecat import io as ecat_io
 
     with pytest.raises(ecat_module.OptionError, match="troubleshoot"):
-        ecat_io.create_cv_objects_from_excel("fake.xlsx", {"troubleshot": True})
+        ecat_io.get_data_from_excel("fake.xlsx", {"troubleshot": True})
 
 
 def test_get_data_rejects_unknown_import_option_with_suggestion(ecat_module, tmp_path):
@@ -832,13 +1223,26 @@ def test_get_data_import_defaults_and_overrides_flow_into_reference_normalizatio
             "reference offset": 0.123,
         }
     )
+    result_none = ecat_module.get_data(
+        {
+            "folder path": str(tmp_path),
+            "recursive search": False,
+            "reference mode": None,
+        }
+    )
 
-    assert result_default is None
-    assert result_manual is None
+    assert result_default == []
+    assert result_manual == []
+    assert result_none == []
 
     default_options = observed_options[0]
     manual_options = next(
         opts for opts in observed_options if opts.get("recursive search") is False
+        and opts.get("reference mode") == "manual"
+    )
+    none_options = next(
+        opts for opts in observed_options if opts.get("recursive search") is False
+        and opts.get("reference mode") == "none"
     )
 
     assert default_options["recursive search"] is True
@@ -849,6 +1253,7 @@ def test_get_data_import_defaults_and_overrides_flow_into_reference_normalizatio
     assert manual_options["recursive search"] is False
     assert manual_options["reference mode"] == "manual"
     assert manual_options["reference offset"] == pytest.approx(0.123)
+    assert none_options["reference mode"] == "none"
 
 
 def test_build_object_table_ignores_import_parser_columns_integer(ecat_module, cv_factory):
@@ -1203,8 +1608,26 @@ def test_ca_show_table_includes_basic_metadata(ecat_module, blank_echem_factory)
     values = dict(zip(table["Metric"], table["Value"]))
     assert values["Solvent"] == "MeCN"
     assert values["Gas"] == "CO2"
-    assert values["Compounds"] == ["Fc"]
-    assert values["Concentrations"] == ["1 mM"]
+    assert values["Compounds"] == "1 mM Fc"
+    assert "Concentrations" not in values
+
+
+def test_single_object_show_combines_concentrationless_compounds(
+    ecat_module,
+    blank_echem_factory,
+):
+    obj = blank_echem_factory(ecat_module.ca)
+    obj.type = "Chronoamperometry"
+    obj.data = pd.DataFrame({"Time": [0.0, 1.0], "Current": [0.0, 0.5]})
+    obj.units = {"Time": "s", "Current": "A"}
+    obj.compounds = ["Fc", "PhOH"]
+    obj.concentrations = ["3 mM"]
+
+    table = ecat_module.show(obj, {"pretty print": False, "return": True})
+
+    values = dict(zip(table["Metric"], table["Value"]))
+    assert values["Compounds"] == "3 mM Fc, PhOH"
+    assert "Concentrations" not in values
 
 
 def test_ca_show_current_stats_put_units_in_values_and_respect_sig_figs(
@@ -1250,8 +1673,8 @@ def test_cp_show_table_includes_basic_metadata(ecat_module, blank_echem_factory)
     values = dict(zip(table["Metric"], table["Value"]))
     assert values["Solvent"] == "MeCN"
     assert values["Gas"] == "N2"
-    assert values["Compounds"] == ["TBAPF6"]
-    assert values["Concentrations"] == ["100 mM"]
+    assert values["Compounds"] == "100 mM TBAPF6"
+    assert "Concentrations" not in values
 
 
 def test_ca_current_stats_are_not_object_table_columns(ecat_module, blank_echem_factory):
@@ -1288,6 +1711,16 @@ def test_build_object_table_columns_all_shows_available_non_internal_columns(eca
     assert "Gas" in table.columns
     assert "Scan Rate" in table.columns
     assert "Reference Shift" not in table.columns
+
+
+def test_build_object_table_empty_columns_all_does_not_request_missing_name(ecat_module):
+    table, _metadata = ecat_module.build_object_table(
+        [],
+        {"columns": "all", "print conditions": False},
+    )
+
+    assert table.empty
+    assert list(table.columns) == []
 
 
 def test_build_object_table_accepts_column_display_and_underscore_aliases(ecat_module, cv_factory):

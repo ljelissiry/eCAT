@@ -72,4 +72,17 @@ e.save_data(data, {
 })
 ```
 
+For a round-trip-friendly workbook with a `manifest` sheet and class-specific data sheets, use:
+
+```python
+e.save_data(data, {
+    "folder path": "outputs",
+    "file name": "processed_beta_export",
+    "format": "xlsx",
+    "data columns": "all",
+})
+```
+
+Referenced CVs include both the stored potential axis and the active referenced potential axis by default. Pass an exact list such as `{"data columns": ["Potential vs Fc/Fc+", "Current"]}` when you want only specific exported data columns.
+
 For beta, verify the exported table and figure manually before using them in a report or manuscript.

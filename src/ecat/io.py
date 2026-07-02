@@ -17,7 +17,7 @@ from .utils import (
     resolve_electrode_area_option,
     round_sigfigs,
 )
-from .objects import _normalize_parser_settings, cv, echem
+from .objects import _normalize_parser_settings, ca, cp, cv, dpv, echem
 from .plotting import _coerce_display_columns, show_objects
 from .collection import sort
 from .reference import (
@@ -381,10 +381,11 @@ def _make_cv_object_from_text_file(filepath, options=None, root_abs=None):
     if options.get("shift potential"):
         obj.potential_shift(options)
 
+    obj._refresh_parse_result(parser="Text CV")
     return obj
 
 
-def get_CVs(options={}):
+def get_CVs(options=None):
     """
     Load CV text files from a folder as eCAT cv objects.
 
@@ -403,10 +404,10 @@ def get_CVs(options={}):
 
     if not os.path.exists(root_abs):
         print(f"Folder does not exist:\n{_format_path_for_display(root_abs)}")
-        return None
+        return []
     if not os.path.isdir(root_abs):
         print(f"Path exists but is not a folder:\n {_format_path_for_display(root_abs)}")
-        return None
+        return []
 
     print(
         "Searching "
@@ -422,7 +423,7 @@ def get_CVs(options={}):
 
     if not file_paths:
         print(f"No .txt files were found in the folder:\n {_format_path_for_display(root_abs)}")
-        return None
+        return []
 
     cvs = []
     failures = []
@@ -441,7 +442,7 @@ def get_CVs(options={}):
                 print(f"  {rel}: {type(exc).__name__}: {exc}")
 
     if not cvs:
-        return None
+        return []
 
     if options.get("print", False):
         show_objects(cvs, options)
@@ -526,6 +527,7 @@ def _make_cv_object_from_dataframe(
     if options.get("invert current", False):
         obj.invert_current()
 
+    obj._refresh_parse_result(parser="Excel")
     return obj
 
 def _extract_excel_name_metadata(name, extra_compounds=None, options=None):
@@ -565,7 +567,243 @@ def _extract_excel_name_metadata(name, extra_compounds=None, options=None):
         "scan_rate": metadata.get("scan rate"),
     }
 
-def create_cv_objects_from_excel(file_path, options={}):
+
+def _manifest_column_lookup(columns):
+    return {str(col).strip().lower(): col for col in columns}
+
+
+def _manifest_value(row, lookup, *names, default=None):
+    for name in names:
+        col = lookup.get(str(name).strip().lower())
+        if col is None:
+            continue
+        value = row.get(col)
+        if value is None:
+            continue
+        try:
+            if pd.isna(value):
+                continue
+        except Exception:
+            pass
+        if isinstance(value, str) and value.strip() == "":
+            continue
+        return value
+    return default
+
+
+def _manifest_float(row, lookup, *names, default=None):
+    value = _manifest_value(row, lookup, *names, default=None)
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _manifest_int(row, lookup, *names, default=None):
+    value = _manifest_float(row, lookup, *names, default=None)
+    if value is None:
+        return default
+    return int(value)
+
+
+def _split_manifest_compounds(value):
+    if value in (None, ""):
+        return []
+    try:
+        if pd.isna(value):
+            return []
+    except Exception:
+        pass
+    if isinstance(value, (list, tuple, set)):
+        return [str(v).strip() for v in value if str(v).strip()]
+    return [part.strip() for part in str(value).split(",") if part.strip()]
+
+
+def _type_for_excel_class(class_key):
+    class_key = str(class_key or "").strip().lower()
+    mapping = {
+        "cv": (cv, "Cyclic Voltammetry"),
+        "ca": (ca, "Chronoamperometry"),
+        "cp": (cp, "Chronopotentiometry"),
+        "dpv": (dpv, "Differential Pulse Voltammetry"),
+    }
+    return mapping.get(class_key, (echem, class_key or None))
+
+
+def _leading_excel_axis_column_count(columns):
+    count = 0
+    for column in columns:
+        name = str(column).strip().lower()
+        is_axis = (
+            "potential" in name
+            or name in {"e", "time", "t"}
+            or name.startswith("time ")
+        )
+        if not is_axis:
+            break
+        count += 1
+    return max(count, 1)
+
+
+def _read_ecat_workbook_sheet(workbook, sheet_name):
+    raw = pd.read_excel(workbook, sheet_name=sheet_name, header=None)
+    if raw.shape[0] < 3:
+        return raw, [], [], []
+    group_row = [_clean_excel_header_value(v) for v in raw.iloc[0].tolist()]
+    column_row = [_clean_excel_header_value(v) for v in raw.iloc[1].tolist()]
+    unit_row = [_clean_excel_header_value(v) for v in raw.iloc[2].tolist()]
+    values = raw.iloc[3:].reset_index(drop=True)
+    return values, group_row, column_row, unit_row
+
+
+def _columns_for_manifest_object(values, group_row, column_row, unit_row, object_id, x_group):
+    object_indices = [
+        idx for idx, group in enumerate(group_row)
+        if group == object_id and column_row[idx] != ""
+    ]
+    shared_indices = [
+        idx for idx, group in enumerate(group_row)
+        if x_group not in (None, "") and group == x_group and column_row[idx] != ""
+    ]
+
+    selected = []
+    object_has_x = any(
+        "potential" in column_row[idx].lower() or "time" in column_row[idx].lower()
+        for idx in object_indices
+    )
+    if object_indices and not object_has_x:
+        selected.extend(shared_indices)
+    selected.extend(object_indices)
+    if not selected:
+        selected = object_indices or shared_indices
+
+    data = values.iloc[:, selected].copy() if selected else pd.DataFrame()
+    columns = [column_row[idx] for idx in selected]
+    units = {column_row[idx]: unit_row[idx] for idx in selected if column_row[idx] != ""}
+    data.columns = columns
+    data = data.apply(pd.to_numeric, errors="coerce").dropna(how="all").reset_index(drop=True)
+    data = data.dropna(axis=1, how="all")
+    units = {col: units.get(col, "") for col in data.columns}
+    return data, units
+
+
+def _make_object_from_excel_manifest(class_key, name, data, units, row, lookup, options):
+    cls, default_type = _type_for_excel_class(class_key)
+    obj = cls.__new__(cls)
+    obj.filepath = None
+    obj.folderpath = _manifest_value(row, lookup, "Subfolder", default=".")
+    obj.options = dict(options)
+    obj.timestamp = None
+    obj.creation_time = None
+    obj.modification_time = None
+    obj.name = str(name)
+    type_value = _manifest_value(row, lookup, "Exp Type", "Type", default=default_type)
+    if str(type_value).strip().lower() == class_key:
+        type_value = default_type
+    obj.type = type_value
+    obj.software = _manifest_value(row, lookup, "Software", default="Excel")
+    obj.data = data.reset_index(drop=True)
+    obj.units = units
+    obj.num_x_cols = _leading_excel_axis_column_count(obj.data.columns)
+
+    obj.temperature = _manifest_float(row, lookup, "Temperature", default=options.get("temperature", 298))
+    obj.electrode_area = _manifest_float(row, lookup, "Electrode Area", default=resolve_electrode_area_option(options))
+    obj.gas = _manifest_value(row, lookup, "Gas", default=options.get("gas"))
+    obj.solvent = _manifest_value(row, lookup, "Solvent", default=options.get("solvent"))
+    obj.compounds = _split_manifest_compounds(_manifest_value(row, lookup, "Compounds", default=""))
+    obj.concentrations = []
+    obj.scan_rate = _manifest_float(row, lookup, "Scan Rate", default=None)
+    obj.segments = _manifest_int(row, lookup, "Segments", default=None)
+    obj.reference_shift = _manifest_float(row, lookup, "Reference Shift", default=None)
+    obj.reference_label = _manifest_value(row, lookup, "Reference Label", default=None)
+    obj.reference_mode = _manifest_value(row, lookup, "Reference Mode", default="none")
+    obj.reference_source_file = _manifest_value(row, lookup, "Reference Source", default=None)
+    obj.reference_failure_message = None
+    obj.ir_comp_resistance = _manifest_float(row, lookup, "IR Comp Resistance", default=None)
+    obj.ir_uncomp_resistance = _manifest_float(row, lookup, "IR Uncomp Resistance", default=None)
+    obj.ir_comp_percent = _manifest_float(row, lookup, "IR Comp Percent", default=None)
+
+    parsed = _extract_excel_name_metadata(obj.name, options.get("compounds"), options)
+    if not obj.gas and parsed["gas"] is not None:
+        obj.gas = parsed["gas"]
+    if not obj.solvent and parsed["solvent"] is not None:
+        obj.solvent = parsed["solvent"]
+    if not obj.compounds:
+        obj.compounds = parsed["compounds"]
+        obj.concentrations = parsed["concentrations"]
+    if obj.scan_rate is None:
+        obj.scan_rate = parsed["scan_rate"]
+
+    if not obj.data.empty:
+        x = pd.to_numeric(obj.data.iloc[:, 0], errors="coerce").dropna()
+        if not x.empty:
+            obj.init_E = float(x.iloc[0])
+            obj.final_E = float(x.iloc[-1])
+            obj.min_E = float(x.min())
+            obj.max_E = float(x.max())
+            obj.delta_x = float(abs(x.iloc[1] - x.iloc[0])) if len(x) > 1 else None
+            if getattr(obj, "segments", None) is None and class_key == "cv":
+                obj.segments = count_segments(x.to_numpy())
+
+    if class_key == "ca":
+        obj.run_time = _manifest_float(row, lookup, "Run Time", default=None)
+        obj.sample_interval = _manifest_float(row, lookup, "Sample Interval", default=None)
+        obj.quiet_time = _manifest_float(row, lookup, "Quiet Time", default=None)
+    elif class_key in {"cp", "dpv"}:
+        obj.quiet_time = _manifest_float(row, lookup, "Quiet Time", default=None)
+    obj._refresh_parse_result(parser="Excel manifest")
+    return obj
+
+
+def _create_objects_from_ecat_workbook(file_path, options):
+    workbook = pd.ExcelFile(file_path, engine="openpyxl")
+    manifest_sheet = next(
+        sheet for sheet in workbook.sheet_names
+        if str(sheet).strip().lower() == "manifest"
+    )
+    manifest = pd.read_excel(workbook, sheet_name=manifest_sheet)
+    lookup = _manifest_column_lookup(manifest.columns)
+    sheet_cache = {}
+    objects = []
+
+    for _, row in manifest.iterrows():
+        object_id = _manifest_value(row, lookup, "object_id")
+        sheet = _manifest_value(row, lookup, "sheet")
+        class_key = str(_manifest_value(row, lookup, "class", default="echem")).strip().lower()
+        x_group = _manifest_value(row, lookup, "x group", default=object_id)
+        name = _manifest_value(row, lookup, "Name", "name", default=object_id)
+        if object_id is None or sheet is None:
+            continue
+        if sheet not in sheet_cache:
+            sheet_cache[sheet] = _read_ecat_workbook_sheet(workbook, sheet)
+        values, group_row, column_row, unit_row = sheet_cache[sheet]
+        data, units = _columns_for_manifest_object(
+            values,
+            group_row,
+            column_row,
+            unit_row,
+            str(object_id),
+            str(x_group),
+        )
+        obj = _make_object_from_excel_manifest(
+            class_key,
+            name,
+            data,
+            units,
+            row,
+            lookup,
+            options,
+        )
+        objects.append(obj)
+
+    if options.get("print", False):
+        show_objects(objects, options)
+    return objects
+
+
+def _create_data_objects_from_excel(file_path, options=None):
     """
     Create CV objects from an Excel workbook with flexible support for:
 
@@ -591,11 +829,26 @@ def create_cv_objects_from_excel(file_path, options={}):
     """
     options = import_options_to_legacy_dict(options)
 
+    try:
+        workbook_info = pd.ExcelFile(file_path, engine="openpyxl")
+    except ImportError:
+        workbook = pd.read_excel(
+            file_path,
+            header=[0, 1],
+            sheet_name=None,
+            engine="openpyxl",
+        )
+        if isinstance(workbook, dict) and not workbook:
+            return []
+        raise
+
+    if any(str(sheet).strip().lower() == "manifest" for sheet in workbook_info.sheet_names):
+        return _create_objects_from_ecat_workbook(file_path, options)
+
     workbook = pd.read_excel(
-        file_path,
+        workbook_info,
         header=[0, 1],
         sheet_name=None,
-        engine="openpyxl",
     )
 
     cv_objects = []
@@ -725,35 +978,35 @@ def create_cv_objects_from_excel(file_path, options={}):
     return cv_objects
 
 
-def get_CVs_from_excel(file_path, options={}):
-    """Create CV objects from a curated Excel workbook.
+def get_data_from_excel(file_path, options=None):
+    """Create eCAT objects from an Excel workbook.
 
     Parameters
     ----------
     file_path : str or path-like
-        Excel workbook with two header rows and potential/current columns.
+        eCAT Excel workbook with a ``manifest`` sheet, or a curated Excel
+        workbook with two header rows and potential/current columns.
     options : dict or ImportOptions, optional
         Import and metadata options. See ``e.describe_options("get_data")``.
 
     Returns
     -------
-    list of cv
-        CV objects created from workbook traces.
+    list
+        eCAT objects created from workbook traces.
 
     Examples
     --------
-    >>> cvs = e.get_CVs_from_excel("processed_cvs.xlsx", {"print": False})
+    >>> objects = e.get_data_from_excel("processed_data.xlsx", {"print": False})
     """
-    return create_cv_objects_from_excel(file_path, options)
+    return _create_data_objects_from_excel(file_path, options)
 
 __all__ = [
     "get_data",
     "get_CVs",
-    "get_CVs_from_excel",
-    "create_cv_objects_from_excel",
+    "get_data_from_excel",
 ]
 
-def get_data(options={}):
+def get_data(options=None):
     """Read electrochemistry text files from a folder into eCAT objects.
     
     Parameters
@@ -794,11 +1047,11 @@ def get_data(options={}):
     # Validate folder
     if not os.path.exists(root_abs):
         print(f"Folder does not exist:\n{_format_path_for_display(root_abs)}")
-        return None
+        return []
 
     if not os.path.isdir(root_abs):
         print(f"Path exists but is not a folder:\n {_format_path_for_display(root_abs)}")
-        return None
+        return []
 
     print(f"Searching {recursive_search} through:\n {_format_path_for_display(root_abs)}")
 
@@ -817,7 +1070,7 @@ def get_data(options={}):
 
     except Exception as exc:
         print(f"Error while searching folder:\n {_format_path_for_display(root_abs)}\n{exc}")
-        return None
+        return []
 
     file_paths = sorted(
         txt_files,
@@ -844,7 +1097,7 @@ def get_data(options={}):
                 f"Folder:\n {_format_path_for_display(root_abs)}\n"
                 f"File types found: {suffix_summary}"
             )
-        return None
+        return []
     else:
         s = ""
         if len(file_paths) > 1:
@@ -1128,3 +1381,11 @@ def get_data(options={}):
         show_objects(object_list, print_options)
 
     return object_list
+
+
+def parse_file(filepath, options=None):
+    """Load one file and return its standardized parser contract."""
+    obj = echem.from_file(filepath, options)
+    if getattr(obj, "parse_result", None) is None:
+        obj._refresh_parse_result()
+    return obj.parse_result
