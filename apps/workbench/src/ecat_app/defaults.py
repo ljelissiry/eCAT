@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
+import sys
 
 from .workflow import AppWorkflow
 
@@ -24,7 +26,15 @@ EXAMPLE_FOLDERS = {
 
 
 def repo_root_path(repo_root=None) -> Path:
-    return Path(repo_root) if repo_root is not None else Path(__file__).resolve().parents[4]
+    if repo_root is not None:
+        return Path(repo_root)
+    configured = os.environ.get("ECAT_APP_REPO_ROOT")
+    if configured:
+        return Path(configured).expanduser()
+    bundle_root = getattr(sys, "_MEIPASS", None)
+    if bundle_root and (Path(bundle_root) / "examples" / "data").exists():
+        return Path(bundle_root)
+    return Path(__file__).resolve().parents[4]
 
 
 def default_fe_phoh_path(repo_root=None) -> Path:
@@ -51,5 +61,5 @@ def default_workflow(repo_root=None) -> AppWorkflow:
         source_kind="local_path",
         source_path=str(path),
         recursive=True,
-        import_options={"sort keys": ["timestamp"]},
+        import_options={"sort keys": ["subfolder", "timestamp"]},
     )

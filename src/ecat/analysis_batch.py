@@ -3,6 +3,7 @@
 import ast
 import inspect
 from pprint import pformat
+import warnings
 
 from .utils import *  # noqa: F401,F403
 from .options import *  # noqa: F401,F403
@@ -27,10 +28,14 @@ from .plotting import (
     _attach_scatter_fit_table,
     _finish_multiplot_style,
     _fit_options_from_analysis_options,
+    _fit_line_x_values,
     _fit_table_from_fits,
     _multiplot_options_from_mapping,
+    _plot_fit_bands,
     _plot_multi_scatter_trace,
     _prepare_multiplot_style,
+    _can_rich_table_display,
+    _display_table,
     _pretty_table_header_html_label,
     _print_scatter_fit_statistics,
     _resolve_multiplot_labels_title_subtitle,
@@ -86,6 +91,12 @@ _FIT_MODEL_PARAMETERS = {
     "logistic": ("b", "L", "k", "x0"),
 }
 
+
+def _rich_table_output_enabled(options):
+    options = {} if options is None else options
+    return bool(options.get("pretty print", True)) and display is not None and _can_rich_table_display()
+
+
 _FIT_MODEL_ALLOWED_FORMULA_FUNCTIONS = {
     "abs": np.abs,
     "exp": np.exp,
@@ -136,17 +147,27 @@ _FIT_MODEL_BARE_OPTION_ALIASES = {
     "init": "fit init",
     "bounds": "fit bounds",
     "residual": "fit residual",
+    "band": "fit band",
+    "band level": "fit band level",
+    "band_level": "fit band level",
     "max evals": "fit max evals",
     "max_evals": "fit max evals",
     "maxfev": "fit max evals",
-    "range": "fit range",
-    "ranges": "fit ranges",
     "indices": "fit indices",
+    "method": "fit method",
+    "sigma": "fit sigma",
+    "absolute sigma": "fit absolute sigma",
+    "absolute_sigma": "fit absolute sigma",
+    "check finite": "fit check finite",
+    "check_finite": "fit check finite",
+    "nan policy": "fit nan policy",
+    "nan_policy": "fit nan policy",
+    "jac": "fit jac",
 }
 
 
 def _normalize_shared_fit_options(options=None, *, allow_bare_aliases=False):
-    normalized = _legacy_normalize_option_keys(options or {})
+    normalized = _normalize_option_mapping(options or {})
     for key, value in (options or {}).items():
         if isinstance(key, str) and key.startswith("_"):
             normalized[key] = value
@@ -162,6 +183,129 @@ def _normalize_shared_fit_options(options=None, *, allow_bare_aliases=False):
             if source_key in normalized and target not in normalized:
                 normalized[target] = normalized[source_key]
     return normalized
+
+
+def _normalize_curve_fit_method(value):
+    if value in (None, False):
+        return None
+    text = str(value).strip().lower().replace("_", " ").replace("-", " ")
+    text = re.sub(r"\s+", " ", text)
+    if text in {"", "auto", "none", "default"}:
+        return None
+    aliases = {
+        "levenberg marquardt": "lm",
+        "levenberg-marquardt": "lm",
+        "lm": "lm",
+        "trust region reflective": "trf",
+        "trust-region reflective": "trf",
+        "trf": "trf",
+        "dog box": "dogbox",
+        "dogbox": "dogbox",
+    }
+    method = aliases.get(text)
+    if method is None:
+        raise ValueError("'fit method' must be 'auto', 'lm', 'trf', or 'dogbox'.")
+    return method
+
+
+def _normalize_curve_fit_options(options, default_sigma=None):
+    options = {} if options is None else dict(options)
+    raw_passthrough = options.get("curve fit options", None)
+    if raw_passthrough in (None, False):
+        curve_options = {}
+    elif isinstance(raw_passthrough, dict):
+        curve_options = dict(raw_passthrough)
+    else:
+        raise ValueError("'curve fit options' must be a dictionary of scipy.optimize.curve_fit keyword arguments.")
+
+    reserved = {"p0", "bounds", "full_output"}
+    reserved_present = sorted(reserved & set(curve_options))
+    if reserved_present:
+        pretty = "', '".join(reserved_present)
+        raise ValueError(
+            f"'curve fit options' cannot set '{pretty}'. Use eCAT 'fit init'/'fit bounds' "
+            "for p0 and bounds; full_output is managed internally."
+        )
+
+    if "fit method" in options:
+        method = _normalize_curve_fit_method(options.get("fit method"))
+        if method is not None:
+            curve_options["method"] = method
+    elif "method" in curve_options:
+        curve_options["method"] = _normalize_curve_fit_method(curve_options["method"])
+
+    sigma = options.get("fit sigma", None)
+    if sigma is not None:
+        curve_options["sigma"] = sigma
+    elif default_sigma is not None and "sigma" not in curve_options:
+        curve_options["sigma"] = default_sigma
+
+    if "fit absolute sigma" in options:
+        curve_options["absolute_sigma"] = bool(options.get("fit absolute sigma"))
+    if options.get("fit check finite", None) is not None:
+        curve_options["check_finite"] = bool(options.get("fit check finite"))
+    if options.get("fit nan policy", None) is not None:
+        nan_policy = options.get("fit nan policy")
+        if nan_policy in (False, "none", "None"):
+            nan_policy = None
+        if nan_policy is not None:
+            curve_options["nan_policy"] = str(nan_policy).strip().lower().replace("_", " ")
+    if options.get("fit jac", None) is not None:
+        curve_options["jac"] = options.get("fit jac")
+
+    if "maxfev" not in curve_options and "max_nfev" not in curve_options:
+        curve_options["maxfev"] = int(options.get("fit max evals", 10000))
+
+    return curve_options
+
+
+def _curve_fit_method_display(curve_options):
+    method = (curve_options or {}).get("method")
+    if method in (None, "", "auto"):
+        return "curve_fit / auto"
+    return f"curve_fit / {method}"
+
+
+def _curve_fit_options_are_nondefault(options, curve_options):
+    options = {} if options is None else dict(options)
+    if options.get("curve fit options") not in (None, False, {}):
+        return True
+    for key in (
+        "fit method",
+        "fit sigma",
+        "fit absolute sigma",
+        "fit check finite",
+        "fit nan policy",
+        "fit jac",
+    ):
+        value = options.get(key, None)
+        if key == "fit method":
+            if _normalize_curve_fit_method(value) is not None:
+                return True
+        elif value is not None and value is not False:
+            return True
+    # fit max evals is intentionally not enough to display a method row; it is
+    # a budget, not a different fitting method.
+    return False
+
+
+def _warn_if_fit_model_is_underdetermined(fit_points, parameter_names):
+    n_points = int(fit_points)
+    n_params = len(parameter_names)
+    if n_points > n_params:
+        return
+    if n_points < n_params:
+        message = (
+            f"Fit has {n_points} points but {n_params} fitted parameters "
+            f"({', '.join(parameter_names)}); the model is underdetermined."
+        )
+    else:
+        message = (
+            f"Fit has {n_points} points and {n_params} fitted parameters "
+            f"({', '.join(parameter_names)}); fit statistics and parameter "
+            "uncertainty are underdetermined."
+        )
+    warnings.warn(message, UserWarning, stacklevel=3)
 
 
 def _looks_like_formula_model(model):
@@ -416,15 +560,20 @@ def _format_fit_model_fitted_equation(model_result):
 
 
 def _format_fit_equation_for_mathtext(equation):
-    def repl(match):
+    def scientific_repl(match):
         mantissa = match.group("mantissa")
         exponent = int(match.group("exponent"))
         return rf"{mantissa}\times 10^{{{exponent}}}"
 
-    return re.sub(
+    text = re.sub(
         r"(?P<mantissa>[+-]?(?:\d+(?:\.\d*)?|\.\d+))[eE](?P<exponent>[+-]?\d+)",
-        repl,
+        scientific_repl,
         str(equation),
+    )
+    return re.sub(
+        r"\^(?!\{)(?P<exponent>[+-]?(?:\d+(?:\.\d*)?|\.\d+))",
+        lambda match: "^{" + match.group("exponent") + "}",
+        text,
     )
 
 
@@ -680,18 +829,18 @@ def _fit_model_indices_mask(length, fit_indices):
     if fit_indices_array.ndim == 1:
         if len(fit_indices_array) == 2:
             start, stop = fit_indices_array
-            start_i = None if start is None else int(start)
-            stop_i = None if stop is None else int(stop)
+            start_i = _coerce_fit_index(start)
+            stop_i = _coerce_fit_index(stop)
             mask[np.arange(length)[start_i:stop_i]] = True
             return mask
-        mask[np.asarray(fit_indices_array, dtype=int)] = True
+        mask[np.asarray([_coerce_fit_index(value) for value in fit_indices_array], dtype=int)] = True
         return mask
 
     if fit_indices_array.ndim == 2 and fit_indices_array.shape[1] == 2:
         base_indices = np.arange(length)
         for start, stop in fit_indices_array:
-            start_i = None if start is None else int(start)
-            stop_i = None if stop is None else int(stop)
+            start_i = _coerce_fit_index(start)
+            stop_i = _coerce_fit_index(stop)
             mask[base_indices[start_i:stop_i]] = True
         return mask
 
@@ -701,38 +850,27 @@ def _fit_model_indices_mask(length, fit_indices):
     )
 
 
+def _coerce_fit_index(value):
+    if value is None:
+        return None
+    if isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, np.integer)):
+        raise ValueError("'fit indices' entries must be integers or None.")
+    return int(value)
+
+
 def _is_fit_index_range_pair(spec):
     if not isinstance(spec, (list, tuple)) or len(spec) != 2:
         return False
     start, stop = spec
     return (
-        (start is None or (isinstance(start, (int, np.integer, float, np.floating)) and not isinstance(start, (bool, np.bool_))))
-        and (stop is None or (isinstance(stop, (int, np.integer, float, np.floating)) and not isinstance(stop, (bool, np.bool_))))
+        (start is None or (isinstance(start, (int, np.integer)) and not isinstance(start, (bool, np.bool_))))
+        and (stop is None or (isinstance(stop, (int, np.integer)) and not isinstance(stop, (bool, np.bool_))))
     )
-
-
-def _fit_model_range_mask(x, fit_range):
-    x = np.asarray(x, dtype=float)
-    mask = np.zeros(len(x), dtype=bool)
-    if fit_range is None:
-        mask[:] = True
-        return mask
-    if not isinstance(fit_range, (list, tuple)) or len(fit_range) != 2:
-        raise ValueError("'fit range' for fit_model should be [x_min, x_max].")
-    lower, upper = fit_range
-    mask[:] = np.isfinite(x)
-    if lower is not None:
-        mask &= x >= float(lower)
-    if upper is not None:
-        mask &= x <= float(upper)
-    return mask
 
 
 def _fit_model_selection_mask(x, options):
     options = {} if options is None else dict(options)
     mask = np.ones(len(x), dtype=bool)
-    if options.get("fit range") is not None:
-        mask &= _fit_model_range_mask(x, options.get("fit range"))
     if options.get("fit indices") is not None:
         mask &= _fit_model_indices_mask(len(x), options.get("fit indices"))
     return mask
@@ -779,10 +917,7 @@ def _normalize_fit_index_ranges(fit_index_ranges):
             return [("Fit 1", fit_index_ranges[0])]
         if all(_is_fit_index_range_pair(item) for item in fit_index_ranges):
             return [(f"Fit {i + 1}", item) for i, item in enumerate(fit_index_ranges)]
-        if all(
-            isinstance(value, (int, np.integer, float, np.floating))
-            for value in fit_index_ranges
-        ):
+        if all(isinstance(value, (int, np.integer)) for value in fit_index_ranges):
             return [("Fit 1", fit_index_ranges)]
 
     raise ValueError(
@@ -812,6 +947,7 @@ def _fit_model_xy(x, y, model="power", options=None, label=None):
         raise ValueError("fit_model requires at least two finite x/y points.")
 
     names = model_spec["names"]
+    _warn_if_fit_model_is_underdetermined(len(x_fit), names)
     p0 = _normalize_model_vector_override(
         options.get("fit init", "auto"),
         names,
@@ -850,6 +986,7 @@ def _fit_model_xy(x, y, model="power", options=None, label=None):
         raise ValueError("'fit residual' must be direct, relative, log, or log10.")
 
     p0_array = np.asarray(p0, dtype=float)
+    curve_options = _normalize_curve_fit_options(options, default_sigma=sigma)
     if model == "custom":
         try:
             np.asarray(fit_func(x_fit, *p0_array), dtype=float)
@@ -869,8 +1006,7 @@ def _fit_model_xy(x, y, model="power", options=None, label=None):
             fit_target,
             p0=p0_array,
             bounds=(np.asarray(lower, dtype=float), np.asarray(upper, dtype=float)),
-            sigma=sigma,
-            maxfev=int(options.get("fit max evals", 10000)),
+            **curve_options,
         )
     except KeyError as exc:
         if model == "custom":
@@ -884,6 +1020,12 @@ def _fit_model_xy(x, y, model="power", options=None, label=None):
     predicted_fit = func(x_fit, *popt)
     residuals = y - predicted
     fit_residuals = y_fit - predicted_fit
+    dof = int(len(x_fit) - len(popt))
+    residual_variance = (
+        float(np.nansum(fit_residuals ** 2) / dof)
+        if dof > 0
+        else np.nan
+    )
     rmse = float(np.sqrt(np.nanmean(fit_residuals ** 2)))
     raw_r2 = _coefficient_of_determination(y_fit, predicted_fit)
     if residual == "log10":
@@ -947,11 +1089,20 @@ def _fit_model_xy(x, y, model="power", options=None, label=None):
         "sig figs": sig_figs,
         "x": x,
         "y": y,
+        "x fit": x_fit,
+        "y fit": y_fit,
+        "label": label,
         "keep": keep,
         "predicted": predicted,
         "residuals": residuals,
         "fit_rows": fit_rows,
         "popt": popt,
+        "pcov": pcov,
+        "dof": dof,
+        "residual variance": residual_variance,
+        "fit method": _curve_fit_method_display(curve_options),
+        "show fit method": _curve_fit_options_are_nondefault(options, curve_options),
+        "curve fit options": dict(curve_options),
     }
 
 
@@ -1053,12 +1204,20 @@ def _plot_fit_model_result(model_result, options=None):
     data_artist = None
     if plot_data:
         data_artist = ax.scatter(x, y, label=options.get("data label", "Data"))
-    finite_x = x[np.isfinite(x)]
-    if len(finite_x) > 0:
-        x_line = np.linspace(float(np.nanmin(finite_x)), float(np.nanmax(finite_x)), 300)
-    else:
-        x_line = x
+    x_line = _fit_line_x_values(
+        model_result.get("x fit", x),
+        options,
+        label=model_result.get("label"),
+        index=int(options.get("_fit line index", 0) or 0),
+        points=300,
+    )
     y_line = model_result["function"](x_line, *model_result["popt"])
+    fit_color = _fit_color_from_options(
+        options,
+        index=0,
+        fallback=_artist_color(data_artist) or "tab:red",
+    )
+    _plot_fit_bands(ax, x_line, y_line, model_result, options, color=fit_color)
     fit_label_opt = options.get("fit label", False)
     label = None
     if isinstance(fit_label_opt, str):
@@ -1094,7 +1253,7 @@ def _plot_fit_model_result(model_result, options=None):
         x_line,
         y_line,
         label=label,
-        color=_fit_color_from_options(options, index=0, fallback=_artist_color(data_artist) or "tab:red"),
+        color=fit_color,
         linestyle=options.get("fit linestyle", "--"),
         linewidth=options.get("fit linewidth", 1),
         alpha=options.get("fit alpha", 1),
@@ -1143,12 +1302,13 @@ def _format_fit_model_value_with_error(value, error=None, sig_figs=None):
     return f"{value_text} ± {_format_fit_model_display_value(error, sig_figs=sig_figs)}"
 
 
-def _display_or_print_fit_model_table(table):
-    if display is not None:
-        with pd.option_context("display.max_columns", None):
-            display(table)
-    else:
-        print(table.to_string(index=False, justify="left"))
+def _display_or_print_fit_model_table(table, title=None, options=None):
+    return _display_table(table, options, title=title, index=False)
+
+
+def _fit_model_parameter_summary(model_result):
+    names = list(model_result.get("names", ()))
+    return f"{', '.join(str(name) for name in names)} ({len(names)})"
 
 
 def _fit_model_details_display_table(model_result):
@@ -1167,12 +1327,15 @@ def _fit_model_details_display_table(model_result):
     rows = [
         ("Model", model_result["model"]),
         ("Equation", model_result["equation"]),
+        ("Fit Parameters", _fit_model_parameter_summary(model_result)),
         ("Residual", model_result.get("residual", "")),
         ("X Range", x_range),
         ("Fit Points", stats.get("Fit Points")),
         (r2_label, stats.get("R2")),
         ("RMSE", stats.get("RMSE")),
     ]
+    if model_result.get("show fit method", False):
+        rows.insert(3, ("Fit Method", model_result.get("fit method", "curve_fit / auto")))
     return pd.DataFrame(
         [
             {"Setting": setting, "Value": _format_fit_model_display_value(value, sig_figs=sig_figs)}
@@ -1198,12 +1361,15 @@ def _fit_model_display_table(model_result):
     rows = [
         ("Model", model_result["model"]),
         ("Equation", model_result["equation"]),
+        ("Fit Parameters", _fit_model_parameter_summary(model_result)),
         ("Residual", model_result.get("residual", "")),
         ("X Range", x_range),
         ("Fit Points", stats.get("Fit Points")),
         (r2_label, stats.get("R2")),
         ("RMSE", stats.get("RMSE")),
     ]
+    if model_result.get("show fit method", False):
+        rows.insert(3, ("Fit Method", model_result.get("fit method", "curve_fit / auto")))
     for name in model_result["names"]:
         rows.append(
             (
@@ -1247,6 +1413,9 @@ def _fit_model_summary_dict(model_result):
         "equation": model_result["equation"],
         "fit_equation": model_result.get("fit equation"),
         "residual": model_result.get("residual"),
+        "fit_parameters": list(model_result.get("names", ())),
+        "fit_parameter_count": len(model_result.get("names", ())),
+        "fit_method": model_result.get("fit method"),
         "x_range": [
             float(np.nanmin(model_result["x"])),
             float(np.nanmax(model_result["x"])),
@@ -1291,7 +1460,7 @@ def _fit_model_print_mode(model_result, options):
     if isinstance(mode, bool):
         mode = "details" if mode else "summary"
     mode = str(mode).strip().lower().replace("_", " ").replace("-", " ")
-    if mode in {"detail", "detailed", "full", "two table", "two tables"}:
+    if mode in {"detail", "details", "detailed", "full", "two table", "two tables"}:
         return "details"
     if mode in {"summary", "summarize", "compact", "one table", "one"}:
         return "summary"
@@ -1319,13 +1488,22 @@ def _print_fit_model_result(model_result, options=None):
     if options.get("pretty print", True):
         mode = _fit_model_print_mode(model_result, options)
         if mode == "details":
-            print("Fit Model Details:")
-            _display_or_print_fit_model_table(_fit_model_details_display_table(model_result))
-            print("\nFit Model Parameters:")
-            _display_or_print_fit_model_table(_fit_model_parameters_display_table(model_result))
+            _display_or_print_fit_model_table(
+                _fit_model_details_display_table(model_result),
+                title="Fit Model Details",
+                options=options,
+            )
+            _display_or_print_fit_model_table(
+                _fit_model_parameters_display_table(model_result),
+                title="Fit Model Parameters",
+                options=options,
+            )
         else:
-            print("Fit Model:")
-            _display_or_print_fit_model_table(_fit_model_display_table(model_result))
+            _display_or_print_fit_model_table(
+                _fit_model_display_table(model_result),
+                title="Fit Model",
+                options=options,
+            )
     else:
         print("Fit Model Summary:")
         print(pformat(_fit_model_summary_dict(model_result), sort_dicts=False))
@@ -1396,27 +1574,30 @@ def _print_fit_model_results(fit_model_results, options=None):
     )
 
     if needs_details:
-        print("Fit Model Details:")
         _display_or_print_fit_model_table(
             _combine_fit_model_tables(
                 fit_model_results,
                 _fit_model_details_display_table,
                 "Setting",
-            )
+            ),
+            title="Fit Model Details",
+            options=options,
         )
-        print("\nFit Model Parameters:")
         _display_or_print_fit_model_table(
-            _fit_model_multi_parameters_display_table(fit_model_results)
+            _fit_model_multi_parameters_display_table(fit_model_results),
+            title="Fit Model Parameters",
+            options=options,
         )
         return
 
-    print("Fit Model:")
     _display_or_print_fit_model_table(
         _combine_fit_model_tables(
             fit_model_results,
             _fit_model_display_table,
             "Field",
-        )
+        ),
+        title="Fit Model",
+        options=options,
     )
 
 
@@ -1507,6 +1688,7 @@ def fit_model(x_or_result, y=None, model=None, options=None):
                     plot_options["new plot"] = False
                     plot_options["plot data"] = False
                 plot_options["model label"] = str(fit_label)
+                plot_options["_fit line index"] = fit_index
                 _plot_fit_model_result(model_result, plot_options)
 
         fit_table = _scatter_fit_table(fit_rows)
@@ -1568,6 +1750,7 @@ def fit_model(x_or_result, y=None, model=None, options=None):
         plot_options = dict(options)
         plot_options.setdefault("x label", x_label)
         plot_options.setdefault("y label", y_label)
+        plot_options.setdefault("_fit line index", 0)
         _plot_fit_model_result(model_result, plot_options)
 
     if options.get("print", False):
@@ -1597,7 +1780,7 @@ def fit_model(x_or_result, y=None, model=None, options=None):
 def _trumpet_analysis_payload(cvs, options=None):
     raw_options = options
     typed_options = TrumpetAnalysisOptions.from_options(options)
-    options = typed_options.to_legacy_dict()
+    options = typed_options.to_options_dict()
     if not options["plot"]:
         options["plot fit"] = False
 
@@ -1689,11 +1872,11 @@ def _trumpet_analysis_payload(cvs, options=None):
 
     if options["plot"] and options["plot fit"]:
         plot_options_1 = _options_with_default_fit_color(options, raw_options, point_colors[0], index=0)
-        plot_options_1.update({"new plot": False, "plot data": False, "model label": f"{seg1_label} Fit"})
+        plot_options_1.update({"new plot": False, "plot data": False, "model label": f"{seg1_label} Fit", "_fit line index": 0})
         _plot_fit_model_result(seg1_fit["model_result"], plot_options_1)
 
         plot_options_2 = _options_with_default_fit_color(options, raw_options, point_colors[1], index=1)
-        plot_options_2.update({"new plot": False, "plot data": False, "model label": f"{seg2_label} Fit"})
+        plot_options_2.update({"new plot": False, "plot data": False, "model label": f"{seg2_label} Fit", "_fit line index": 1})
         _plot_fit_model_result(seg2_fit["model_result"], plot_options_2)
 
     if options["plot"] and _scatterfit_legend_requested(options):
@@ -1735,7 +1918,8 @@ def _trumpet_analysis_payload(cvs, options=None):
     trumpet_results = _trumpet_results_table(α, β, ks, D, warning, options)
 
     if options["print"]:
-        print("Trumpet Analysis Summary:")
+        if not _rich_table_output_enabled(options):
+            print("Trumpet Analysis Summary:")
         _display_trumpet_equations(resolved=True, compact=False, include_definitions=False)
         _display_trumpet_parameter_table(
             _trumpet_parameter_table(
@@ -1748,7 +1932,6 @@ def _trumpet_analysis_payload(cvs, options=None):
             ),
             options,
         )
-        print("Trumpet Results:")
         _display_trumpet_results_table(trumpet_results, options)
         _print_fit_model_results(fit_model_results, options)
 
@@ -1880,9 +2063,7 @@ def _coerce_nicholson_cv_list(cvs):
 
 
 def _resolve_nicholson_scan_rates(cvs, options):
-    manual = options.get("scan rates", None)
-    if manual is None:
-        manual = options.get("scan rate", None)
+    manual = options.get("scan rate", None)
     if manual is None:
         rates = [getattr(item, "scan_rate", None) for item in cvs]
     elif isinstance(manual, (list, tuple, np.ndarray, pd.Series)):
@@ -1890,11 +2071,14 @@ def _resolve_nicholson_scan_rates(cvs, options):
     else:
         rates = [manual] * len(cvs)
     if len(rates) != len(cvs):
-        raise ValueError("Manual scan rates must match the number of CVs.")
+        raise ValueError(
+            f"'scan rate' for nicholson_analysis expected 1 scalar value or "
+            f"{len(cvs)} scalar values (one per CV), but received {len(rates)} entries."
+        )
     rates = [float(rate) if rate is not None else None for rate in rates]
     for rate in rates:
         if rate is None or not np.isfinite(rate) or rate <= 0:
-            raise ValueError("Each CV must have a positive scan_rate, or provide 'scan rate(s)'.")
+            raise ValueError("Each CV must have a positive scan_rate, or provide 'scan rate'.")
     return rates
 
 
@@ -2180,7 +2364,13 @@ def _plot_nicholson_analysis(data, fit_result, options):
             )
 
     if fit_result is not None and len(fit_result["x fit"]) >= 2:
-        x_line = np.linspace(np.min(fit_result["x fit"]), np.max(fit_result["x fit"]), 100)
+        x_line = _fit_line_x_values(
+            fit_result["x fit"],
+            options,
+            label="Nicholson",
+            index=0,
+            points=100,
+        )
         y_line = fit_result["slope"] * x_line + fit_result["intercept"]
         x_line_scaled = np.asarray(
             [_nicholson_scale_value_to_unit(float(value), "s/cm", x_display_unit) for value in x_line],
@@ -2217,7 +2407,8 @@ def _nicholson_equation_summary(through_origin=True):
 def _print_nicholson_summary(data, summary, options):
     display_data = _nicholson_display_data_table(data, options)
     if options.get("pretty print", True):
-        print("Nicholson Analysis Equation:")
+        if not _rich_table_output_enabled(options):
+            print("Nicholson Analysis Equation:")
         _display_analysis_equation(
             r"\text{Nicholson analysis equation:}",
             "Nicholson analysis equation",
@@ -2226,12 +2417,17 @@ def _print_nicholson_summary(data, summary, options):
             compact=False,
             include_definitions=True,
         )
-        print("\nNicholson Parameters:")
-        display_object_table(_nicholson_parameter_display_table(summary, options), options)
-        print("\nNicholson Analysis Summary:")
-        display_object_table(_nicholson_summary_display_table(summary, options), options)
-        print("\nNicholson Analysis Data:")
-        display_object_table(display_data, options)
+        display_object_table(
+            _nicholson_parameter_display_table(summary, options),
+            options,
+            title="Nicholson Parameters",
+        )
+        display_object_table(
+            _nicholson_summary_display_table(summary, options),
+            options,
+            title="Nicholson Analysis Summary",
+        )
+        display_object_table(display_data, options, title="Nicholson Analysis Data")
     else:
         print("Nicholson Analysis Equation:")
         equation = _nicholson_equation_bundle(summary)
@@ -2272,7 +2468,7 @@ def nicholson_analysis(cvs, options=None):
     >>> result["summary"]["k0 / cm s^-1"]
     """
     raw_options = {} if options is None else dict(options)
-    options = NicholsonOptions.from_options(raw_options).to_legacy_dict()
+    options = NicholsonOptions.from_options(raw_options).to_options_dict()
     cv_list = _coerce_nicholson_cv_list(cvs)
 
     D = options.get("D", None)
@@ -2464,7 +2660,7 @@ def nicholson_analysis(cvs, options=None):
 def _sevcik_analysis_payload(cvs, options=None):
     raw_options = options
     typed_options = SevcikAnalysisOptions.from_options(options)
-    options = typed_options.to_legacy_dict()
+    options = typed_options.to_options_dict()
     do_plot = options.get("plot", True)
     do_print = options.get("print", True)
 
@@ -2513,7 +2709,7 @@ def _sevcik_analysis_payload(cvs, options=None):
             x_values.append(concentration_to_float(cv.concentrations[diff_conc_idx]))
         data['Concentration (M)'] = x_values
 
-    internal_options = typed_options.for_peak_current().to_legacy_dict()
+    internal_options = typed_options.for_peak_current().to_options_dict()
     internal_options["internal call"] = True
     internal_options["new plot"] = False
     internal_options["plot"] = options.get("plot all", False)
@@ -2614,7 +2810,8 @@ def _sevcik_analysis_payload(cvs, options=None):
     )
 
     if do_print:
-        print("Sevcik Analysis Summary:")
+        if not _rich_table_output_enabled(options):
+            print("Sevcik Analysis Summary:")
         _display_sevcik_diffusion_equation(
             mode="scan rate" if "scan rate" in different else "concentration",
             num_electrons=num_electrons,
@@ -2640,7 +2837,7 @@ def _sevcik_analysis_payload(cvs, options=None):
             ),
             options,
         )
-        _print_sevcik_fit_results(sevcik_fit_table)
+        _print_sevcik_fit_results(sevcik_fit_table, options)
 
     if options.get('print all'):
         print(data)
@@ -2736,10 +2933,6 @@ def _trumpet_parameter_table(base_segment, paired_segment, temperature, diffusio
 
 
 def _display_trumpet_parameter_table(table, options):
-    if not options.get("pretty print", True) or display is None:
-        print(table.to_string(index=False, justify="left"))
-        return table
-
     display_table = table.copy()
     display_table["Parameter"] = [
         {
@@ -2748,21 +2941,14 @@ def _display_trumpet_parameter_table(table, options):
         }.get(str(value), value)
         for value in display_table["Parameter"]
     ]
-    styled = (
-        display_table.style
-        .format(escape=None)
-        .set_properties(**{
-            "text-align": "left",
-            "white-space": "pre-wrap",
-            "vertical-align": "top",
-        })
-        .set_table_styles([
-            {"selector": "th", "props": [("text-align", "left")]},
-            {"selector": "td", "props": [("text-align", "left")]},
-        ])
+    return _display_table(
+        table,
+        options,
+        title="Trumpet Parameters",
+        rich_table=display_table,
+        escape=None,
+        index=False,
     )
-    display(styled)
-    return table
 
 
 def _trumpet_reliability_warning(alpha, beta, slope_forward, slope_reverse, intercept_x, fit_x):
@@ -2807,10 +2993,6 @@ def _trumpet_results_table(alpha, beta, ks, diffusion_coefficient, warning, opti
 
 
 def _display_trumpet_results_table(table, options):
-    if not options.get("pretty print", True) or display is None:
-        print(table.to_string(index=False, justify="left"))
-        return table
-
     display_table = table.copy()
     display_table["Parameter"] = [
         {
@@ -2820,21 +3002,14 @@ def _display_trumpet_results_table(table, options):
         }.get(str(value), value)
         for value in display_table["Parameter"]
     ]
-    styled = (
-        display_table.style
-        .format(escape=None)
-        .set_properties(**{
-            "text-align": "left",
-            "white-space": "pre-wrap",
-            "vertical-align": "top",
-        })
-        .set_table_styles([
-            {"selector": "th", "props": [("text-align", "left")]},
-            {"selector": "td", "props": [("text-align", "left")]},
-        ])
+    return _display_table(
+        table,
+        options,
+        title="Trumpet Results",
+        rich_table=display_table,
+        escape=None,
+        index=False,
     )
-    display(styled)
-    return table
 
 def _normalize_segment_option(options, default=None):
     """
@@ -2861,6 +3036,21 @@ def _normalize_segment_option(options, default=None):
 
 def _option_key_text(key):
     return str(key).strip().lower().replace("_", " ").replace("-", " ")
+
+
+def _canonical_peak_kind_option(value):
+    if value is None:
+        return None
+    token = _option_key_text(value)
+    if token in {"both", "any", "all", "none"}:
+        return None
+    if token in {"infer", "inferred"}:
+        return "infer"
+    if token in {"max", "maximum"}:
+        return "max"
+    if token in {"min", "minimum"}:
+        return "min"
+    return value
 
 
 def _raw_options_has_segment_selection(raw_options):
@@ -3531,6 +3721,32 @@ def _option_was_provided(options, option_name):
     return hasattr(options, normalize_key(option_name))
 
 
+def _diagnostic_y_axis_from_y_axis(value):
+    key = str(value).strip().lower().replace(" ", "")
+    if key in {"current", "rawcurrent"}:
+        return "current"
+    if key == "i/ip0":
+        return "i/ip0"
+    return None
+
+
+def _apply_diagnostic_y_axis_alias(raw_options, options, analysis_name):
+    if not isinstance(raw_options, dict):
+        return
+    if not _option_was_provided(raw_options, "y axis"):
+        return
+    if _option_was_provided(raw_options, "diagnostic y axis"):
+        return
+    mapped_axis = _diagnostic_y_axis_from_y_axis(options.get("y axis"))
+    if mapped_axis is None:
+        raise OptionError(
+            f"For {analysis_name} diagnostic CV overlays, 'y axis' accepts "
+            "'Current' or 'i/ip0'. Use 'diagnostic y axis' for the explicit "
+            "analysis option."
+        )
+    options["diagnostic y axis"] = mapped_axis
+
+
 def _artist_color(artist):
     if artist is None:
         return None
@@ -3558,9 +3774,7 @@ def _is_color_sequence(value):
 
 def _fit_color_from_options(options, index=0, fallback=None):
     options = options or {}
-    value = options.get("fit colors")
-    if value is None:
-        value = options.get("fit color")
+    value = options.get("fit color")
     if value is None:
         return fallback
     if _is_color_sequence(value):
@@ -3575,11 +3789,10 @@ def _fit_color_from_options(options, index=0, fallback=None):
 
 def _options_with_default_fit_color(options, raw_options, color, index=0):
     resolved = dict(options or {})
-    if _option_was_provided(raw_options, "fit colors") or _option_was_provided(raw_options, "fit color"):
+    if _option_was_provided(raw_options, "fit color"):
         selected = _fit_color_from_options(resolved, index=index, fallback=color)
         if selected is not None:
             resolved["fit color"] = selected
-        resolved.pop("fit colors", None)
     elif color is not None:
         resolved["fit color"] = color
     return resolved
@@ -3755,6 +3968,7 @@ def _normalize_transform_token(transform):
         "cubed": ("power", 3.0),
         "reciprocal": ("reciprocal", None),
         "inverse": ("reciprocal", None),
+        "1/": ("reciprocal", None),
         "1/x": ("reciprocal", None),
         "log10": ("log10", None),
         "log": ("log10", None),
@@ -3945,7 +4159,7 @@ def _resolve_xy_transforms(options, default_x="identity", default_y="identity"):
     x_transform = default_x
     y_transform = default_y
 
-    if options.get("plot log-log", False) or options.get("log log plot", False):
+    if options.get("plot log-log", False):
         mode_text = "log-log"
 
     if mode_text in ("identity", "none", ""):
@@ -4260,7 +4474,7 @@ def _fit_peak_potential_payload(cvs, options=None):
     """
     raw_options = options
     typed_options = FitPeakPotentialOptions.from_options(options)
-    options = typed_options.to_legacy_dict()
+    options = typed_options.to_options_dict()
     do_plot = options.get("plot", True)
     do_print = options.get("print", True)
     do_fit = options.get("fit", True)
@@ -4341,6 +4555,31 @@ def _fit_peak_potential_payload(cvs, options=None):
     )
     for key in potential_series:
         internal_options.pop(key, None)
+    user_peak_kind = _canonical_peak_kind_option(options.get("peak kind"))
+    if user_peak_kind is None:
+        internal_options.pop("peak kind", None)
+    else:
+        internal_options["peak kind"] = user_peak_kind
+
+    has_guess_singular, guess_singular_value, _guess_singular_key = _raw_option_value(
+        raw_options,
+        "guess potential",
+    )
+    has_guess_plural, guess_plural_value, _guess_plural_key = _raw_option_value(
+        raw_options,
+        "guess potentials",
+    )
+    if has_guess_plural:
+        raw_guess_value = guess_plural_value
+    elif has_guess_singular:
+        raw_guess_value = guess_singular_value
+    else:
+        raw_guess_value = options.get("guess potential")
+    scalar_guess_tracks = (
+        raw_guess_value is not None
+        and not _is_option_sequence(raw_guess_value)
+        and not any(value is not None for value in potential_series["exact potential"])
+    )
 
     # If plotting all intermediate work, first show the CVs together
     if options.get("plot all", False):
@@ -4348,6 +4587,8 @@ def _fit_peak_potential_payload(cvs, options=None):
 
     rows = []
     x_name = None
+    series_running_guess_by_segment = {}
+    series_peak_kind_by_segment = {}
 
     # Organize by CV first so follow E1/2 is actually tracked within a CV
     for i, cv_obj in enumerate(cvs):
@@ -4375,16 +4616,47 @@ def _fit_peak_potential_payload(cvs, options=None):
             else:
                 seg_options.pop("segment", None)
 
+            segment_key = seg if seg is not None else None
+            guess_for_call = running_guess
+            peak_kind_for_call = user_peak_kind
+
+            if scalar_guess_tracks and exact_potential is None:
+                if segment_key in series_running_guess_by_segment:
+                    guess_for_call = series_running_guess_by_segment[segment_key]
+                    if peak_kind_for_call is None:
+                        peak_kind_for_call = series_peak_kind_by_segment.get(segment_key)
+                elif running_guess is not None:
+                    guess_for_call = running_guess
+
             if exact_potential is not None:
                 seg_options["exact potential"] = exact_potential
                 seg_options.pop("guess potential", None)
-            elif running_guess is not None:
-                seg_options["guess potential"] = running_guess
+                seg_options.pop("peak kind", None)
+            elif guess_for_call is not None:
+                seg_options["guess potential"] = guess_for_call
+                if peak_kind_for_call is not None:
+                    seg_options["peak kind"] = peak_kind_for_call
+                else:
+                    seg_options.pop("peak kind", None)
             else:
                 seg_options.pop("guess potential", None)
+                if peak_kind_for_call is None:
+                    seg_options.pop("peak kind", None)
 
             # One segment at a time so peak_potential does not search across combined segments
-            Ep = cv_obj.peak_potential(seg_options)["Ep"]
+            peak_result = cv_obj.peak_potential(seg_options)
+            Ep = peak_result["Ep"]
+            extremum_kind = None
+            if hasattr(peak_result, "get"):
+                extremum_kind = peak_result.get("extremum kind")
+            if options.get("plot all", False) and exact_potential is not None:
+                x_scale, y_scale = cv_obj.xy_scale(seg_options)
+                plt.scatter(
+                    peak_result["Ep"] * x_scale,
+                    peak_result["current"] * y_scale + seg_options.get("offset", 0),
+                    color="tab:blue",
+                    zorder=3,
+                )
             scaled_Ep, _ = scale_value(Ep, x_unit, selected_unit=ep_unit)
 
             if seg is None:
@@ -4397,6 +4669,10 @@ def _fit_peak_potential_payload(cvs, options=None):
 
             # Default behavior: use the most recent Ep as the next guess
             running_guess = Ep
+            if scalar_guess_tracks:
+                series_running_guess_by_segment[segment_key] = Ep
+                if user_peak_kind is None and extremum_kind in {"max", "min"}:
+                    series_peak_kind_by_segment[segment_key] = extremum_kind
 
         # Interpret "follow E1/2" as:
         # for sequential segments, compute and store the half-wave potential
@@ -4498,16 +4774,15 @@ def _fit_peak_potential_payload(cvs, options=None):
             idxs = [0, len(seg_data)]
 
         if do_fit:
-            fit_specs = _fit_rate_range_specs(options, idxs, fit_key)
-            for range_label, fit_spec, is_fit_range in fit_specs:
+            fit_specs = _fit_rate_selection_specs(options, idxs, fit_key)
+            for range_label, fit_spec, is_named_selection in fit_specs:
                 fit_x, fit_y = _fit_rate_selected_points(
                     seg_data[x_col].to_numpy(),
                     seg_data[adjusted_col].to_numpy(),
                     fit_spec,
-                    is_fit_range,
                 )
-                output_key = fit_key if not is_fit_range else f"{fit_key} {range_label}"
-                display_label = label if not is_fit_range else f"{label} {range_label}"
+                output_key = fit_key if not is_named_selection else f"{fit_key} {range_label}"
+                display_label = label if not is_named_selection else f"{label} {range_label}"
                 fit_label = f"{display_label} Fit"
                 series_fit = _fit_series_xy(
                     fit_x,
@@ -4516,7 +4791,8 @@ def _fit_peak_potential_payload(cvs, options=None):
                     label=output_key,
                 )
                 if do_plot and options["plot fit"]:
-                    plot_options = _fit_rate_fit_options_for_range(options, range_label, is_fit_range)
+                    plot_options = _fit_rate_fit_options(options, range_label)
+                    fit_line_index = fit_color_index
                     plot_options = _options_with_default_fit_color(
                         plot_options,
                         raw_options,
@@ -4524,7 +4800,7 @@ def _fit_peak_potential_payload(cvs, options=None):
                         index=fit_color_index,
                     )
                     fit_color_index += 1
-                    plot_options.update({"new plot": False, "plot data": False, "model label": fit_label})
+                    plot_options.update({"new plot": False, "plot data": False, "model label": fit_label, "_fit line index": fit_line_index})
                     _plot_fit_model_result(series_fit["model_result"], plot_options)
                 fits[output_key] = series_fit["fits"]
                 fit_model_results[display_label] = series_fit["model_result"]
@@ -4559,12 +4835,13 @@ def _fit_peak_potential_payload(cvs, options=None):
 
             ehalf_data = data[[x_col, adjusted_col]].dropna().sort_values(by=x_col).reset_index(drop=True)
 
+            point_color = None
             if do_plot:
-                plt.scatter(
+                point_color = _artist_color(plt.scatter(
                     ehalf_data[x_col],
                     ehalf_data[adjusted_col],
                     label=label,
-                )
+                ))
 
             idxs = options.get("fit indices")
             if isinstance(idxs, dict):
@@ -4573,16 +4850,15 @@ def _fit_peak_potential_payload(cvs, options=None):
                 idxs = [0, len(ehalf_data)]
 
             if do_fit:
-                fit_specs = _fit_rate_range_specs(options, idxs, fit_key)
-                for range_label, fit_spec, is_fit_range in fit_specs:
+                fit_specs = _fit_rate_selection_specs(options, idxs, fit_key)
+                for range_label, fit_spec, is_named_selection in fit_specs:
                     fit_x, fit_y = _fit_rate_selected_points(
                         ehalf_data[x_col].to_numpy(),
                         ehalf_data[adjusted_col].to_numpy(),
                         fit_spec,
-                        is_fit_range,
                     )
-                    output_key = fit_key if not is_fit_range else f"{fit_key} {range_label}"
-                    display_label = label if not is_fit_range else f"{label} {range_label}"
+                    output_key = fit_key if not is_named_selection else f"{fit_key} {range_label}"
+                    display_label = label if not is_named_selection else f"{label} {range_label}"
                     fit_label = f"{display_label} Fit"
                     series_fit = _fit_series_xy(
                         fit_x,
@@ -4591,8 +4867,16 @@ def _fit_peak_potential_payload(cvs, options=None):
                         label=output_key,
                     )
                     if do_plot and options["plot fit"]:
-                        plot_options = _fit_rate_fit_options_for_range(options, range_label, is_fit_range)
-                        plot_options.update({"new plot": False, "plot data": False, "model label": fit_label})
+                        plot_options = _fit_rate_fit_options(options, range_label)
+                        fit_line_index = fit_color_index
+                        plot_options = _options_with_default_fit_color(
+                            plot_options,
+                            raw_options,
+                            point_color,
+                            index=fit_color_index,
+                        )
+                        fit_color_index += 1
+                        plot_options.update({"new plot": False, "plot data": False, "model label": fit_label, "_fit line index": fit_line_index})
                         _plot_fit_model_result(series_fit["model_result"], plot_options)
                     fits[output_key] = series_fit["fits"]
                     fit_model_results[output_key] = series_fit["model_result"]
@@ -4651,7 +4935,7 @@ def _fit_peak_current_payload(cvs, options=None):
     """
     raw_options = options
     typed_options = FitPeakCurrentOptions.from_options(options)
-    options = typed_options.to_legacy_dict()
+    options = typed_options.to_options_dict()
     do_plot = options.get("plot", True)
     do_print = options.get("print", True)
     do_fit = options.get("fit", True)
@@ -4701,7 +4985,7 @@ def _fit_peak_current_payload(cvs, options=None):
     if options.get("plot all", False):
         multiplot(cvs, options=_plot_all_multiplot_options(options, raw_options))
 
-    internal_options = typed_options.for_peak_current().to_legacy_dict()
+    internal_options = typed_options.for_peak_current().to_options_dict()
     internal_options["internal call"] = True
     internal_options["new plot"] = False
     internal_options["plot"] = options.get("plot all", False)
@@ -4836,15 +5120,15 @@ def _fit_peak_current_payload(cvs, options=None):
             idxs = [0, len(fit_x_all)]
 
         if do_fit:
-            fit_specs = _fit_rate_range_specs(options, idxs, series_label)
-            for range_label, fit_spec, is_fit_range in fit_specs:
-                fit_x, fit_y = _fit_rate_selected_points(fit_x_all, fit_y_all, fit_spec, is_fit_range)
+            fit_specs = _fit_rate_selection_specs(options, idxs, series_label)
+            for range_label, fit_spec, is_named_selection in fit_specs:
+                fit_x, fit_y = _fit_rate_selected_points(fit_x_all, fit_y_all, fit_spec)
 
                 if len(fit_x) < 2:
                     raise ValueError("fit_peak_current requires at least two transformable points.")
 
-                output_key = seg if not is_fit_range else f"{series_label} {range_label}"
-                display_label = series_label if not is_fit_range else f"{series_label} {range_label}"
+                output_key = seg if not is_named_selection else f"{series_label} {range_label}"
+                display_label = series_label if not is_named_selection else f"{series_label} {range_label}"
                 series_fit = _fit_series_xy(
                     fit_x,
                     fit_y,
@@ -4852,7 +5136,8 @@ def _fit_peak_current_payload(cvs, options=None):
                     label=display_label,
                 )
                 if do_plot and options["plot fit"]:
-                    plot_options = _fit_rate_fit_options_for_range(options, range_label, is_fit_range)
+                    plot_options = _fit_rate_fit_options(options, range_label)
+                    fit_line_index = fit_color_index
                     plot_options = _options_with_default_fit_color(
                         plot_options,
                         raw_options,
@@ -4860,7 +5145,7 @@ def _fit_peak_current_payload(cvs, options=None):
                         index=fit_color_index,
                     )
                     fit_color_index += 1
-                    plot_options.update({"new plot": False, "plot data": False, "model label": f"{display_label} Fit"})
+                    plot_options.update({"new plot": False, "plot data": False, "model label": f"{display_label} Fit", "_fit line index": fit_line_index})
                     _plot_fit_model_result(series_fit["model_result"], plot_options)
                 fits[output_key] = series_fit["fits"]
                 fit_model_results[display_label] = series_fit["model_result"]
@@ -4939,7 +5224,7 @@ def _fowa_summary_table(cvs, results, plot_data, ref_cvs, options=None):
     analysis_df = pd.DataFrame(results)
     if not analysis_df.empty:
         analysis_df["background tangent"] = [
-            _format_fowa_line(slope, intercept)
+            _format_fowa_line(slope, intercept, options.get("sig figs", 4))
             for slope, intercept in zip(
                 analysis_df.get("background slope", pd.Series([None] * len(analysis_df))),
                 analysis_df.get("background intercept", pd.Series([None] * len(analysis_df))),
@@ -4953,7 +5238,7 @@ def _fowa_summary_table(cvs, results, plot_data, ref_cvs, options=None):
             )
         ]
         analysis_df["fowa fit"] = [
-            _format_fowa_line(slope, intercept)
+            _format_fowa_line(slope, intercept, options.get("sig figs", 4))
             for slope, intercept in zip(
                 analysis_df.get("slope", pd.Series([None] * len(analysis_df))),
                 analysis_df.get("intercept", pd.Series([None] * len(analysis_df))),
@@ -5033,14 +5318,10 @@ def _fowa_summary_field_html_label(field):
     return _pretty_table_header_html_label(field)
 
 
-def _display_fowa_summary_table(summary, options=None):
+def _display_fowa_summary_table(summary, options=None, *, title="FOWA Summary", plain_title=True):
     options = {} if options is None else options
     table = _fowa_summary_display_table(summary)
     if table.empty:
-        return table
-
-    if not options.get("pretty print", True) or display is None:
-        print(table.to_string(index=False, justify="left"))
         return table
 
     display_table = table.copy()
@@ -5048,21 +5329,15 @@ def _display_fowa_summary_table(summary, options=None):
         _fowa_summary_field_html_label(field)
         for field in display_table["Field"]
     ]
-    styled = (
-        display_table.style
-        .format(escape=None)
-        .set_properties(**{
-            "text-align": "left",
-            "white-space": "pre-wrap",
-            "vertical-align": "top",
-        })
-        .set_table_styles([
-            {"selector": "th", "props": [("text-align", "left")]},
-            {"selector": "td", "props": [("text-align", "left")]},
-        ])
+    return _display_table(
+        table,
+        options,
+        title=title,
+        rich_table=display_table,
+        escape=None,
+        index=False,
+        plain_title=plain_title,
     )
-    display(styled)
-    return table
 
 
 def _format_fowa_display_value(column, value, options=None):
@@ -5084,43 +5359,132 @@ def _format_fowa_display_value(column, value, options=None):
     return value
 
 
-def _fowa_results_display_table(table, options=None):
+def _table_column_unit(table, column):
+    units = getattr(table, "attrs", {}).get("units", {}) or {}
+    if not units:
+        return None
+    column_text = str(column).strip()
+    if column_text in units:
+        return units[column_text]
+    column_key = column_text.lower()
+    for key, unit in units.items():
+        if str(key).strip().lower() == column_key:
+            return unit
+        if str(pretty_table_column_label(key)).strip().lower() == column_key:
+            return unit
+    return None
+
+
+def _is_table_blank(value):
+    if value is None:
+        return True
+    try:
+        return bool(pd.isna(value))
+    except (TypeError, ValueError):
+        return False
+
+
+def _display_unit_for_numeric_column(values, unit):
+    clean_values = [
+        float(value)
+        for value in values
+        if isinstance(value, (int, float, np.integer, np.floating)) and np.isfinite(float(value))
+    ]
+    if not clean_values or not unit or str(unit).strip().lower() in {"dimensionless", "none"}:
+        return None
+    unit = str(unit)
+    if unit in {"A", "V/s"}:
+        try:
+            _scaled, display_unit = scale_value(max(abs(value) for value in clean_values), unit, selected_unit="auto")
+            return display_unit
+        except Exception:
+            return unit
+    return unit
+
+
+def _format_table_numeric_without_unit(value, unit, display_unit, options=None):
+    options = {} if options is None else options
+    sig_figs = options.get("sig figs", 4)
+    numeric_value = float(value)
+    if display_unit and display_unit != unit:
+        try:
+            numeric_value, _display_unit = scale_value(numeric_value, unit, selected_unit=display_unit)
+        except Exception:
+            pass
+    abs_value = abs(numeric_value)
+    scientific = unit in {"cm^2/s", "mol/cm^3", "A/(V/s)^1/2"}
+    if abs_value != 0 and (abs_value >= 1e4 or abs_value < 1e-3):
+        scientific = True
+    return _format_sevcik_value(numeric_value, sig_figs=sig_figs, scientific=scientific)
+
+
+def _format_plain_unit_label(unit):
+    text = str(unit)
+    replacements = {
+        "^-1": "⁻¹",
+        "^1/2": "¹ᐟ²",
+        "^2": "²",
+        "^3": "³",
+    }
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+    return text
+
+
+def _results_display_table_with_unit_headers(table, options=None, *, value_formatter):
     options = {} if options is None else options
     display_table = table.copy()
-    for column in display_table.columns:
-        display_table[column] = [
-            _format_fowa_display_value(column, value, options)
-            for value in display_table[column]
-        ]
+    rename_columns = {}
+    for column in list(display_table.columns):
+        unit = _table_column_unit(table, column)
+        display_unit = _display_unit_for_numeric_column(display_table[column].tolist(), unit)
+        if display_unit:
+            rename_columns[column] = f"{column} / {_format_plain_unit_label(display_unit)}"
+            formatted = []
+            for value in display_table[column]:
+                if _is_table_blank(value):
+                    formatted.append("")
+                elif isinstance(value, (int, float, np.integer, np.floating)):
+                    formatted.append(
+                        _format_table_numeric_without_unit(value, unit, display_unit, options)
+                    )
+                else:
+                    formatted.append(str(value))
+            display_table[column] = formatted
+        else:
+            display_table[column] = [
+                value_formatter(column, value, options)
+                for value in display_table[column]
+            ]
+    if rename_columns:
+        display_table = display_table.rename(columns=rename_columns)
     return display_table
 
 
-def _display_fowa_results_table(table, options=None):
+def _fowa_results_display_table(table, options=None):
+    return _results_display_table_with_unit_headers(
+        table,
+        options,
+        value_formatter=_format_fowa_display_value,
+    )
+
+
+def _display_fowa_results_table(table, options=None, *, title="FOWA Results", plain_title=True):
     options = {} if options is None else options
     if table.empty:
         return table
 
     display_table = _fowa_results_display_table(table, options)
-    if not options.get("pretty print", True) or display is None:
-        print(display_table.to_string(index=False, justify="left"))
-        return table
-
-    styled = (
-        display_table.rename(columns=_pretty_table_header_html_label)
-        .style
-        .format(escape=None)
-        .set_properties(**{
-            "text-align": "left",
-            "white-space": "pre-wrap",
-            "vertical-align": "top",
-        })
-        .set_table_styles([
-            {"selector": "th", "props": [("text-align", "left")]},
-            {"selector": "td", "props": [("text-align", "left")]},
-        ])
+    return _display_table(
+        table,
+        options,
+        title=title,
+        rich_table=display_table.rename(columns=_pretty_table_header_html_label),
+        plain_table=display_table,
+        escape=None,
+        index=False,
+        plain_title=plain_title,
     )
-    display(styled)
-    return table
 
 
 def _auto_fowa_wave_bounds(x, y, redox_potential, options):
@@ -5468,31 +5832,20 @@ def _sevcik_parameter_table(
 
 
 def _display_sevcik_parameter_table(table, options):
-    if not options.get("pretty print", True) or display is None:
-        print(table.to_string(index=False, justify="left"))
-        return table
-
     display_table = table.copy()
     keys = table.attrs.get("parameter_keys", list(display_table.index))
     display_table["Parameter"] = [
         _sevcik_parameter_label(key, html=True)
         for key in keys
     ]
-    styled = (
-        display_table.style
-        .format(escape=None)
-        .set_properties(**{
-            "text-align": "left",
-            "white-space": "pre-wrap",
-            "vertical-align": "top",
-        })
-        .set_table_styles([
-            {"selector": "th", "props": [("text-align", "left")]},
-            {"selector": "td", "props": [("text-align", "left")]},
-        ])
+    return _display_table(
+        table,
+        options,
+        title="Sevcik Parameters",
+        rich_table=display_table,
+        escape=None,
+        index=False,
     )
-    display(styled)
-    return table
 
 
 def _sevcik_fit_results_table(fit_table, diffusion_coefficients, options=None):
@@ -5519,15 +5872,15 @@ def _sevcik_fit_results_table(fit_table, diffusion_coefficients, options=None):
     return table
 
 
-def _print_sevcik_fit_results(fit_table):
+def _print_sevcik_fit_results(fit_table, options=None):
     if fit_table is None or len(fit_table) == 0:
         return
-    print("Sevcik Fit Results:")
-    if display is not None:
-        with pd.option_context("display.max_columns", None):
-            display(fit_table)
-    else:
-        print(fit_table.to_string(index=False))
+    return _display_table(
+        fit_table,
+        options,
+        title="Sevcik Fit Results",
+        index=False,
+    )
 
 
 def _format_fowa_kobs_equation(options):
@@ -5535,68 +5888,72 @@ def _format_fowa_kobs_equation(options):
     Return display-ready text/LaTeX for the EC'-type FOWA kobs equation.
 
     Equation used:
-        kobs = (m * 0.4463 * n_ref / n_cat^sigma)^2
-               * (n_ref * F * v) / (R * T)
+        kobs = (m * 0.4463 * n / n'^sigma)^2
+               * (n * F * v) / (R * T)
+
+    Display notation follows the FOWA literature:
+        n = n_cat = catalyst redox-wave electron count
+        n' = n_turn = turnover electron count
     """
-    n_ref = float(options.get("catalyst electrons", options.get("num electrons", 1)))
-    n_cat = float(options.get("turnover electrons", 1))
+    n_cat = float(options.get("catalyst electrons", options.get("num electrons", 1)))
+    n_turn = float(options.get("turnover electrons", 1))
     sigma = float(options.get("sigma", 1.0))
-    turnover_factor = n_cat ** sigma
+    turnover_factor = n_turn ** sigma
 
     symbolic_latex = (
         r"k_{\mathrm{obs}}"
         r"=\left("
-        r"\frac{m\,0.4463\,n_{\mathrm{ref}}}"
-        r"{n_{\mathrm{cat}}^{\sigma}}"
+        r"\frac{m\,0.4463\,n}"
+        r"{(n^{\prime})^{\sigma}}"
         r"\right)^2"
-        r"\frac{n_{\mathrm{ref}}F\nu}{RT}"
+        r"\frac{nF\nu}{RT}"
     )
 
     resolved_latex = (
         r"k_{\mathrm{obs}}"
         r"=\left("
-        rf"\frac{{m\,0.4463\,({n_ref:g})}}"
-        rf"{{({n_cat:g})^{{{sigma:g}}}}}"
+        rf"\frac{{m\,0.4463\,({n_cat:g})}}"
+        rf"{{({n_turn:g})^{{{sigma:g}}}}}"
         r"\right)^2"
-        rf"\frac{{({n_ref:g})F\nu}}{{RT}}"
+        rf"\frac{{({n_cat:g})F\nu}}{{RT}}"
     )
 
     compact_latex = (
         r"k_{\mathrm{obs}}"
         r"=\left("
-        rf"{0.4463 * n_ref / turnover_factor:.6g}\,m"
+        rf"{0.4463 * n_cat / turnover_factor:.6g}\,m"
         r"\right)^2"
-        rf"\frac{{({n_ref:g})F\nu}}{{RT}}"
+        rf"\frac{{({n_cat:g})F\nu}}{{RT}}"
     )
 
     definitions_latex = (
-        rf"n_{{\mathrm{{ref}}}}={n_ref:g},\quad "
-        rf"n_{{\mathrm{{cat}}}}={n_cat:g},\quad "
+        rf"n={n_cat:g}\ (n_{{\mathrm{{cat}}}},\ \mathrm{{catalyst\ redox-wave\ electron\ count}}),\quad "
+        rf"n^{{\prime}}={n_turn:g}\ (n_{{\mathrm{{turn}}}},\ \mathrm{{turnover\ electron\ count}}),\quad "
         rf"\sigma={sigma:g},\quad "
-        rf"n_{{\mathrm{{cat}}}}^{{\sigma}}={turnover_factor:.6g}"
+        rf"(n^{{\prime}})^{{\sigma}}={turnover_factor:.6g}"
     )
 
     symbolic_text = (
-        "k_obs = (m * 0.4463 * n_ref / n_cat^sigma)^2 "
-        "* (n_ref * F * v) / (R * T)"
+        "k_obs = (m * 0.4463 * n / n'^sigma)^2 "
+        "* (n * F * v) / (R * T)"
     )
 
     resolved_text = (
-        f"k_obs = (m * 0.4463 * {n_ref:g} / "
-        f"{n_cat:g}^{sigma:g})^2 * "
-        f"({n_ref:g} * F * v) / (R * T)"
+        f"k_obs = (m * 0.4463 * {n_cat:g} / "
+        f"{n_turn:g}^{sigma:g})^2 * "
+        f"({n_cat:g} * F * v) / (R * T)"
     )
 
     compact_text = (
-        f"k_obs = ({0.4463 * n_ref / turnover_factor:.6g} * m)^2 "
-        f"* ({n_ref:g} * F * v) / (R * T)"
+        f"k_obs = ({0.4463 * n_cat / turnover_factor:.6g} * m)^2 "
+        f"* ({n_cat:g} * F * v) / (R * T)"
     )
 
     definitions_text = (
-        f"n_ref = {n_ref:g} ('catalyst electrons'), "
-        f"n_cat = {n_cat:g} ('turnover electrons'), "
+        f"n = {n_cat:g} (n_cat, catalyst redox-wave electron count), "
+        f"n' = {n_turn:g} (n_turn, turnover electron count), "
         f"sigma = {sigma:g}, "
-        f"n_cat^sigma = {turnover_factor:.6g}"
+        f"n'^sigma = {turnover_factor:.6g}"
     )
 
     return {
@@ -5701,9 +6058,6 @@ def _resolve_concentration_cm3(cv_obj, options):
         raise ValueError("'C unit' must be 'M', 'mol/L', 'mol/cm3', or 'mol/cm^3'.")
 
     species = options.get("species")
-    normalize_params = options.get("normalize params", {}) or {}
-    if species is None:
-        species = normalize_params.get("species")
     concentrations = list(getattr(cv_obj, "concentrations", []) or []) if cv_obj is not None else []
     compounds = list(getattr(cv_obj, "compounds", []) or []) if cv_obj is not None else []
     if species is not None and concentrations:
@@ -5717,27 +6071,29 @@ def _resolve_concentration_cm3(cv_obj, options):
 
 def _extract_current_with_peak_current(cv_obj, options, role, fallback_potential=None):
     guess = options.get("guess potential")
+    non_catalytic_guess_override = False
     if role == "non-catalytic" and options.get("non-catalytic guess potential") is not None:
         guess = options.get("non-catalytic guess potential")
+        non_catalytic_guess_override = True
 
-    exact = options.get("exact potential")
+    exact = None if non_catalytic_guess_override else options.get("exact potential")
     exact_potential = None
     if exact is not None:
         exact_potential = exact
     elif fallback_potential is not None:
         exact_potential = fallback_potential
 
+    plot_peak_diagnostics = bool(options.get("_plot_peak_diagnostics", options.get("plot all", False)))
     internal = {
-        "plot": bool(options.get("plot all", False)),
-        "plot all": bool(options.get("plot all", False)),
+        "plot": plot_peak_diagnostics,
+        "plot all": plot_peak_diagnostics,
         "print": bool(options.get("print all", False)),
         "print all": bool(options.get("print all", False)),
         "internal call": True,
         "new plot": False,
         "x axis": options.get("x axis"),
-        "y axis": options.get("y axis"),
-        "x unit": options.get("x unit"),
-        "y unit": options.get("y unit"),
+        "y axis": "Current",
+        "y unit": "A",
         "segment": options.get("segment"),
         "segments": options.get("segments"),
         "noise window": options.get("noise window", "auto"),
@@ -5753,19 +6109,34 @@ def _extract_current_with_peak_current(cv_obj, options, role, fallback_potential
         "percent threshold": options.get("percent threshold"),
     }
     internal = {key: value for key, value in internal.items() if value is not None}
-
     try:
         current_result = cv_obj.peak_current(internal)
         current = current_result["ip"]
         tanline = current_result["tangent line"]
-        return {
+        extracted = {
             "current": float(current),
             "potential": current_result.get("Ep", exact_potential),
+            "peak index": current_result.get("Ep index"),
+            "baseline current": current_result.get("baseline current"),
             "source": current_result.get("peak source", "peak_current"),
             "tanline": tanline,
+            "tangent slope": current_result.get("tangent slope"),
+            "tangent intercept": current_result.get("tangent intercept"),
+            "tangent start": current_result.get("tangent start"),
+            "fit indices": current_result.get("fit indices"),
             "cv": getattr(cv_obj, "name", "CV"),
             "scan rate": float(getattr(cv_obj, "scan_rate", np.nan)),
         }
+        diagnostic_calls = options.get("_diagnostic_calls")
+        if isinstance(diagnostic_calls, list):
+            diagnostic_calls.append({
+                "kind": "plateau_extraction",
+                "obj": cv_obj,
+                "options": internal.copy(),
+                "role": role,
+                **extracted,
+            })
+        return extracted
     except Exception as exc:
         raise ValueError(
             f"Could not extract {role} plateau current from '{getattr(cv_obj, 'name', 'CV')}'. "
@@ -5792,6 +6163,13 @@ def _extract_catalytic_currents(cat_cvs, options, potential_series=None):
             "abs ic": abs(extracted["current"]),
             "current source": extracted["source"],
             "extraction potential": extracted["potential"],
+            "peak index": extracted.get("peak index"),
+            "baseline current": extracted.get("baseline current"),
+            "tangent slope": extracted.get("tangent slope"),
+            "tangent intercept": extracted.get("tangent intercept"),
+            "tangent start": extracted.get("tangent start"),
+            "fit indices": extracted.get("fit indices"),
+            "ilim tangent": _format_plateau_tangent(extracted.get("tanline"), options),
             "valid extraction": True,
         })
     return pd.DataFrame(rows)
@@ -5809,6 +6187,7 @@ def _extract_ip0_currents(ref_cvs, options, potential_series=None):
         if potential_series is not None:
             nc_guess = cv_options.pop("non-catalytic guess potential", None)
             if nc_guess is not None:
+                cv_options.pop("exact potential", None)
                 cv_options["guess potential"] = nc_guess
         scan_rate = float(getattr(ref_cv, "scan_rate", np.nan))
         fallback = None
@@ -5829,6 +6208,13 @@ def _extract_ip0_currents(ref_cvs, options, potential_series=None):
             "abs ip0": abs(extracted["current"]),
             "current source": extracted["source"],
             "extraction potential": extracted["potential"],
+            "peak index": extracted.get("peak index"),
+            "baseline current": extracted.get("baseline current"),
+            "tangent slope": extracted.get("tangent slope"),
+            "tangent intercept": extracted.get("tangent intercept"),
+            "tangent start": extracted.get("tangent start"),
+            "fit indices": extracted.get("fit indices"),
+            "ip0 tangent": _format_plateau_tangent(extracted.get("tanline"), options),
             "valid extraction": True,
         })
     return pd.DataFrame(rows)
@@ -5879,17 +6265,17 @@ def _select_plateau_subset(ic_df, options):
     if len(df) == 1:
         if validate:
             msg = "Only one catalytic CV was supplied; scan-rate independence cannot be tested."
-            warnings.warn(msg, UserWarning, stacklevel=2)
             warnings_list.append("scan-rate independence cannot be tested")
         return {
             "ilim": float(df["ic"].iloc[0]),
             "accepted indices": [0],
             "accepted cvs": [df["cv"].iloc[0]],
             "accepted scan rates": [float(df["scan rate"].iloc[0])],
-            "slope": 0.0,
-            "intercept": float(df["abs ic"].iloc[0]),
-            "slope metric": 0.0,
-            "valid plateau": True,
+            "slope": np.nan,
+            "intercept": np.nan,
+            "slope metric": np.nan,
+            "valid plateau": None,
+            "validation status": "not tested",
             "warnings": warnings_list,
         }
 
@@ -5930,8 +6316,78 @@ def _select_plateau_subset(ic_df, options):
         "intercept": intercept,
         "slope metric": metric,
         "valid plateau": bool(valid),
+        "validation status": "not requested" if not validate else ("passed" if bool(valid) else "failed"),
         "warnings": warnings_list,
     }
+
+
+def _is_provided(value):
+    if value is None:
+        return False
+    if isinstance(value, float) and np.isnan(value):
+        return False
+    return True
+
+
+def _provided_label(value):
+    return "provided" if _is_provided(value) else "missing"
+
+
+def _format_plateau_formula_mode_error(
+    options,
+    *,
+    D=None,
+    C=None,
+    electrode_area=None,
+    ip0=None,
+    ip0_scan_rate=None,
+    ip0_sqrt_scan_rate_slope=None,
+):
+    direct_missing = []
+    if D is None:
+        direct_missing.append("D")
+    if C is None:
+        direct_missing.append("C (or species-resolved catalyst concentration)")
+    if electrode_area is None:
+        direct_missing.append("electrode area")
+
+    slope_missing = []
+    if ip0_sqrt_scan_rate_slope is None:
+        slope_missing.append("ip0 sqrt scan rate slope (or multiple non-catalytic cvs)")
+
+    normalized_missing = []
+    if ip0 is None:
+        normalized_missing.append("ip0/non-catalytic current (or one non-catalytic cv)")
+    if ip0_scan_rate is None:
+        normalized_missing.append("ip0 scan rate/scan rate (or the non-catalytic cv scan_rate)")
+
+    noncat_status = (
+        "provided"
+        if options.get("non-catalytic cv") is not None or options.get("non-catalytic cvs") is not None
+        else "missing"
+    )
+    received = [
+        f"ilim/ic={_provided_label(options.get('ilim') if options.get('ilim') is not None else options.get('ic'))}",
+        f"D={_provided_label(D)}",
+        f"C={_provided_label(C)}",
+        f"species={_provided_label(options.get('species'))}",
+        f"electrode area={_provided_label(electrode_area)}",
+        f"ip0/non-catalytic current={_provided_label(ip0)}",
+        f"ip0 scan rate={_provided_label(ip0_scan_rate)}",
+        f"ip0 sqrt scan rate slope={_provided_label(ip0_sqrt_scan_rate_slope)}",
+        f"non-catalytic cv(s)={noncat_status}",
+    ]
+
+    return (
+        "plateau_current could not resolve formula mode automatically. "
+        "Auto mode needs one complete input path:\n"
+        f"- direct: D + C/species + electrode area. Missing: {', '.join(direct_missing) or 'none'}.\n"
+        "- slope-normalized: ip0 sqrt scan rate slope, or multiple non-catalytic cvs "
+        f"to fit ip0 vs sqrt(scan rate). Missing: {', '.join(slope_missing) or 'none'}.\n"
+        "- normalized: ip0/non-catalytic current + ip0 scan rate, or one non-catalytic cv "
+        f"with scan_rate metadata. Missing: {', '.join(normalized_missing) or 'none'}.\n"
+        f"Received: {'; '.join(received)}."
+    )
 
 
 def _calculate_plateau_kobs(
@@ -5946,9 +6402,9 @@ def _calculate_plateau_kobs(
     C=None,
     electrode_area=None,
 ):
-    n = float(options.get("catalyst electrons", 1))
-    n_prime = float(options.get("turnover electrons", 1))
-    if n <= 0 or n_prime <= 0:
+    n_cat = float(options.get("catalyst electrons", 1))
+    n_turn = float(options.get("turnover electrons", 1))
+    if n_cat <= 0 or n_turn <= 0:
         raise ValueError("'catalyst electrons' and 'turnover electrons' must be positive.")
     mode = str(formula_mode or "auto").strip().lower().replace("-", " ")
     direct_ready = D is not None and C is not None and electrode_area is not None
@@ -5963,39 +6419,1307 @@ def _calculate_plateau_kobs(
             mode = "normalized"
         else:
             raise ValueError(
-                "plateau_current could not resolve formula mode. Provide D/C/electrode area, "
-                "ip0 sqrt scan rate slope, or ip0 with ip0 scan rate."
+                _format_plateau_formula_mode_error(
+                    options,
+                    D=D,
+                    C=C,
+                    electrode_area=electrode_area,
+                    ip0=ip0,
+                    ip0_scan_rate=ip0_scan_rate,
+                    ip0_sqrt_scan_rate_slope=ip0_sqrt_scan_rate_slope,
+                )
             )
     if mode == "direct":
         if not direct_ready:
             raise ValueError("Direct plateau-current mode requires D, C, and electrode area.")
-        kobs = (abs(ilim) / (n * F * float(electrode_area) * float(C))) ** 2 / (float(D) * n_prime)
+        kobs = (abs(ilim) / (n_cat * F * float(electrode_area) * float(C))) ** 2 / (float(D) * n_turn)
         return "direct", "kobs = (|ilim| / (n F A C_cat))^2 / (D n')", float(kobs)
     if mode == "slope normalized":
         if not slope_ready:
             raise ValueError("Slope-normalized plateau-current mode requires 'ip0 sqrt scan rate slope'.")
         kobs = (
             0.446 * abs(ilim) / abs(float(ip0_sqrt_scan_rate_slope))
-            * np.sqrt(n * F / (R * temperature))
-        ) ** 2 / n_prime
-        return "slope normalized", "kobs = (0.446 |ilim|/|s_ip0| sqrt(nF/RT))^2 / n'", float(kobs)
+            * np.sqrt(n_cat * F / (R * temperature))
+        ) ** 2 / n_turn
+        return "slope normalized", "kobs = (0.446 |ilim|/|s_ip0| sqrt(n F/RT))^2 / n'", float(kobs)
     if mode == "normalized":
         if not normalized_ready:
             raise ValueError("Normalized plateau-current mode requires ip0 and ip0 scan rate.")
         kobs = (
             0.446 * abs(ilim / float(ip0))
-            * np.sqrt(n * F * float(ip0_scan_rate) / (R * temperature))
-        ) ** 2 / n_prime
-        return "normalized", "kobs = (0.446 |ilim/ip0| sqrt(nFv_ip0/RT))^2 / n'", float(kobs)
+            * np.sqrt(n_cat * F * float(ip0_scan_rate) / (R * temperature))
+        ) ** 2 / n_turn
+        return "normalized", "kobs = (0.446 |ilim/ip0| sqrt(n F v_ip0/RT))^2 / n'", float(kobs)
     raise ValueError("'formula mode' must be 'auto', 'normalized', 'slope normalized', or 'direct'.")
+
+
+def _format_plateau_kobs_equation(mode, values):
+    mode = str(mode or "").strip().lower().replace("-", " ")
+    n_cat = float(values.get("catalyst electrons", 1))
+    n_turn = float(values.get("turnover electrons", 1))
+    temperature = float(values.get("temperature", 298))
+    ilim = values.get("ilim")
+    ip0 = values.get("ip0")
+    ip0_scan_rate = values.get("ip0 scan rate")
+    ip0_slope = values.get("ip0 sqrt scan rate slope")
+    D = values.get("D")
+    C = values.get("C")
+    area = values.get("electrode area")
+
+    definitions_latex = (
+        rf"n={n_cat:g}\ (n_{{\mathrm{{cat}}}},\ \mathrm{{catalyst\ redox-wave\ electron\ count}}),\quad "
+        rf"n^{{\prime}}={n_turn:g}\ (n_{{\mathrm{{turn}}}},\ \mathrm{{turnover\ electron\ count}}),\quad "
+        rf"T={temperature:g}\ \mathrm{{K}}"
+    )
+    definitions_text = (
+        f"n = {n_cat:g} (n_cat, catalyst redox-wave electron count), "
+        f"n' = {n_turn:g} (n_turn, turnover electron count), "
+        f"T = {temperature:g} K"
+    )
+
+    if mode == "direct":
+        symbolic_latex = (
+            r"k_{\mathrm{obs}}="
+            r"\frac{1}{D n^{\prime}}"
+            r"\left(\frac{|i_{\lim}|}{nFSC}\right)^2"
+        )
+        resolved_latex = (
+            r"k_{\mathrm{obs}}="
+            rf"\frac{{1}}{{({0 if D is None else D:g})({n_turn:g})}}"
+            rf"\left(\frac{{|{0 if ilim is None else ilim:g}|}}"
+            rf"{{({n_cat:g})F({0 if area is None else area:g})({0 if C is None else C:g})}}\right)^2"
+        )
+        symbolic = "kobs = (|ilim| / (n F A C))^2 / (D n')"
+        resolved = (
+            f"kobs = (|{_equation_value_text(ilim, 'A')}| / "
+            f"({n_cat:g} * F * {_equation_value_text(area, 'cm^2')} * "
+            f"{_equation_value_text(C, 'mol/cm^3')}))^2 / "
+            f"({_equation_value_text(D, 'cm^2/s')} * {n_turn:g})"
+        )
+        definitions_latex += (
+            rf",\quad D={0 if D is None else D:g}\ \mathrm{{cm^2/s}},\quad "
+            rf"S={0 if area is None else area:g}\ \mathrm{{cm^2}},\quad "
+            rf"C={0 if C is None else C:g}\ \mathrm{{mol/cm^3}}"
+        )
+        definitions_text += (
+            f", D = {_equation_value_text(D, 'cm^2/s')}, "
+            f"A = {_equation_value_text(area, 'cm^2')}, "
+            f"C = {_equation_value_text(C, 'mol/cm^3')}"
+        )
+    elif mode == "slope normalized":
+        symbolic_latex = (
+            r"k_{\mathrm{obs}}="
+            r"\frac{1}{n^{\prime}}"
+            r"\left(0.446\frac{|i_{\lim}|}{|s_{i_{p,0}}|}"
+            r"\sqrt{\frac{nF}{RT}}\right)^2"
+        )
+        resolved_latex = (
+            r"k_{\mathrm{obs}}="
+            rf"\frac{{1}}{{{n_turn:g}}}"
+            rf"\left(0.446\frac{{|{0 if ilim is None else ilim:g}|}}"
+            rf"{{|{0 if ip0_slope is None else ip0_slope:g}|}}"
+            rf"\sqrt{{\frac{{({n_cat:g})F}}{{R({temperature:g})}}}}\right)^2"
+        )
+        symbolic = "kobs = (0.446 |ilim|/|s_ip0| sqrt(n F/RT))^2 / n'"
+        resolved = (
+            f"kobs = (0.446 * |{_equation_value_text(ilim, 'A')}| / "
+            f"|{_equation_value_text(ip0_slope, 'A/(V/s)^1/2')}| "
+            f"* sqrt({n_cat:g} * F / (R * {temperature:g} K)))^2 / {n_turn:g}"
+        )
+        definitions_latex += rf",\quad s_{{i_{{p,0}}}}={0 if ip0_slope is None else ip0_slope:g}"
+        definitions_text += f", s_ip0 = {_equation_value_text(ip0_slope, 'A/(V/s)^1/2')}"
+    else:
+        symbolic_latex = (
+            r"k_{\mathrm{obs}}="
+            r"\frac{1}{n^{\prime}}"
+            r"\left(0.446\left|\frac{i_{\lim}}{i_{p,0}}\right|"
+            r"\sqrt{\frac{nF\nu_{i_{p,0}}}{RT}}\right)^2"
+        )
+        resolved_latex = (
+            r"k_{\mathrm{obs}}="
+            rf"\frac{{1}}{{{n_turn:g}}}"
+            rf"\left(0.446\left|\frac{{{0 if ilim is None else ilim:g}}}"
+            rf"{{{0 if ip0 is None else ip0:g}}}\right|"
+            rf"\sqrt{{\frac{{({n_cat:g})F({0 if ip0_scan_rate is None else ip0_scan_rate:g})}}"
+            rf"{{R({temperature:g})}}}}\right)^2"
+        )
+        symbolic = "kobs = (0.446 |ilim/ip0| sqrt(n F v_ip0/RT))^2 / n'"
+        resolved = (
+            f"kobs = (0.446 * |{_equation_value_text(ilim, 'A')} / "
+            f"{_equation_value_text(ip0, 'A')}| "
+            f"* sqrt({n_cat:g} * F * {_equation_value_text(ip0_scan_rate, 'V/s')} "
+            f"/ (R * {temperature:g} K)))^2 / {n_turn:g}"
+        )
+        definitions_latex += rf",\quad \nu_{{i_{{p,0}}}}={0 if ip0_scan_rate is None else ip0_scan_rate:g}\ \mathrm{{V/s}}"
+        definitions_text += f", v_ip0 = {_equation_value_text(ip0_scan_rate, 'V/s')}"
+
+    return {
+        "symbolic latex": symbolic_latex,
+        "resolved latex": resolved_latex,
+        "compact latex": resolved_latex,
+        "definitions latex": definitions_latex,
+        "symbolic": symbolic,
+        "resolved": resolved,
+        "compact": resolved,
+        "definitions": definitions_text,
+    }
+
+
+def _display_plateau_kobs_equation(mode, values, resolved=False, compact=False):
+    equation = _format_plateau_kobs_equation(mode, values)
+    return _display_analysis_equation(
+        r"\text{Plateau }k_{\mathrm{obs}}\text{ equation:}",
+        "Plateau kobs equation",
+        equation,
+        resolved=resolved,
+        compact=compact,
+    )
+
+
+def _plateau_scaled_value(value, unit, options=None, *, scientific=False):
+    options = {} if options is None else options
+    if value is None:
+        return ""
+    try:
+        if pd.isna(value):
+            return ""
+    except (TypeError, ValueError):
+        pass
+    sig_figs = options.get("sig figs", 4)
+    if scientific:
+        return _format_sevcik_value(value, sig_figs=sig_figs, unit=unit, scientific=True)
+    try:
+        scaled, display_unit = scale_value(float(value), unit, selected_unit="auto")
+        return _format_sevcik_value(scaled, sig_figs=sig_figs, unit=display_unit)
+    except Exception:
+        return _format_sevcik_value(value, sig_figs=sig_figs, unit=unit)
+
+
+def _format_plateau_display_value(key, value, options=None):
+    key = str(key).strip().lower()
+    if value is None:
+        return ""
+    try:
+        if pd.isna(value):
+            return ""
+    except (TypeError, ValueError):
+        pass
+
+    if key in {"ilim", "ip0"}:
+        return _plateau_scaled_value(value, "A", options)
+    if key in {"ip0 scan rate", "scan rate"}:
+        return _plateau_scaled_value(value, "V/s", options)
+    if key == "kobs":
+        return _format_sevcik_value(value, sig_figs=(options or {}).get("sig figs", 4), unit="s^-1")
+    if key == "temperature":
+        return _format_sevcik_value(value, sig_figs=(options or {}).get("sig figs", 4), unit="K")
+    if key == "d":
+        return _format_sevcik_value(value, sig_figs=(options or {}).get("sig figs", 4), unit="cm^2/s", scientific=True)
+    if key == "c":
+        return _format_sevcik_value(value, sig_figs=(options or {}).get("sig figs", 4), unit="mol/cm^3", scientific=True)
+    if key == "electrode area":
+        return _format_sevcik_value(value, sig_figs=(options or {}).get("sig figs", 4), unit="cm^2")
+    if key == "ip0 sqrt scan rate slope":
+        return _format_sevcik_value(
+            value,
+            sig_figs=(options or {}).get("sig figs", 4),
+            unit="A/(V/s)^1/2",
+            scientific=True,
+        )
+    if key in {"ilim/ip0", "plateau slope metric", "ip0 fit r2"}:
+        return _format_fit_model_display_value(value, sig_figs=(options or {}).get("sig figs", 4))
+    if isinstance(value, (int, float, np.integer, np.floating)):
+        return _format_fit_model_display_value(value, sig_figs=(options or {}).get("sig figs", 4))
+    if isinstance(value, (list, tuple)):
+        return ", ".join(str(item) for item in value)
+    return str(value)
+
+
+def _format_plateau_tangent(tanline, options=None):
+    if tanline is None:
+        return ""
+    try:
+        if isinstance(tanline, dict):
+            slope = tanline.get("slope")
+            intercept = tanline.get("intercept")
+        else:
+            slope, intercept = list(tanline)[:2]
+    except Exception:
+        return ""
+    return _format_fowa_line(slope, intercept, (options or {}).get("sig figs", 4))
+
+
+def _plateau_common_table_value(df, column, indices=None):
+    if df is None or df.empty or column not in df:
+        return ""
+    source = df
+    if indices is not None:
+        valid_indices = [index for index in indices if index in df.index]
+        if valid_indices:
+            source = df.loc[valid_indices]
+    values = [
+        str(value)
+        for value in source[column].tolist()
+        if value is not None and str(value).strip() != ""
+    ]
+    if not values:
+        return ""
+    unique = list(dict.fromkeys(values))
+    return unique[0] if len(unique) == 1 else "per CV"
+
+
+def _plateau_validation_status(selection):
+    status = selection.get("validation status")
+    if status:
+        return status
+    valid = selection.get("valid plateau")
+    if valid is None:
+        return "not tested"
+    return "passed" if bool(valid) else "failed"
+
+
+def _plateau_summary_display_table(row, selection, warnings_list, options=None):
+    rows = [
+        ("Formula Mode", row.get("formula mode")),
+        ("Plateau Validation", _plateau_validation_status(selection)),
+        ("ilim", f"{_format_plateau_display_value('ilim', row.get('ilim'), options)} ({row.get('ilim source')})"),
+    ]
+    if row.get("ip0") is not None:
+        rows.append(
+            (
+                "ip0",
+                f"{_format_plateau_display_value('ip0', row.get('ip0'), options)} ({row.get('ip0 source')})",
+            )
+        )
+    if row.get("ip0 scan rate") is not None:
+        rows.append(("ip0 Scan Rate", _format_plateau_display_value("ip0 scan rate", row.get("ip0 scan rate"), options)))
+    if row.get("ip0 sqrt scan rate slope") is not None:
+        rows.append(
+            (
+                "ip0 sqrt(scan rate) slope",
+                _format_plateau_display_value("ip0 sqrt scan rate slope", row.get("ip0 sqrt scan rate slope"), options),
+            )
+        )
+    if row.get("D") is not None:
+        rows.append(("D", _format_plateau_display_value("D", row.get("D"), options)))
+    if row.get("C") is not None:
+        rows.append(("C", _format_plateau_display_value("C", row.get("C"), options)))
+    if row.get("electrode area") is not None:
+        rows.append(("Electrode Area", _format_plateau_display_value("electrode area", row.get("electrode area"), options)))
+    rows.extend([
+        ("Catalyst Electrons", _format_plateau_display_value("catalyst electrons", row.get("catalyst electrons"), options)),
+        ("Turnover Electrons", _format_plateau_display_value("turnover electrons", row.get("turnover electrons"), options)),
+        ("Temperature", _format_plateau_display_value("temperature", row.get("temperature"), options)),
+    ])
+    if warnings_list:
+        rows.append(("Warnings", " | ".join(str(item) for item in warnings_list)))
+    return pd.DataFrame([{"Setting": key, "Value": value} for key, value in rows])
+
+
+def _plateau_compact_result_row(row, options=None):
+    result = {
+        "kobs": _format_plateau_display_value("kobs", row.get("kobs"), options),
+        "ilim": _format_plateau_display_value("ilim", row.get("ilim"), options),
+    }
+    if row.get("ilim tangent"):
+        result["ilim tangent"] = row.get("ilim tangent")
+    mode = row.get("formula mode")
+    if mode == "normalized":
+        result["ip0"] = _format_plateau_display_value("ip0", row.get("ip0"), options)
+        if row.get("ip0") not in (None, 0):
+            result["ilim/ip0"] = _format_plateau_display_value("ilim/ip0", row.get("ilim") / row.get("ip0"), options)
+        if row.get("ip0 tangent"):
+            result["ip0 tangent"] = row.get("ip0 tangent")
+        result["ip0 scan rate"] = _format_plateau_display_value("ip0 scan rate", row.get("ip0 scan rate"), options)
+    elif mode == "slope normalized":
+        result["ip0 sqrt scan rate slope"] = _format_plateau_display_value(
+            "ip0 sqrt scan rate slope",
+            row.get("ip0 sqrt scan rate slope"),
+            options,
+        )
+        result["ip0 fit r2"] = _format_plateau_display_value("ip0 fit r2", row.get("ip0 fit r2"), options)
+    elif mode == "direct":
+        result["D"] = _format_plateau_display_value("D", row.get("D"), options)
+        result["C"] = _format_plateau_display_value("C", row.get("C"), options)
+        result["electrode area"] = _format_plateau_display_value("electrode area", row.get("electrode area"), options)
+    return result
+
+
+def _plateau_numeric_result_row(row):
+    result = {
+        "plateau validation": row.get("plateau validation"),
+        "formula mode": row.get("formula mode"),
+        "catalyst electrons": row.get("catalyst electrons"),
+        "turnover electrons": row.get("turnover electrons"),
+        "temperature": row.get("temperature"),
+        "kobs": row.get("kobs"),
+        "ilim": row.get("ilim"),
+        "ilim source": row.get("ilim source"),
+    }
+    if row.get("ilim tangent"):
+        result["ilim tangent"] = row.get("ilim tangent")
+    mode = row.get("formula mode")
+    if mode == "normalized":
+        result["ip0"] = row.get("ip0")
+        result["ip0 source"] = row.get("ip0 source")
+        if row.get("ip0") not in (None, 0):
+            result["ilim/ip0"] = row.get("ilim") / row.get("ip0")
+        if row.get("ip0 tangent"):
+            result["ip0 tangent"] = row.get("ip0 tangent")
+        result["ip0 scan rate"] = row.get("ip0 scan rate")
+    elif mode == "slope normalized":
+        result["ip0 sqrt scan rate slope"] = row.get("ip0 sqrt scan rate slope")
+        result["ip0 fit r2"] = row.get("ip0 fit r2")
+    elif mode == "direct":
+        result["D"] = row.get("D")
+        result["C"] = row.get("C")
+        result["electrode area"] = row.get("electrode area")
+    return result
+
+
+def _plateau_units_map():
+    return {
+        "kobs": "s^-1",
+        "ilim": "A",
+        "ilim tangent": "A/V, A",
+        "ip0": "A",
+        "ip0 tangent": "A/V, A",
+        "ilim/ip0": "",
+        "ip0 scan rate": "V/s",
+        "ip0 sqrt scan rate slope": "A/(V/s)^1/2",
+        "ip0 fit r2": "",
+        "D": "cm^2/s",
+        "C": "mol/cm^3",
+        "electrode area": "cm^2",
+        "catalyst electrons": "dimensionless",
+        "turnover electrons": "dimensionless",
+        "temperature": "K",
+    }
+
+
+def _plateau_result_table(row, options=None, *, transpose=False):
+    compact = _plateau_compact_result_row(row, options)
+    if transpose:
+        return pd.DataFrame(
+            [{"Metric": key, "Value": value} for key, value in compact.items()]
+        )
+    table = pd.DataFrame([_plateau_numeric_result_row(row)])
+    table.attrs["units"] = _plateau_units_map()
+    return table
+
+
+def _plateau_results_display_table(table, options=None):
+    options = {} if options is None else options
+    if set(table.columns) == {"Metric", "Value"}:
+        return table.copy()
+    return _results_display_table_with_unit_headers(
+        table,
+        options,
+        value_formatter=_format_plateau_display_value,
+    )
+
+
+def _display_plateau_table(title, table, options=None):
+    options = options or {}
+    plain_display = not _rich_table_output_enabled(options)
+    if plain_display:
+        print(f"\n### {title} ###")
+    if options.get("pretty print", True):
+        display_object_table(table, options, title=title, plain_title=False)
+    else:
+        with pd.option_context(
+            "display.max_colwidth", None,
+            "display.max_columns", None,
+            "display.max_rows", None,
+            "display.width", None,
+            "display.expand_frame_repr", False,
+        ):
+            print(table.to_string(index=False))
+    return table
+
+
+def _display_plateau_results_table(title, table, options=None):
+    options = {} if options is None else options
+    plain_display = not _rich_table_output_enabled(options)
+    if plain_display:
+        print(f"\n### {title} ###")
+    display_table = _plateau_results_display_table(table, options)
+    return _display_table(
+        table,
+        options,
+        title=title,
+        rich_table=display_table.rename(columns=_pretty_table_header_html_label),
+        plain_table=display_table,
+        escape=None,
+        index=False,
+        plain_title=False,
+    )
+
+
+def _is_plateau_nested_input(cvs):
+    if not isinstance(cvs, (list, tuple)) or not cvs:
+        return False
+    return all(isinstance(item, (list, tuple)) for item in cvs)
+
+
+def _normalize_plateau_group_mode(value):
+    return str(value or "auto").strip().lower().replace("_", " ").replace("-", " ")
+
+
+def _resolve_plateau_input_groups(cvs, options, *, allow_empty=False):
+    """Return grouped catalytic CVs, or None when the input should be one group."""
+    if allow_empty or cvs is None:
+        return None
+
+    if _is_plateau_nested_input(cvs):
+        groups = [list(group_items) for group_items in cvs]
+        for group_items in groups:
+            _coerce_plateau_cv_list(group_items, allow_empty=False)
+        return groups if len(groups) > 1 else None
+
+    cv_list = _coerce_plateau_cv_list(cvs, allow_empty=False)
+    if len(cv_list) <= 1:
+        return None
+
+    group_mode = _normalize_plateau_group_mode(options.get("group mode", "auto"))
+    if group_mode == "as given":
+        return None
+    if group_mode == "each":
+        return [[cv_obj] for cv_obj in cv_list]
+
+    group_by = options.get("group by", "species")
+    if group_by in (None, False, "", "none"):
+        return None
+    from .collection import group as group_objects
+
+    groups = group_objects(cv_list, group_by, {"print": False})
+    return groups if len(groups) > 1 else None
+
+
+def _plateau_condition_label(group_items, index):
+    names = [getattr(item, "name", f"CV {i + 1}") for i, item in enumerate(group_items)]
+    if len(names) == 1:
+        return names[0]
+    return f"Condition {index + 1}"
+
+
+def _plateau_group_compounds_label(group_items):
+    if not group_items:
+        return ""
+    cv_obj = group_items[0]
+    compounds = list(getattr(cv_obj, "compounds", []) or [])
+    concentrations = list(getattr(cv_obj, "concentrations", []) or [])
+    entries = []
+    for concentration, compound in zip(concentrations, compounds):
+        if concentration in (None, ""):
+            entries.append(str(compound))
+        else:
+            entries.append(f"{concentration} {compound}")
+    if not entries:
+        entries = [str(compound) for compound in compounds]
+    return ", ".join(entries)
+
+
+def _plateau_group_concentration_columns(groups):
+    first_items = [group_items[0] for group_items in groups if group_items]
+    if len(first_items) < 2:
+        return {}
+    varying_entries = _infer_varying_concentration_entries(first_items)
+    columns_by_index = {index: {} for index in range(len(groups))}
+    for entry in varying_entries:
+        species = entry["species"]
+        unit = entry["unit"] or "M"
+        occurrence = entry["occurrence"]
+        x_kind = "Mole Fraction" if unit == "x" else "Concentration"
+        column = f"{species} {x_kind} ({unit})"
+        for index, group_items in enumerate(groups):
+            if not group_items:
+                continue
+            columns_by_index[index][column] = _get_species_concentration(
+                group_items[0],
+                species,
+                default=0.0,
+                unit=unit,
+                occurrence=occurrence,
+            )
+    return columns_by_index
+
+
+def _plateau_result_row_from_child(child_result, condition, index, group_items=None, concentration_columns=None):
+    details = child_result.diagnostics.get("plateau details")
+    if isinstance(details, pd.DataFrame) and not details.empty:
+        detail_row = details.iloc[0].to_dict()
+        row = _plateau_numeric_result_row(detail_row)
+        row["cv / cvs used"] = detail_row.get("cv / cvs used", "")
+    else:
+        table = child_result.table
+        if isinstance(table, pd.DataFrame) and set(table.columns) == {"Metric", "Value"}:
+            row = dict(zip(table["Metric"], table["Value"]))
+        elif isinstance(table, pd.DataFrame) and not table.empty:
+            row = table.iloc[0].to_dict()
+        else:
+            row = {}
+        row.setdefault("cv / cvs used", "")
+    if group_items:
+        row["Compounds"] = _plateau_group_compounds_label(group_items)
+    if concentration_columns:
+        row.update(concentration_columns)
+    return {"condition": condition, **row}
+
+
+def _plateau_visible_context_column(column):
+    key = str(column).strip().lower()
+    if key in {"condition", "co2 %"}:
+        return True
+    if key.startswith("co2 ") and "%" in key:
+        return True
+    return False
+
+
+def _order_plateau_display_columns(df, metadata_columns):
+    metadata = [col for col in metadata_columns if col in df.columns]
+    operation_columns = [
+        "Plateau Validation",
+        "Formula Mode",
+        "Catalyst Electrons",
+        "Turnover Electrons",
+        "Temperature",
+        "ilim",
+        "ilim Source",
+        "ilim Tangent",
+        "ip0",
+        "ip0 Source",
+        "ip0 Tangent",
+        "ilim/ip0",
+        "ip0 Scan Rate",
+        "ip0 sqrt scan rate slope",
+        "ip0 Fit R2",
+        "D",
+        "C",
+        "Electrode Area",
+        "kobs",
+    ]
+    ordered = []
+    for column in metadata + operation_columns:
+        if column in df.columns and column not in ordered:
+            ordered.append(column)
+    ordered.extend([column for column in df.columns if column not in ordered])
+    return df.loc[:, ordered]
+
+
+def _plateau_grouped_result_tables(groups, result_rows, options):
+    full_result_table = pd.DataFrame(result_rows)
+    full_result_table.attrs["units"] = _plateau_units_map()
+
+    representatives = [group_items[0] for group_items in groups if group_items]
+    try:
+        summary_df, _meta = build_object_table(representatives, options)
+    except AttributeError:
+        summary_df = pd.DataFrame({
+            "Name": [getattr(obj, "name", f"CV {index + 1}") for index, obj in enumerate(representatives)],
+            "Plot Label": [getattr(obj, "name", f"CV {index + 1}") for index, obj in enumerate(representatives)],
+        })
+    analysis_df = pd.DataFrame([
+        _plateau_numeric_result_row(row)
+        for row in result_rows
+    ])
+    analysis_df = analysis_df.rename(
+        columns={column: pretty_table_column_label(column) for column in analysis_df.columns}
+    )
+
+    concentration_columns = [
+        column
+        for column in full_result_table.columns
+        if (
+            ("Concentration" in str(column) or "Mole Fraction" in str(column))
+            and not _plateau_visible_context_column(column)
+        )
+    ]
+    context_columns = [
+        column
+        for column in ["Compounds"]
+        if column in full_result_table.columns and column not in summary_df.columns
+    ]
+    context_df = full_result_table.loc[:, context_columns] if context_columns else pd.DataFrame()
+    concentration_df = full_result_table.loc[:, concentration_columns] if concentration_columns else pd.DataFrame()
+
+    display_source_df = pd.concat(
+        [
+            summary_df.reset_index(drop=True),
+            context_df.reset_index(drop=True),
+            analysis_df.reset_index(drop=True),
+            concentration_df.reset_index(drop=True),
+        ],
+        axis=1,
+    )
+    display_source_df = display_source_df.drop(
+        columns=[
+            column
+            for column in display_source_df.columns
+            if _plateau_visible_context_column(column)
+        ],
+        errors="ignore",
+    )
+    display_source_df = _order_plateau_display_columns(display_source_df, summary_df.columns)
+
+    keep_in_table = {"Name", "Plot Label", "Status"}
+    display_df, shared_summary = _split_shared_columns(
+        display_source_df,
+        keep_in_table=keep_in_table,
+    )
+    display_df.attrs["shared_summary"] = shared_summary
+    display_df.attrs["full_results_df"] = full_result_table
+    display_df.attrs["units"] = _plateau_units_map()
+    full_result_table.attrs["units"] = _plateau_units_map()
+    return display_df, full_result_table
+
+
+def _common_table_value(df, column):
+    if not isinstance(df, pd.DataFrame) or df.empty or column not in df:
+        return None
+    values = [
+        value
+        for value in df[column].tolist()
+        if value is not None and not (isinstance(value, float) and pd.isna(value)) and str(value).strip() != ""
+    ]
+    if not values:
+        return None
+    unique = list(dict.fromkeys(str(value) for value in values))
+    return unique[0] if len(unique) == 1 else "mixed"
+
+
+def _format_plateau_summary_value(setting, value, options=None):
+    if _is_table_blank(value):
+        return ""
+    key = str(setting).strip().lower()
+    format_key_map = {
+        "ip0": "ip0",
+        "ip0 scan rate": "ip0 scan rate",
+        "ip0 sqrt scan rate slope": "ip0 sqrt scan rate slope",
+        "d": "D",
+        "c": "C",
+        "electrode area": "electrode area",
+        "catalyst electrons": "catalyst electrons",
+        "turnover electrons": "turnover electrons",
+        "temperature": "temperature",
+    }
+    if key in format_key_map:
+        return _format_plateau_display_value(format_key_map[key], value, options)
+    if key.endswith("source") or key.endswith("mode") or key == "group by":
+        return str(value).replace("_", " ")
+    if isinstance(value, (int, float, np.integer, np.floating)):
+        return _format_fit_model_display_value(value, sig_figs=(options or {}).get("sig figs", 4))
+    if isinstance(value, (list, tuple)):
+        return ", ".join(str(item) for item in value)
+    return str(value)
+
+
+def _plateau_grouped_summary_display_table(display_df, full_result_table, group_mode, options, warnings_list):
+    shared_summary = dict(getattr(display_df, "attrs", {}).get("shared_summary", {}) or {})
+    rows = {
+        "Groups": len(full_result_table),
+        "Group Mode": group_mode,
+        "Group By": options.get("group by", "species"),
+        "Formula Mode": _common_table_value(full_result_table, "formula mode"),
+        "Plateau Validation": _common_table_value(full_result_table, "plateau validation"),
+        "ilim Source": _common_table_value(full_result_table, "ilim source"),
+        "ip0 Source": _common_table_value(full_result_table, "ip0 source"),
+    }
+    for key, value in shared_summary.items():
+        rows.setdefault(key, value)
+    rows = {
+        key: value
+        for key, value in rows.items()
+        if value is not None and str(value).strip() != ""
+    }
+    if warnings_list:
+        rows["Warnings"] = " | ".join(str(item) for item in warnings_list)
+    return pd.DataFrame([
+        {
+            "Setting": key,
+            "Value": _format_plateau_summary_value(key, value, options),
+        }
+        for key, value in rows.items()
+    ])
+
+
+def _add_condition_column(table, condition):
+    if not isinstance(table, pd.DataFrame) or table.empty:
+        return table
+    copy = table.copy()
+    copy.attrs = {}
+    copy.insert(0, "condition", condition)
+    return copy
+
+
+def _combine_plateau_diagnostic_tables(child_results, key, conditions):
+    tables = []
+    for result, condition in zip(child_results, conditions):
+        table = result.diagnostics.get(key)
+        if isinstance(table, pd.DataFrame) and not table.empty:
+            tables.append(_add_condition_column(table, condition))
+    if not tables:
+        return pd.DataFrame()
+    return pd.concat(tables, ignore_index=True)
+
+
+def _plateau_child_options(options):
+    child_options = dict(options)
+    child_options["group mode"] = "as given"
+    child_options["print"] = False
+    child_options["plot all"] = False
+    child_options["plot"] = False
+    for alias_key in (
+        "non catalytic current",
+        "non catalytic cv",
+        "non catalytic cvs",
+        "non catalytic guess potential",
+        "c",
+        "c unit",
+        "d",
+    ):
+        child_options.pop(alias_key, None)
+    return child_options
+
+
+def _plateau_ref_cvs_from_options(options):
+    shared_ref = options.get("non-catalytic cv")
+    ref_list = options.get("non-catalytic cvs")
+    if ref_list is not None and not isinstance(ref_list, (list, tuple)):
+        return [ref_list]
+    if ref_list is not None:
+        return list(ref_list)
+    if shared_ref is not None:
+        return [shared_ref]
+    return []
+
+
+def _unique_cvs_in_order(*collections):
+    result = []
+    seen = set()
+    for collection in collections:
+        for item in collection or []:
+            if id(item) in seen:
+                continue
+            result.append(item)
+            seen.add(id(item))
+    return result
+
+
+def _plateau_ip0_from_detail(detail_row, cv_obj):
+    ip0 = detail_row.get("ip0")
+    if ip0 is not None:
+        try:
+            if np.isfinite(float(ip0)) and float(ip0) != 0:
+                return float(ip0)
+        except (TypeError, ValueError):
+            pass
+    slope = detail_row.get("ip0 sqrt scan rate slope")
+    scan_rate = getattr(cv_obj, "scan_rate", None)
+    try:
+        if (
+            slope is not None
+            and np.isfinite(float(slope))
+            and scan_rate is not None
+            and np.isfinite(float(scan_rate))
+            and float(scan_rate) > 0
+        ):
+            return abs(float(slope)) * np.sqrt(float(scan_rate))
+    except (TypeError, ValueError):
+        pass
+    return None
+
+
+def _plateau_diagnostic_call_for_cv(cv_obj, options, row=None, *, role=None, potential=None):
+    call_options = dict(options)
+    call_options["print"] = False
+    call_options["print all"] = False
+    call_options["plot"] = True
+    call_options["plot all"] = True
+    if row is None:
+        row = {}
+    if potential is not None:
+        try:
+            if np.isfinite(float(potential)):
+                call_options.pop("guess potential", None)
+                call_options["exact potential"] = float(potential)
+        except (TypeError, ValueError):
+            pass
+    return {
+        "kind": "plateau_extraction",
+        "obj": cv_obj,
+        "options": call_options,
+        "role": role,
+        "current": row.get("ic", row.get("ip0", row.get("current"))),
+        "potential": row.get("extraction potential", potential),
+        "peak index": row.get("peak index"),
+        "baseline current": row.get("baseline current"),
+        "tangent slope": row.get("tangent slope"),
+        "tangent intercept": row.get("tangent intercept"),
+        "tangent start": row.get("tangent start"),
+        "fit indices": row.get("fit indices"),
+    }
+
+
+def _plateau_grouped_cv_diagnostic(groups, child_results, options):
+    ref_cvs = _plateau_ref_cvs_from_options(options)
+    cat_cvs = _unique_cvs_in_order(*groups)
+    diagnostic_cvs = _unique_cvs_in_order(ref_cvs, cat_cvs)
+    if not diagnostic_cvs:
+        return []
+
+    manual_ip0 = options.get("ip0")
+    if manual_ip0 is None:
+        manual_ip0 = options.get("non-catalytic current")
+
+    ip0_by_id = {}
+    diagnostic_calls = []
+    object_by_name = {getattr(obj, "name", ""): obj for obj in diagnostic_cvs}
+
+    for group_items, child_result in zip(groups, child_results):
+        details = child_result.diagnostics.get("plateau details")
+        if not isinstance(details, pd.DataFrame) or details.empty:
+            continue
+        detail_row = details.iloc[0].to_dict()
+        for cv_obj in group_items:
+            if manual_ip0 is not None:
+                ip0_by_id[id(cv_obj)] = float(manual_ip0)
+            else:
+                ip0_value = _plateau_ip0_from_detail(detail_row, cv_obj)
+                if ip0_value is not None:
+                    ip0_by_id[id(cv_obj)] = ip0_value
+
+    if ref_cvs:
+        for child_result in child_results:
+            details = child_result.diagnostics.get("plateau details")
+            if not isinstance(details, pd.DataFrame) or details.empty:
+                continue
+            detail_row = details.iloc[0].to_dict()
+            for ref_cv in ref_cvs:
+                if manual_ip0 is not None:
+                    ip0_by_id[id(ref_cv)] = float(manual_ip0)
+                else:
+                    ip0_value = _plateau_ip0_from_detail(detail_row, ref_cv)
+                    if ip0_value is not None:
+                        ip0_by_id[id(ref_cv)] = ip0_value
+            break
+
+    for child_result in child_results:
+        catalytic = child_result.diagnostics.get("catalytic currents")
+        if isinstance(catalytic, pd.DataFrame):
+            for _, row in catalytic.iterrows():
+                cv_obj = object_by_name.get(row.get("cv"))
+                if cv_obj is not None:
+                    diagnostic_calls.append(
+                        _plateau_diagnostic_call_for_cv(
+                            cv_obj,
+                            options,
+                            row.to_dict(),
+                            role="catalytic",
+                            potential=row.get("extraction potential"),
+                        )
+                    )
+        ip0_currents = child_result.diagnostics.get("ip0 currents")
+        if isinstance(ip0_currents, pd.DataFrame):
+            for _, row in ip0_currents.iterrows():
+                cv_obj = object_by_name.get(row.get("reference cv"))
+                if cv_obj is not None:
+                    diagnostic_calls.append(
+                        _plateau_diagnostic_call_for_cv(
+                            cv_obj,
+                            options,
+                            row.to_dict(),
+                            role="non-catalytic",
+                            potential=row.get("extraction potential"),
+                        )
+                    )
+
+    ip0_values = [ip0_by_id.get(id(cv_obj)) for cv_obj in diagnostic_cvs]
+    if any(value is None for value in ip0_values):
+        return _plot_plateau_cv_diagnostic(diagnostic_cvs, options, diagnostic_calls=diagnostic_calls)
+    return _plot_plateau_cv_diagnostic(
+        diagnostic_cvs,
+        options,
+        ip0_values=ip0_values,
+        diagnostic_calls=diagnostic_calls,
+    )
+
+
+def _plateau_ip0_values_for_diagnostic(cvs, ip0=None, ip0_slope=None, ip0_values=None):
+    if ip0_values is not None:
+        values = [float(value) for value in ip0_values]
+        if len(values) != len(cvs):
+            return None
+        return values
+    if ip0 is not None:
+        return [float(ip0)] * len(cvs)
+    if ip0_slope is None:
+        return None
+    values = []
+    for cv_obj in cvs:
+        scan_rate = getattr(cv_obj, "scan_rate", None)
+        if scan_rate is None or not np.isfinite(float(scan_rate)) or float(scan_rate) <= 0:
+            return None
+        values.append(abs(float(ip0_slope)) * np.sqrt(float(scan_rate)))
+    return values
+
+
+def _as_finite_float(value):
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError):
+        return None
+    return numeric if np.isfinite(numeric) else None
+
+
+def _as_index_array(value):
+    if value is None:
+        return np.asarray([], dtype=int)
+    try:
+        if pd.isna(value):
+            return np.asarray([], dtype=int)
+    except (TypeError, ValueError):
+        pass
+    try:
+        array = np.asarray(value, dtype=int)
+    except (TypeError, ValueError):
+        return np.asarray([], dtype=int)
+    return array[np.isfinite(array)] if np.issubdtype(array.dtype, np.floating) else array
+
+
+def _plot_plateau_normalized_extraction_diagnostics(
+    ax,
+    diagnostic_calls,
+    copy_by_original_id,
+    object_offsets,
+    ip0_by_original_id,
+    options,
+):
+    seen = set()
+
+    for call in diagnostic_calls or []:
+        if call.get("kind") != "plateau_extraction":
+            continue
+        original = call.get("obj")
+        obj_copy = copy_by_original_id.get(id(original))
+        ip0 = _as_finite_float(ip0_by_original_id.get(id(original)))
+        if original is None or obj_copy is None or ip0 in (None, 0):
+            continue
+
+        key = (id(original), call.get("role"), call.get("potential"))
+        if key in seen:
+            continue
+        seen.add(key)
+
+        diag_options = dict(call.get("options") or {})
+        diag_options["plot"] = False
+        diag_options["print"] = False
+        normalized_axis_options = dict(diag_options)
+        normalized_axis_options["y axis"] = "i/ip0"
+        normalized_axis_options["y unit"] = None
+        raw_current_options = dict(diag_options)
+        raw_current_options["y axis"] = "Current"
+        raw_current_options["y unit"] = "A"
+        offset = object_offsets.get(id(original), 0)
+
+        try:
+            x, y = original.analysis_segment_data(raw_current_options)
+        except Exception:
+            continue
+        x = np.asarray(x, dtype=float)
+        y = np.asarray(y, dtype=float)
+        if len(x) == 0 or len(y) == 0:
+            continue
+
+        try:
+            x_scale, _y_scale = obj_copy.xy_scale(normalized_axis_options)
+        except Exception:
+            x_scale = 1
+        y_scale = 1
+
+        slope = _as_finite_float(call.get("tangent slope"))
+        intercept = _as_finite_float(call.get("tangent intercept"))
+        peak_index = _as_finite_float(call.get("peak index"))
+        tangent_start = _as_finite_float(call.get("tangent start"))
+        current = _as_finite_float(call.get("current"))
+        baseline = _as_finite_float(call.get("baseline current"))
+        potential = _as_finite_float(call.get("potential"))
+        source = str(call.get("source", "")).strip().lower().replace("_", " ").replace("-", " ")
+        is_exact_anchor = (
+            "exact potential" in source
+            or (
+                source in {"", "peak current", "peak_current"}
+                and (call.get("options") or {}).get("exact potential") is not None
+            )
+        )
+
+        if slope is not None and intercept is not None:
+            if peak_index is not None and tangent_start is not None:
+                i0, i1 = sorted([int(tangent_start), int(peak_index)])
+                i0 = max(i0, 0)
+                i1 = min(i1, len(x) - 1)
+                x_tangent = x[i0:i1 + 1]
+            else:
+                fit_idx = _as_index_array(call.get("fit indices"))
+                fit_idx = fit_idx[(fit_idx >= 0) & (fit_idx < len(x))]
+                x_tangent = x[fit_idx] if len(fit_idx) else np.asarray([])
+            if len(x_tangent):
+                ax.plot(
+                    x_tangent * x_scale,
+                    ((slope * x_tangent + intercept) / ip0) * y_scale + offset,
+                    linestyle="--",
+                    color="tab:red",
+                    label="_nolegend_",
+                )
+
+        if potential is not None and current is not None and baseline is not None:
+            ax.vlines(
+                potential * x_scale,
+                (baseline / ip0) * y_scale + offset,
+                ((baseline + current) / ip0) * y_scale + offset,
+                color="tab:red",
+                linestyle="--",
+                label="_nolegend_",
+            )
+            if not is_exact_anchor:
+                ax.scatter(
+                    potential * x_scale,
+                    ((baseline + current) / ip0) * y_scale + offset,
+                    color="tab:blue",
+                    zorder=3,
+                    label="_nolegend_",
+                )
+        elif peak_index is not None and not is_exact_anchor:
+            idx = int(peak_index)
+            if 0 <= idx < len(x):
+                ax.scatter(
+                    x[idx] * x_scale,
+                    (y[idx] / ip0) * y_scale + offset,
+                    color="tab:blue",
+                    zorder=3,
+                    label="_nolegend_",
+                )
+
+        fit_idx = _as_index_array(call.get("fit indices"))
+        fit_idx = fit_idx[(fit_idx >= 0) & (fit_idx < len(x))]
+        if len(fit_idx):
+            ax.scatter(
+                x[fit_idx] * x_scale,
+                (y[fit_idx] / ip0) * y_scale + offset,
+                s=10,
+                color="tab:red",
+                zorder=3,
+                label="_nolegend_",
+            )
+
+
+def _plot_plateau_cv_diagnostic(
+    cvs,
+    options,
+    *,
+    ip0=None,
+    ip0_slope=None,
+    ip0_values=None,
+    diagnostic_calls=None,
+):
+    if not cvs:
+        return []
+    plot_options = _multiplot_options_from_mapping(options)
+    plot_options.update(_common_cv_plot_axis_options(cvs, plot_options))
+    plot_options.update({"plot": True, "print": False, "legend": True})
+    requested_axis = str(options.get("diagnostic y axis", "i/ip0")).strip().lower().replace(" ", "")
+    warnings_list = []
+
+    if requested_axis == "i/ip0":
+        resolved_ip0_values = _plateau_ip0_values_for_diagnostic(
+            cvs,
+            ip0=ip0,
+            ip0_slope=ip0_slope,
+            ip0_values=ip0_values,
+        )
+        if resolved_ip0_values is not None:
+            try:
+                normalized = [
+                    _copy_cv_with_normalized_current_axis(cv_obj, ip0_value, options)
+                    for cv_obj, ip0_value in zip(cvs, resolved_ip0_values)
+                ]
+                plot_options["y axis"] = "i/ip0"
+                plot_options["y unit"] = None
+                plot_options["ylabel"] = "$i / i_p^0$"
+                plot_options["plot all"] = False
+                multiplot(normalized, plot_options)
+                ax = plt.gca()
+                copy_by_original_id = {
+                    id(original): copy
+                    for original, copy in zip(cvs, normalized)
+                }
+                object_offsets = {
+                    id(obj): plot_options.get("offset", 0) * index
+                    for index, obj in enumerate(cvs)
+                }
+                ip0_by_original_id = {
+                    id(obj): ip0_value
+                    for obj, ip0_value in zip(cvs, resolved_ip0_values)
+                }
+                if diagnostic_calls:
+                    _plot_plateau_normalized_extraction_diagnostics(
+                        ax,
+                        diagnostic_calls,
+                        copy_by_original_id,
+                        object_offsets,
+                        ip0_by_original_id,
+                        options,
+                    )
+                    _plot_fowa_normalized_diagnostics(
+                        ax,
+                        diagnostic_calls,
+                        copy_by_original_id,
+                        object_offsets,
+                        options,
+                    )
+                _disable_scientific_offset(ax, axis="y")
+                return warnings_list
+            except Exception:
+                warnings_list.append("i/ip0 diagnostic requested but current normalization failed; plotted current.")
+        else:
+            warnings_list.append("i/ip0 diagnostic requested but ip0 could not be resolved")
+
+    plot_options["y axis"] = "Current"
+    plot_options.pop("ylabel", None)
+    if plot_options.get("y unit") is None:
+        plot_options["y unit"] = "auto"
+    plot_options["plot all"] = False
+    multiplot(cvs, plot_options)
+    _disable_scientific_offset(plt.gca(), axis="y")
+    return warnings_list
+
+
+def _plateau_current_grouped(groups, raw_options, options, *, group_mode=None):
+    group_mode = group_mode or _normalize_plateau_group_mode(options.get("group mode", "auto"))
+    child_options = _plateau_child_options(options)
+    child_results = []
+    conditions = []
+    for index, group_items in enumerate(groups):
+        condition = _plateau_condition_label(group_items, index)
+        conditions.append(condition)
+        child_results.append(plateau_current(group_items, child_options))
+
+    concentration_columns = _plateau_group_concentration_columns(groups)
+    result_rows = [
+        _plateau_result_row_from_child(
+            child_result,
+            condition,
+            index,
+            group_items=group_items,
+            concentration_columns=concentration_columns.get(index, {}),
+        )
+        for index, (child_result, condition, group_items) in enumerate(zip(child_results, conditions, groups))
+    ]
+    result_table, full_result_table = _plateau_grouped_result_tables(groups, result_rows, options)
+    details = _combine_plateau_diagnostic_tables(child_results, "plateau details", conditions)
+    catalytic = _combine_plateau_diagnostic_tables(child_results, "catalytic currents", conditions)
+    ip0_currents = _combine_plateau_diagnostic_tables(child_results, "ip0 currents", conditions)
+    warnings_list = list(dict.fromkeys(
+        warning
+        for child_result in child_results
+        for warning in child_result.warnings
+    ))
+
+    if options.get("plot all", False):
+        warnings_list.extend(
+            warning
+            for warning in _plateau_grouped_cv_diagnostic(groups, child_results, options)
+            if warning not in warnings_list
+        )
+        for child_result in child_results:
+            catalytic_table = child_result.diagnostics.get("catalytic currents")
+            selection = child_result.diagnostics.get("plateau selection")
+            if isinstance(catalytic_table, pd.DataFrame) and isinstance(selection, dict) and len(catalytic_table) > 1:
+                _plot_plateau_validation(catalytic_table, selection, options)
+
+    if options.get("print", True):
+        _display_plateau_table(
+            "Plateau Current Summary",
+            _plateau_grouped_summary_display_table(
+                result_table,
+                full_result_table,
+                group_mode,
+                options,
+                warnings_list,
+            ),
+            options,
+        )
+        formula_mode = _common_table_value(full_result_table, "formula mode")
+        if formula_mode and formula_mode != "mixed":
+            _display_plateau_kobs_equation(
+                formula_mode,
+                full_result_table.iloc[0].to_dict(),
+                resolved=False,
+                compact=options.get("print all", False),
+            )
+        _display_plateau_results_table("Plateau Current Results", result_table, options)
+        if options.get("print all", False):
+            if not details.empty:
+                _display_plateau_table("Plateau Current Diagnostics", details, options)
+
+    return analysis_result_from_table(
+        result_table,
+        analysis="plateau_current",
+        summary={
+            "groups": len(groups),
+            "group mode": group_mode,
+            "group by": options.get("group by", "species"),
+        },
+        diagnostics={
+            "groups": child_results,
+            "full results": full_result_table,
+            "plateau details": details,
+            "catalytic currents": catalytic,
+            "ip0 currents": ip0_currents,
+        },
+        warnings=warnings_list,
+    )
+
+
+def _disable_scientific_offset(ax, axis="y"):
+    try:
+        ax.ticklabel_format(axis=axis, style="plain", useOffset=False)
+    except Exception:
+        return
+
+
+def _scale_array_for_display_unit(values, unit):
+    array = np.asarray(values, dtype=float)
+    finite = array[np.isfinite(array)]
+    if finite.size == 0 or not unit:
+        return array, unit
+    reference = float(np.nanmax(np.abs(finite)))
+    if reference == 0:
+        return array, unit
+    try:
+        scaled_reference, display_unit = scale_value(reference, unit, selected_unit="auto")
+    except Exception:
+        return array, unit
+    factor = float(scaled_reference) / reference
+    return array * factor, display_unit
+
+
+def _scale_value_to_display_unit(value, source_unit, display_unit):
+    try:
+        scaled, _unit = scale_value(float(value), source_unit, selected_unit=display_unit)
+        return float(scaled)
+    except Exception:
+        return float(value)
 
 
 def _plot_plateau_validation(ic_df, selection, options):
     if ic_df is None or ic_df.empty or len(ic_df) < 2:
         return
     plt.figure()
+    ax = plt.gca()
     x = ic_df["sqrt scan rate"].astype(float).to_numpy()
     y = ic_df["abs ic"].astype(float).to_numpy()
+    y, y_unit = _scale_array_for_display_unit(y, "A")
     plt.scatter(x, y, color="0.55", label="all")
     accepted = selection.get("accepted indices", [])
     if accepted:
@@ -6009,48 +7733,63 @@ def _plot_plateau_validation(ic_df, selection, options):
         sslope, sintercept, _ = _plateau_linear_fit_metric(sx, sy)
         plt.plot(line_x, sslope * line_x + sintercept, color="black", linestyle="-", label="accepted fit")
     plt.xlabel("sqrt(scan rate) / (V/s)^1/2")
-    plt.ylabel("|i_c| / A")
+    plt.ylabel(f"|i_c| / {_format_plain_unit_label(y_unit)}")
     plt.title("Plateau-current validation")
     plt.legend()
+    _disable_scientific_offset(ax, axis="y")
 
 
 def _plot_ip0_sqrt_fit(ip0_df, slope, options):
     if ip0_df is None or ip0_df.empty or len(ip0_df) < 2:
         return
     plt.figure()
+    ax = plt.gca()
     x = ip0_df["sqrt scan rate"].astype(float).to_numpy()
     y = ip0_df["abs ip0"].astype(float).to_numpy()
+    y, y_unit = _scale_array_for_display_unit(y, "A")
     plt.scatter(x, y, color=options.get("color", "black"))
     line_x = np.linspace(0, np.max(x), 100)
-    plt.plot(line_x, abs(slope) * line_x, color="tab:red", linestyle="--")
+    slope_y = _scale_value_to_display_unit(abs(slope), "A", y_unit)
+    plt.plot(line_x, slope_y * line_x, color="tab:red", linestyle="--")
     plt.xlabel("sqrt(scan rate) / (V/s)^1/2")
-    plt.ylabel("|i_p0| / A")
+    plt.ylabel(f"|i_p0| / {_format_plain_unit_label(y_unit)}")
     plt.title("ip0 vs sqrt(scan rate)")
+    _disable_scientific_offset(ax, axis="y")
 
 
 def plateau_current(cvs, options=None):
     """Analyze catalytic plateau current from one CV or a CV group.
-    
+
     Parameters
     ----------
     cvs : cv or sequence of cv
         Catalytic CV object or objects used for plateau analysis.
     options : dict or PlateauCurrentOptions, optional
         Plateau, normalization, Sevcik, print, and plot options. See ``e.describe_options("plateau_current")``.
-    
+
     Returns
     -------
     pandas.DataFrame
         Plateau-current summary table.
-    
+
     Examples
     --------
     >>> result = e.plateau_current(cvs, {"non-catalytic cvs": blanks, "plot all": True})
     """
     raw_options = options
     typed_options = PlateauCurrentOptions.from_options(options)
-    options = typed_options.to_legacy_dict()
+    options = typed_options.to_options_dict()
+    _apply_diagnostic_y_axis_alias(raw_options, options, "plateau_current")
     manual_ilim = _resolve_manual_ilim(options)
+    explicit_nested = _is_plateau_nested_input(cvs)
+    groups = _resolve_plateau_input_groups(cvs, options, allow_empty=manual_ilim is not None)
+    if groups is not None:
+        return _plateau_current_grouped(
+            groups,
+            raw_options,
+            options,
+            group_mode="nested" if explicit_nested else _normalize_plateau_group_mode(options.get("group mode", "auto")),
+        )
     cat_cvs = _coerce_plateau_cv_list(cvs, allow_empty=manual_ilim is not None)
     cat_potential_series = _resolve_complex_potential_series_map(
         raw_options,
@@ -6099,9 +7838,38 @@ def plateau_current(cvs, options=None):
     ip0_fit_r2 = np.nan
     ip0_df = pd.DataFrame()
     ref_extraction_options = options
+    cat_extraction_options = options
+    single_overlay = bool(options.get("plot all", False) and len(cat_cvs) == 1 and len(ref_cvs) == 1)
+    diagnostic_warnings = []
+    peak_diagnostic_calls = []
+    normalized_diagnostic_requested = (
+        bool(options.get("plot all", False))
+        and str(options.get("diagnostic y axis", "i/ip0")).strip().lower().replace(" ", "") == "i/ip0"
+    )
+
+    if single_overlay:
+        try:
+            combined_cvs = ref_cvs + cat_cvs
+            combined_plot_options = _multiplot_options_from_mapping(options)
+            combined_axis_options = _common_cv_plot_axis_options(combined_cvs, combined_plot_options)
+            ref_extraction_options = dict(options)
+            ref_extraction_options.update(combined_axis_options)
+            cat_extraction_options = dict(options)
+            cat_extraction_options.update(combined_axis_options)
+        except Exception:
+            ref_extraction_options = options
+            cat_extraction_options = options
+
+    if normalized_diagnostic_requested:
+        ref_extraction_options = dict(ref_extraction_options)
+        ref_extraction_options["_plot_peak_diagnostics"] = False
+        ref_extraction_options["_diagnostic_calls"] = peak_diagnostic_calls
+        cat_extraction_options = dict(cat_extraction_options)
+        cat_extraction_options["_plot_peak_diagnostics"] = False
+        cat_extraction_options["_diagnostic_calls"] = peak_diagnostic_calls
 
     if ip0 is None and ip0_slope is None and ref_cvs:
-        if options.get("plot all", False):
+        if options.get("plot all", False) and not single_overlay and not normalized_diagnostic_requested:
             try:
                 ref_plot_options = _multiplot_options_from_mapping(options)
                 ref_plot_options.update(_common_cv_plot_axis_options(ref_cvs, ref_plot_options))
@@ -6119,24 +7887,19 @@ def plateau_current(cvs, options=None):
             y = ip0_df["abs ip0"].astype(float).to_numpy()
             ip0_slope, _pred, ip0_fit_r2, _resid = _plateau_fit_forced_origin(x, y)
             ip0_source = "non-catalytic cvs"
-            if options.get("plot all", False):
+            if options.get("plot all", False) and not normalized_diagnostic_requested:
                 _plot_ip0_sqrt_fit(ip0_df, ip0_slope, options)
         else:
             ip0 = float(ip0_df["ip0"].iloc[0])
             ip0_scan_rate = float(ip0_df["scan rate"].iloc[0])
             ip0_source = "non-catalytic cv"
 
-    cat_extraction_options = options
-    if options.get("plot all", False) and cat_cvs:
+    if options.get("plot all", False) and cat_cvs and not single_overlay:
         try:
             cat_plot_options = _multiplot_options_from_mapping(options)
-            cat_plot_options.update(_common_cv_plot_axis_options(cat_cvs, cat_plot_options))
-            cat_extraction_options = dict(options)
-            cat_extraction_options.update(
-                _common_cv_plot_axis_options(cat_cvs, cat_plot_options)
-            )
-            cat_plot_options.update({"plot": True, "print": False, "legend": True})
-            multiplot(cat_cvs, cat_plot_options)
+            cat_axis_options = _common_cv_plot_axis_options(cat_cvs, cat_plot_options)
+            cat_extraction_options = dict(cat_extraction_options)
+            cat_extraction_options.update(cat_axis_options)
         except Exception:
             pass
 
@@ -6155,9 +7918,22 @@ def plateau_current(cvs, options=None):
             "intercept": np.nan,
             "slope metric": np.nan,
             "valid plateau": True,
+            "validation status": "manual",
             "warnings": [],
         }
         ilim_source = "manual"
+
+    if options.get("plot all", False) and cat_cvs:
+        diagnostic_cvs = _unique_cvs_in_order(ref_cvs, cat_cvs) if normalized_diagnostic_requested else cat_cvs
+        diagnostic_warnings.extend(
+            _plot_plateau_cv_diagnostic(
+                diagnostic_cvs,
+                options,
+                ip0=ip0,
+                ip0_slope=ip0_slope,
+                diagnostic_calls=peak_diagnostic_calls,
+            )
+        )
 
     temperature = _resolve_temperature(cat_cvs, ref_cvs, options)
     D = options.get("D")
@@ -6179,13 +7955,21 @@ def plateau_current(cvs, options=None):
         C=C,
         electrode_area=electrode_area,
     )
+    ilim_tangent = _plateau_common_table_value(
+        ic_df,
+        "ilim tangent",
+        selection.get("accepted indices"),
+    )
+    ip0_tangent = _plateau_common_table_value(ip0_df, "ip0 tangent")
 
     row = {
         "cv / cvs used": ", ".join([getattr(item, "name", "CV") for item in cat_cvs]),
         "ilim": ilim,
         "ilim source": ilim_source,
+        "ilim tangent": ilim_tangent,
         "ilim average method": options.get("plateau average method"),
         "valid plateau": selection["valid plateau"],
+        "plateau validation": _plateau_validation_status(selection),
         "plateau warning": " | ".join(selection.get("warnings", [])),
         "catalytic scan rates": ic_df["scan rate"].tolist() if not ic_df.empty else [float(getattr(item, "scan_rate", np.nan)) for item in cat_cvs],
         "catalytic sqrt scan rates": ic_df["sqrt scan rate"].tolist() if not ic_df.empty else [],
@@ -6196,6 +7980,7 @@ def plateau_current(cvs, options=None):
         "plateau slope metric": selection.get("slope metric"),
         "ip0": ip0,
         "ip0 source": ip0_source,
+        "ip0 tangent": ip0_tangent,
         "ip0 scan rate": ip0_scan_rate,
         "ip0 sqrt scan rate slope": ip0_slope,
         "ip0 fit r2": ip0_fit_r2,
@@ -6206,42 +7991,82 @@ def plateau_current(cvs, options=None):
         "electrode area": electrode_area,
         "catalyst electrons": float(options.get("catalyst electrons", 1)),
         "turnover electrons": float(options.get("turnover electrons", 1)),
+        "temperature": temperature,
         "kobs": kobs,
     }
-    display_df = pd.DataFrame([row])
-    display_df.attrs["catalytic currents"] = ic_df
-    display_df.attrs["ip0 currents"] = ip0_df
+    warnings_list = list(dict.fromkeys(
+        str(item)
+        for item in [*diagnostic_warnings, *selection.get("warnings", [])]
+        if item
+    ))
+    if ilim_source == "manual":
+        warnings_list.append("ilim was provided manually; catalytic current extraction was not performed.")
+    if ip0_source == "manual":
+        warnings_list.append("ip0 was provided manually; non-catalytic CV extraction was not performed.")
+    if ip0_source == "non-catalytic cv" and ip0_scan_rate is None:
+        warnings_list.append("ip0 scan rate is unavailable; normalized formula mode cannot be used.")
+    warnings_list = list(dict.fromkeys(warnings_list))
+
+    details_df = pd.DataFrame([row])
+    details_df.attrs["catalytic currents"] = ic_df
+    details_df.attrs["ip0 currents"] = ip0_df
+    result_table = _plateau_result_table(
+        row,
+        options,
+        transpose=len(cat_cvs) <= 1,
+    )
 
     if options.get("print", True):
-        print("### Plateau Current Summary ###")
-        print(f"formula mode: {mode}")
-        print(f"valid plateau: {selection['valid plateau']}")
-        print(f"ilim: {ilim:.6g} A ({ilim_source})")
-        if ip0_slope is not None:
-            print(f"ip0 sqrt scan rate slope: {ip0_slope:.6g}")
-        elif ip0 is not None:
-            print(f"ip0: {ip0:.6g} A")
-        display_object_table(display_df)
+        _display_plateau_table(
+            "Plateau Current Summary",
+            _plateau_summary_display_table(row, selection, warnings_list, options),
+            options,
+        )
+        _display_plateau_kobs_equation(
+            mode,
+            row,
+            resolved=False,
+            compact=options.get("print all", False),
+        )
+        _display_plateau_results_table("Plateau Current Results", result_table, options)
+        if options.get("print all", False):
+            _display_plateau_table("Plateau Current Diagnostics", details_df, options)
 
-    if options.get("plot all", False) or (options.get("plot", True) and len(ic_df) > 1):
+    if (options.get("plot all", False) or options.get("plot", True)) and len(ic_df) > 1:
         _plot_plateau_validation(ic_df, selection, options)
-    if not options.get("plot all", False) and (options.get("plot", True) and len(ip0_df) > 1):
+    if not options.get("plot all", False) and options.get("plot", True) and len(ip0_df) > 1:
         _plot_ip0_sqrt_fit(ip0_df, ip0_slope, options)
 
     return analysis_result_from_table(
-        display_df,
+        result_table,
         analysis="plateau_current",
         summary={
             "formula mode": mode,
+            "formula": formula,
+            "plateau validation": _plateau_validation_status(selection),
             "valid plateau": selection["valid plateau"],
+            "ilim": ilim,
             "ilim source": ilim_source,
+            "ip0": ip0,
             "ip0 source": ip0_source,
+            "ip0 scan rate": ip0_scan_rate,
+            "ip0 sqrt scan rate slope": ip0_slope,
+            "ip0 fit r2": ip0_fit_r2,
+            "D": D,
+            "C": C,
+            "electrode area": electrode_area,
+            "catalyst electrons": float(options.get("catalyst electrons", 1)),
+            "turnover electrons": float(options.get("turnover electrons", 1)),
+            "temperature": temperature,
+            "kobs": kobs,
         },
         diagnostics={
+            "plateau details": details_df,
             "catalytic currents": ic_df,
             "ip0 currents": ip0_df,
             "plateau selection": selection,
         },
+        warnings=warnings_list,
     )
 
 
@@ -6251,24 +8076,24 @@ def _resolve_fowa_formula(cv_obj, slope, options):
 
     Default EC'-type expression:
 
-        x_FOWA = [1 + exp(n_ref*F/(RT) * (E - E_ref))]^-1
+        x_FOWA = [1 + exp(n*F/(RT) * (E - E_ref))]^-1
 
         i/ip0 = slope*x_FOWA + intercept
 
-        slope = n_cat^sigma / (0.4463*n_ref)
-                * sqrt(RT*kobs / (n_ref*F*v))
+        slope = n'^sigma / (0.4463*n)
+                * sqrt(RT*kobs / (n*F*v))
 
     Therefore:
 
-        kobs = (slope * 0.4463*n_ref / n_cat^sigma)^2
-               * (n_ref*F*v)/(RT)
+        kobs = (slope * 0.4463*n / n'^sigma)^2
+               * (n*F*v)/(RT)
 
     where:
-        n_ref = catalyst electrons
+        n = n_cat = catalyst electrons
             Electron count for the non-catalytic catalyst wave used for ip0
             and for the FOWA x-axis exponent.
 
-        n_cat = turnover electrons
+        n' = n_turn = turnover electrons
             Total electrons required per catalytic turnover.
 
         sigma
@@ -6359,13 +8184,56 @@ def _copy_cv_with_fowa_current_axis(cv_obj, ip0, options):
     return _copy_cv_with_normalized_current_axis(cv_obj, ip0, options)
 
 
+def _normalize_fowa_redox_mode_label(mode):
+    if mode is None:
+        return None
+    text = str(mode).strip().lower().replace("_", " ").replace("-", " ")
+    if text in {"half wave", "e1/2", "e 1/2"}:
+        return "half wave"
+    if text in {"half peak", "ep/2", "e p/2"}:
+        return "half peak"
+    if text == "manual":
+        return "manual"
+    return None
+
+
+def _fowa_reference_potential_symbol(redox_modes):
+    modes = {
+        mode
+        for mode in (
+            _normalize_fowa_redox_mode_label(mode)
+            for mode in redox_modes
+        )
+        if mode is not None
+    }
+
+    if modes == {"half wave"}:
+        return r"E_{1/2}"
+    if modes == {"half peak"}:
+        return r"E_{p/2}"
+    if modes == {"manual"}:
+        return r"E_{\mathrm{redox}}"
+    return r"E_{\mathrm{ref}}"
+
+
+def _format_fowa_x_axis_label(plot_data=None, options=None):
+    plot_data = [] if plot_data is None else list(plot_data)
+    options = {} if options is None else options
+    redox_modes = [pdata.get("redox mode") for pdata in plot_data if isinstance(pdata, dict)]
+    if not redox_modes:
+        redox_modes = [options.get("redox mode")]
+    reference_symbol = _fowa_reference_potential_symbol(redox_modes)
+    return (
+        r"$\left[1+\exp\left("
+        r"\frac{nF}{RT}"
+        rf"(E-{reference_symbol})"
+        r"\right)\right]^{-1}$"
+    )
+
+
 def _plot_fowa_transformed(plot_data, results_df, options):
     echem_list = [pdata["cat cv"] for pdata in plot_data]
     plot_options = _multiplot_options_from_mapping(options)
-    plot_options["labels"] = [
-        pdata.get("plot label", pdata.get("name", f"Trace {i + 1}"))
-        for i, pdata in enumerate(plot_data)
-    ]
     style = _prepare_multiplot_style(echem_list, plot_options)
     ax = style["ax"]
     color_spec = style["color spec"]
@@ -6377,17 +8245,18 @@ def _plot_fowa_transformed(plot_data, results_df, options):
             pdata["x fowa"],
             pdata["y fowa"],
             color=color,
-            label=format_chemical_formulas(color_spec["plot labels"][i]),
+            label=format_chemical_formulas(color_spec["labels"][i]),
         )
 
-        ax.scatter(
-            pdata["x fit"],
-            pdata["y fit"],
-            color=color,
-            s=10,
-            zorder=3,
-            label="_nolegend_",
-        )
+        if len(pdata["x fit"]):
+            ax.scatter(
+                pdata["x fit"],
+                pdata["y fit"],
+                color=color,
+                s=10,
+                zorder=3,
+                label="_nolegend_",
+            )
 
         slope = (
             results_df.loc[i, "Slope"]
@@ -6400,6 +8269,9 @@ def _plot_fowa_transformed(plot_data, results_df, options):
             else results_df.loc[i, "intercept"]
         )
 
+        has_fit = np.isfinite(slope) and np.isfinite(intercept) and len(pdata["x fit"])
+        if not has_fit:
+            continue
         if slope > 0:
             y_end = float(np.nanmax(pdata["y fowa"]))
             x_end = (y_end - intercept) / slope
@@ -6430,7 +8302,7 @@ def _plot_fowa_transformed(plot_data, results_df, options):
 
     ax.set_xlim(0, 1)
     ax.set_ylabel("$i / i_p^0$")
-    ax.set_xlabel(r"$[1+\exp(\frac{F}{RT}(E-E^0))]^{-1}$")
+    ax.set_xlabel(_format_fowa_x_axis_label(plot_data, options))
 
 def _split_shared_columns(df, keep_in_table=None):
     if keep_in_table is None:
@@ -6479,7 +8351,7 @@ def _format_fowa_pair(first, second):
     return f"[{first:.6g}, {second:.6g}]"
 
 
-def _format_fowa_line(slope, intercept):
+def _format_fowa_line(slope, intercept, sig_figs=4):
     def is_blank(value):
         if value is None:
             return True
@@ -6492,7 +8364,10 @@ def _format_fowa_line(slope, intercept):
         return ""
 
     sign = "+" if float(intercept) >= 0 else "-"
-    return f"y = {float(slope):.6g}x {sign} {abs(float(intercept)):.6g}"
+    return (
+        f"y = {_format_sevcik_value(float(slope), sig_figs=sig_figs)}x "
+        f"{sign} {_format_sevcik_value(abs(float(intercept)), sig_figs=sig_figs)}"
+    )
 
 
 def _fowa_units_map(df=None):
@@ -6622,7 +8497,7 @@ def _analysis_options_for(option_cls, source):
             continue
         if norm in valid:
             routed[norm] = value
-    return option_cls.from_options(routed).to_legacy_dict()
+    return option_cls.from_options(routed).to_options_dict()
 
 
 _COMPLEX_POTENTIAL_PLURAL_KEYS = {
@@ -6640,8 +8515,8 @@ def _mapping_from_options(options):
         return {}
     if isinstance(options, dict):
         return options
-    if hasattr(options, "to_legacy_dict"):
-        return options.to_legacy_dict()
+    if hasattr(options, "to_options_dict"):
+        return options.to_options_dict()
     return {}
 
 
@@ -6730,7 +8605,8 @@ def _resolve_complex_potential_series(
 
     if len(values) != int(n_cvs):
         raise ValueError(
-            f"'{canonical}' for {analysis_name} expected 1 scalar or {n_cvs} CVs, "
+            f"'{canonical}' for {analysis_name} expected 1 scalar value or "
+            f"{n_cvs} scalar values (one per CV), "
             f"but received {len(values)} entries."
         )
 
@@ -6876,8 +8752,8 @@ def _resolve_fowa_range_or_sequence(value, n_items, option_name="fit range", def
     # Per-CV ranges: [[lo, hi], [lo, hi], ...]
     if len(values) != n_items:
         raise ValueError(
-            f"'{option_name}' must be a single 2-number range or have one range "
-            f"per catalytic CV ({n_items}). Got {len(values)} entries."
+            f"'{option_name}' expected 1 range or {n_items} ranges "
+            f"(one per catalytic CV), but received {len(values)} entries."
         )
 
     resolved = []
@@ -6909,8 +8785,8 @@ def _resolve_fowa_scalar_or_sequence(value, n_items, option_name, allow_none=Tru
         values = list(value)
         if len(values) != n_items:
             raise ValueError(
-                f"'{option_name}' must be a scalar or have the same length as the "
-                f"number of catalytic CVs ({n_items}). Got {len(values)}."
+                f"'{option_name}' expected 1 scalar value or {n_items} scalar values "
+                f"(one per catalytic CV), but received {len(values)} entries."
             )
         out = []
         for i, v in enumerate(values, start=1):
@@ -7061,6 +8937,11 @@ def _plot_fowa_normalized_diagnostics(
     Redraw FOWA plot-all diagnostics on the temporary i/ip0 CV copies.
     """
     seen = set()
+    objects_with_direct_peak_marker = {
+        id(call["obj"])
+        for call in diagnostic_calls
+        if call.get("kind") in {"half_wave", "peak_potential"}
+    }
 
     for call in diagnostic_calls:
         original = call["obj"]
@@ -7094,7 +8975,10 @@ def _plot_fowa_normalized_diagnostics(
         diag_options["internal call"] = True
         diag_options["new plot"] = False
         diag_options["offset"] = object_offsets.get(id(original), 0)
-        if call["kind"] == "peak_current":
+        if (
+            call["kind"] == "peak_current"
+            and id(original) in objects_with_direct_peak_marker
+        ):
             diag_options["plot peak potential"] = False
 
         plt.sca(ax)
@@ -7128,6 +9012,21 @@ def _format_fowa_status(statuses):
         if status not in unique:
             unique.append(status)
     return " | ".join(unique)
+
+
+def _format_fowa_manual_current_summary(value):
+    if _is_option_sequence(value):
+        values = [item for item in _as_option_list(value) if item is not None]
+        numeric_values = []
+        for item in values:
+            try:
+                numeric_values.append(float(item))
+            except (TypeError, ValueError):
+                return "manual (per CV)"
+        if numeric_values and len({round(item, 18) for item in numeric_values}) == 1:
+            return f"manual ({numeric_values[0]:.6g})"
+        return "manual (per CV)"
+    return f"manual ({float(value):.6g})"
 
 
 def _format_fowa_tangent_background_error(cv_name, options):
@@ -7176,7 +9075,8 @@ def fowa(cvs, options=None):
     """
     raw_options = options
     typed_options = FOWAOptions.from_options(options)
-    options = typed_options.to_legacy_dict()
+    options = typed_options.to_options_dict()
+    _apply_diagnostic_y_axis_alias(raw_options, options, "fowa")
 
 
     cvs = _coerce_cv_list(cvs)
@@ -7279,7 +9179,7 @@ def fowa(cvs, options=None):
     raw_plot_options["plot all"] = False
     raw_plot_options["y axis"] = diagnostic_y_axis
 
-    fowa_plot_labels = options.get("plot labels")
+    fowa_plot_labels = options.get("labels")
     if fowa_plot_labels is not None:
         if len(fowa_plot_labels) != len(cvs):
             raise ValueError("'labels' must match the number of catalytic CVs passed to FOWA.")
@@ -7663,70 +9563,115 @@ def fowa(cvs, options=None):
         )
         y_fowa = y_corr / ip0
 
-        fit_mask, fit_basis_label, fit_region_meta = _resolve_fowa_fit_mask(
-            x_fowa=x_fowa,
-            y_fowa=y_fowa,
-            fit_basis=fit_basis,
-            fit_lo=fit_lo,
-            fit_hi=fit_hi,
-            options=options,
-        )
+        fit_enabled = bool(options.get("fit", True))
+        fit_mask = np.zeros_like(x_fowa, dtype=bool)
+        fit_basis_label = f"{fit_basis}_fowa"
+        fit_region_meta = {}
+        n_fit = 0
+        x_fit = np.asarray([], dtype=float)
+        y_fit = np.asarray([], dtype=float)
+        y_pred = np.asarray([], dtype=float)
+        slope = np.nan
+        intercept = np.nan
+        r2 = np.nan
+        formula_label = "not fit"
+        kinetics = {"kobs": np.nan, "TOFmax": np.nan}
+        fit_succeeded = False
 
-        n_fit = int(np.count_nonzero(fit_mask))
-
-        if n_fit < 5:
-            raise ValueError(
-                f"Only {n_fit} points fall in the requested FOWA fit range "
-                f"[{fit_lo}, {fit_hi}] for '{cat_cv.name}'."
+        if fit_enabled:
+            fit_mask, fit_basis_label, fit_region_meta = _resolve_fowa_fit_mask(
+                x_fowa=x_fowa,
+                y_fowa=y_fowa,
+                fit_basis=fit_basis,
+                fit_lo=fit_lo,
+                fit_hi=fit_hi,
+                options=options,
             )
-        if n_fit < min_fit_points:
-            msg = (
-                f"FOWA fit for '{cat_cv.name}' uses only {n_fit} points "
-                f"(< recommended {min_fit_points})."
-            )
-            _record_fowa_issue(
-                row_warnings,
-                row_status,
-                "fit points < threshold",
-                msg,
-                options,
-            )
+            n_fit = int(np.count_nonzero(fit_mask))
 
-        x_fit = x_fowa[fit_mask]
-        y_fit = y_fowa[fit_mask]
+            if n_fit < 5:
+                msg = (
+                    f"Only {n_fit} points fall in the requested FOWA fit range "
+                    f"[{fit_lo}, {fit_hi}] for '{cat_cv.name}'; fit skipped for this CV."
+                )
+                _record_fowa_issue(
+                    row_warnings,
+                    row_status,
+                    "fit skipped",
+                    msg,
+                    options,
+                )
+            else:
+                if n_fit < min_fit_points:
+                    msg = (
+                        f"FOWA fit for '{cat_cv.name}' uses only {n_fit} points "
+                        f"(< recommended {min_fit_points})."
+                    )
+                    _record_fowa_issue(
+                        row_warnings,
+                        row_status,
+                        "fit points < threshold",
+                        msg,
+                        options,
+                    )
 
-        order = np.argsort(x_fit)
-        x_fit = x_fit[order]
-        y_fit = y_fit[order]
+                x_fit = x_fowa[fit_mask]
+                y_fit = y_fowa[fit_mask]
+                order = np.argsort(x_fit)
+                x_fit = x_fit[order]
+                y_fit = y_fit[order]
 
-        slope, intercept = np.polyfit(x_fit, y_fit, 1)
-        y_pred = slope * x_fit + intercept
-        r2 = float(r2_score(y_fit, y_pred))
+                try:
+                    slope, intercept = np.polyfit(x_fit, y_fit, 1)
+                    y_pred = slope * x_fit + intercept
+                    r2 = float(r2_score(y_fit, y_pred))
+                    if not all(np.isfinite(value) for value in (slope, intercept, r2)):
+                        raise ValueError("the regression returned non-finite fit statistics")
+                except (FloatingPointError, ValueError, np.linalg.LinAlgError) as exc:
+                    slope = np.nan
+                    intercept = np.nan
+                    r2 = np.nan
+                    x_fit = np.asarray([], dtype=float)
+                    y_fit = np.asarray([], dtype=float)
+                    y_pred = np.asarray([], dtype=float)
+                    msg = f"FOWA fit failed for '{cat_cv.name}' ({exc}); fit skipped for this CV."
+                    _record_fowa_issue(
+                        row_warnings,
+                        row_status,
+                        "fit skipped",
+                        msg,
+                        options,
+                    )
+                else:
+                    fit_succeeded = True
 
-        if r2 < min_r2:
-            msg = (
-                f"FOWA fit for '{cat_cv.name}' has R^2 = {r2:.3f}, "
-                f"below the recommended threshold of {min_r2:.2f}."
-            )
-            _record_fowa_issue(
-                row_warnings,
-                row_status,
-                "fit R2 < threshold",
-                msg,
-                options,
-            )
+            if fit_succeeded:
+                if r2 < min_r2:
+                    msg = (
+                        f"FOWA fit for '{cat_cv.name}' has R^2 = {r2:.3f}, "
+                        f"below the recommended threshold of {min_r2:.2f}."
+                    )
+                    _record_fowa_issue(
+                        row_warnings,
+                        row_status,
+                        "fit R2 < threshold",
+                        msg,
+                        options,
+                    )
 
-        if slope <= 0:
-            msg = f"FOWA fit for '{cat_cv.name}' has a non-positive slope."
-            _record_fowa_issue(
-                row_warnings,
-                row_status,
-                "nonpositive slope",
-                msg,
-                options,
-            )
+                if slope <= 0:
+                    msg = f"FOWA fit for '{cat_cv.name}' has a non-positive slope."
+                    _record_fowa_issue(
+                        row_warnings,
+                        row_status,
+                        "nonpositive slope",
+                        msg,
+                        options,
+                    )
 
-        formula_label, kinetics = _resolve_fowa_formula(cat_cv, slope, options)
+                formula_label, kinetics = _resolve_fowa_formula(cat_cv, slope, options)
+        else:
+            row_status.append("not fit")
 
         results.append({
             "reference cv": None if ref_cv is None else ref_cv.name,
@@ -7804,18 +9749,24 @@ def fowa(cvs, options=None):
                 print(f"  Automatic tangent potential: {background_tangent_potential:.6g}")
 
             print(f"Wave window: {x_wave[0]:.6g} to {x_wave[-1]:.6g}")
-            print(f"Fit range (transformed x): [{fit_lo}, {fit_hi}]")
-            print(f"Fit points: {n_fit}")
-            print(f"Formula: {formula_label}")
+            if not fit_enabled:
+                print("Fit: disabled")
+            elif not fit_succeeded:
+                print("Fit: skipped")
+            else:
+                print(f"Fit range (transformed x): [{fit_lo}, {fit_hi}]")
+                print(f"Fit points: {n_fit}")
+                print(f"Formula: {formula_label}")
 
-            if formula_label == "EC' apparent":
+            if fit_succeeded and formula_label == "EC' apparent":
                 print(
-                    "k_obs = (slope * 0.4463 * n_ref / n_cat^sigma)^2 "
-                    "* (n_ref*F*v)/(RT)\n"
+                    "k_obs = (slope * 0.4463 * n / n'^sigma)^2 "
+                    "* (n*F*v)/(RT)\n"
                     "  TOF_max = k_obs"
                 )
                 print(
-                    "where n_ref = 'catalyst electrons', n_cat = 'turnover electrons', "
+                    "where n = n_cat = 'catalyst electrons', "
+                    "n' = n_turn = 'turnover electrons', "
                     "and sigma is the ET-pathway exponent."
                 )
                 print(
@@ -7824,20 +9775,21 @@ def fowa(cvs, options=None):
                     "'fit range', 'redox potential', 'non-catalytic current', "
                     "'background correction'."
                 )
-            else:
+            elif fit_succeeded:
                 print(
                     "  Custom formula used. Adjust 'custom formula' and 'formula label' "
                     "if you want a different mechanism."
                 )
 
-            print(f"Slope: {slope:.6g}")
-            print(f"Intercept: {intercept:.6g}")
-            print(f"R^2: {r2:.4f}")
-            for key, value in kinetics.items():
-                if isinstance(value, (int, float, np.floating)):
-                    print(f"{key}: {value:.6g}")
-                else:
-                    print(f"{key}: {value}")
+            if fit_succeeded:
+                print(f"Slope: {slope:.6g}")
+                print(f"Intercept: {intercept:.6g}")
+                print(f"R^2: {r2:.4f}")
+                for key, value in kinetics.items():
+                    if isinstance(value, (int, float, np.floating)):
+                        print(f"{key}: {value:.6g}")
+                    else:
+                        print(f"{key}: {value}")
 
             if row_warnings:
                 print("Warnings:")
@@ -7944,7 +9896,8 @@ def fowa(cvs, options=None):
     shared_summary = display_df.attrs.get("shared_summary", {})
 
     if options.get("print", True):
-        print("\n### FOWA Summary ###")
+        if not _rich_table_output_enabled(options):
+            print("\n### FOWA Summary ###")
 
         combined_summary = {}
 
@@ -7953,13 +9906,17 @@ def fowa(cvs, options=None):
         formatted_selection = _format_segment_selection(segment_selection)
         if formatted_selection:
             combined_summary["Segment Selection"] = formatted_selection
-        combined_summary["Fit Range"] = f"[{fit_lo}, {fit_hi}]"
+        combined_summary["Fit"] = "enabled" if options.get("fit", True) else "disabled"
+        if options.get("fit", True):
+            combined_summary["Fit Range"] = f"[{fit_lo}, {fit_hi}]"
         combined_summary["Background Correction"] = background_mode if background_mode is not None else "none"
         combined_summary["Mechanism"] = options.get("mechanism", "EC'")
 
         # If the source was manual, include the explicit manual value
         if options.get("non-catalytic current") is not None:
-            combined_summary["ip0 Source"] = f"manual ({options['non-catalytic current']:.6g})"
+            combined_summary["ip0 Source"] = _format_fowa_manual_current_summary(
+                options["non-catalytic current"]
+            )
 
         if any(value is not None for value in manual_redox_values):
             manual_redox_floats = [
@@ -8004,6 +9961,7 @@ def fowa(cvs, options=None):
             "Segment Selection",
             "Background Correction",
             "Background Tangent Potential",
+            "Fit",
             "Fit Range",
             "Mechanism",
         ]
@@ -8016,15 +9974,26 @@ def fowa(cvs, options=None):
             if key not in preferred_order:
                 ordered_summary[key] = value
 
-        _display_fowa_summary_table(ordered_summary, options)
-
-        _display_fowa_kobs_equation(
+        _display_fowa_summary_table(
+            ordered_summary,
             options,
-            resolved=False,
-            compact=options.get("print all", False),
+            title="FOWA Summary",
+            plain_title=False,
         )
 
-        _display_fowa_results_table(display_df, options)
+        if any(np.isfinite(float(row.get("kobs", np.nan))) for row in results):
+            _display_fowa_kobs_equation(
+                options,
+                resolved=False,
+                compact=options.get("print all", False),
+            )
+
+        _display_fowa_results_table(
+            display_df,
+            options,
+            title="FOWA Results",
+            plain_title=False,
+        )
 
 
     if options.get("plot", True):
@@ -8447,19 +10416,19 @@ def _select_fit_indices(x, y, fit_indices):
     if fit_indices_array.ndim == 1:
         if len(fit_indices_array) == 2:
             start, stop = fit_indices_array
-            start = None if start is None else int(start)
-            stop = None if stop is None else int(stop)
+            start = _coerce_fit_index(start)
+            stop = _coerce_fit_index(stop)
             return x[start:stop], y[start:stop]
 
-        positions = np.asarray(fit_indices_array, dtype=int)
+        positions = np.asarray([_coerce_fit_index(value) for value in fit_indices_array], dtype=int)
         return x[positions], y[positions]
 
     if fit_indices_array.ndim == 2 and fit_indices_array.shape[1] == 2:
         positions = []
         base_indices = np.arange(len(x))
         for start, stop in fit_indices_array:
-            start = None if start is None else int(start)
-            stop = None if stop is None else int(stop)
+            start = _coerce_fit_index(start)
+            stop = _coerce_fit_index(stop)
             positions.extend(base_indices[start:stop])
         positions = np.asarray(positions, dtype=int)
         return x[positions], y[positions]
@@ -8470,90 +10439,8 @@ def _select_fit_indices(x, y, fit_indices):
     )
 
 
-def _is_fit_range_pair(spec):
-    if not isinstance(spec, (list, tuple)) or len(spec) != 2:
-        return False
-    return all(
-        value is None or isinstance(value, (int, float, np.integer, np.floating))
-        for value in spec
-    )
-
-
-def _normalize_fit_ranges(fit_ranges):
-    """
-    Normalize fit_rate's multiple-fit range option.
-
-    Forms
-    -----
-    {"early": [0, 5], "tail": [[6, 9], [9, None]]}
-        Named fits.
-
-    [[0, 5], [6, None]]
-        Unnamed fits labeled Fit 1, Fit 2.
-
-    [[[0, 3], [5, 8]], [[8, None]]]
-        Unnamed fits where a single fit can use multiple windows.
-    """
-    if fit_ranges in (None, {}):
-        return []
-
-    if isinstance(fit_ranges, dict):
-        return [(str(label), spec) for label, spec in fit_ranges.items()]
-
-    if _is_fit_range_pair(fit_ranges):
-        return [("Fit 1", fit_ranges)]
-
-    if isinstance(fit_ranges, (list, tuple)):
-        return [(f"Fit {i + 1}", spec) for i, spec in enumerate(fit_ranges)]
-
-    raise ValueError(
-        "'fit ranges' must be a dict of named ranges or a list of ranges."
-    )
-
-
-def _select_fit_range(x, y, range_spec):
-    x = np.asarray(x)
-    y = np.asarray(y)
-
-    if range_spec is None:
-        return x, y
-
-    if _is_fit_range_pair(range_spec):
-        windows = [range_spec]
-    elif isinstance(range_spec, (list, tuple)) and all(_is_fit_range_pair(item) for item in range_spec):
-        windows = list(range_spec)
-    else:
-        raise ValueError(
-            "Each 'fit ranges' entry must be [start, stop] or a list of [start, stop] windows."
-        )
-
-    masks = []
-    for window in windows:
-        start, stop = window
-        mask = np.isfinite(x)
-        if start is not None:
-            mask &= x >= float(start)
-        if stop is not None:
-            mask &= x <= float(stop)
-        masks.append(mask)
-
-    if not masks:
-        return x, y
-    combined = np.logical_or.reduce(masks)
-    return x[combined], y[combined]
-
-
 def _fit_selection_specs(options, fallback_fit_indices=None, default_label="Fit 1"):
     """Return normalized fit selection specs for shared scatter-fit helpers."""
-    fit_ranges = options.get("fit ranges")
-    if fit_ranges is None and options.get("fit range") is not None:
-        fit_ranges = options.get("fit range")
-    if fit_ranges is not None:
-        return [
-            (label, range_spec, True)
-            for label, range_spec in _normalize_fit_ranges(fit_ranges)
-        ]
-
     fit_indices = fallback_fit_indices
     if fit_indices is None:
         fit_indices = options.get("fit indices")
@@ -8565,10 +10452,10 @@ def _fit_selection_specs(options, fallback_fit_indices=None, default_label="Fit 
     if len(normalized) == 1 and not isinstance(fit_indices, dict):
         _label, spec = normalized[0]
         return [(default_label, spec, False)]
-    return [(label, spec, False) for label, spec in normalized]
+    return [(label, spec, True) for label, spec in normalized]
 
 
-def _fit_rate_range_specs(options, fallback_fit_indices, default_label):
+def _fit_rate_selection_specs(options, fallback_fit_indices, default_label):
     return _fit_selection_specs(
         options,
         fallback_fit_indices=fallback_fit_indices,
@@ -8576,17 +10463,23 @@ def _fit_rate_range_specs(options, fallback_fit_indices, default_label):
     )
 
 
-def _fit_rate_selected_points(plot_x, plot_y, spec, is_fit_range):
-    if is_fit_range:
-        return _select_fit_range(plot_x, plot_y, spec)
+def _fit_rate_selected_points(plot_x, plot_y, spec):
     return _select_fit_indices(plot_x, plot_y, spec)
 
 
-def _fit_rate_fit_options_for_range(options, label, is_fit_range):
+def _fit_rate_fit_options(options, label):
     fit_options = options.copy()
-    if is_fit_range and fit_options.get("fit label", False) is False:
-        fit_options["fit label"] = label
+    fit_options["_fit selection label"] = label
     return fit_options
+
+
+def _without_matplotlib_axis_scales(options):
+    plot_options = dict(options or {})
+    plot_options["plot scale"] = None
+    plot_options["xscale"] = None
+    plot_options["yscale"] = None
+    return plot_options
+
 
 def _local_log_slopes(x, y, x_label="x", y_label="y", mode="adjacent"):
     """
@@ -8696,7 +10589,7 @@ def _fit_rate_payload(df, options=None):
 
     Examples
     --------
-    >>> result = e.fit_rate(fowa_df, {"fit range": [0.1, 0.4]})
+    >>> result = e.fit_rate(fowa_df, {"fit indices": [1, 5]})
     >>> result.table
     """
     if isinstance(df, AnalysisResult):
@@ -8706,7 +10599,7 @@ def _fit_rate_payload(df, options=None):
 
     raw_options = options
     typed_options = FitRateOptions.from_options(options)
-    options = typed_options.to_legacy_dict()
+    options = typed_options.to_options_dict()
     if options.get("fit label", False) and not _option_was_provided(raw_options, "legend"):
         options["legend"] = True
     do_plot = options.get("plot", True)
@@ -8800,7 +10693,6 @@ def _fit_rate_payload(df, options=None):
 
     plot_loglog = (
         options.get("plot log-log", False)
-        or options.get("log log plot", False)  # backward-compatible alias
         or str(options.get("transform mode", "")).strip().lower().replace("_", "-").replace(" ", "-")
         in ("log-log", "loglog")
     )
@@ -8901,18 +10793,17 @@ def _fit_rate_payload(df, options=None):
             fit_indices = options.get("fit indices")
 
         fitline = {}
-        fit_specs = _fit_rate_range_specs(
+        fit_specs = _fit_rate_selection_specs(
             options,
             fallback_fit_indices=fit_indices,
             default_label=metric_col,
         )
         if do_fit:
-            for fit_label, fit_spec, is_fit_range in fit_specs:
+            for fit_label, fit_spec, is_named_selection in fit_specs:
                 fit_x_sel, fit_y_sel = _fit_rate_selected_points(
                     plot_x,
                     plot_y,
                     fit_spec,
-                    is_fit_range,
                 )
 
                 if len(fit_x_sel) < 2:
@@ -8928,7 +10819,7 @@ def _fit_rate_payload(df, options=None):
                 fit_model_results[fit_label] = series_fit["model_result"]
                 fit_rows.extend(series_fit["fit_rows"])
 
-            if len(fitline) == 1 and options.get("fit ranges") is None:
+            if len(fitline) == 1 and not isinstance(options.get("fit indices"), dict):
                 fitline = next(iter(fitline.values()))
 
         if do_plot:
@@ -8944,12 +10835,11 @@ def _fit_rate_payload(df, options=None):
             ))
 
             if do_fit:
-                for fit_label, fit_spec, is_fit_range in fit_specs:
+                for fit_label, fit_spec, is_named_selection in fit_specs:
                     fit_x_sel, fit_y_sel = _fit_rate_selected_points(
                         plot_x,
                         plot_y,
                         fit_spec,
-                        is_fit_range,
                     )
                     series_fit = _fit_series_xy(
                         fit_x_sel,
@@ -8957,15 +10847,19 @@ def _fit_rate_payload(df, options=None):
                         options=options,
                         label=fit_label,
                     )
-                    plot_options = _fit_rate_fit_options_for_range(options, fit_label, is_fit_range)
+                    plot_options = _fit_rate_fit_options(options, fit_label)
+                    fit_line_index = fit_color_index
                     plot_options = _options_with_default_fit_color(
                         plot_options,
                         raw_options,
                         point_color,
                         index=fit_color_index,
                     )
+                    plot_options = _without_matplotlib_axis_scales(plot_options)
                     fit_color_index += 1
-                    plot_options.update({"new plot": False, "plot data": False, "model label": f"{fit_label} Fit"})
+                    plot_options.update({"new plot": False, "plot data": False, "model label": f"{fit_label} Fit", "_fit line index": fit_line_index})
+                    if len(fit_specs) > 1 and not plot_options.get("fit label", False):
+                        plot_options["fit label"] = str(fit_label)
                     _plot_fit_model_result(series_fit["model_result"], plot_options)
 
             plt.xlabel(
@@ -8992,7 +10886,7 @@ def _fit_rate_payload(df, options=None):
             plt.ylabel(y_axis_label)
             if _scatterfit_legend_requested(options):
                 plt.legend(fontsize=_scatterfit_legend_fontsize(options))
-            _apply_matplotlib_axis_scales(plt.gca(), options)
+            _apply_matplotlib_axis_scales(plt.gca(), _without_matplotlib_axis_scales(options))
 
         if do_print:
             y_notes = np.asarray(transformed["y note"], dtype=object)
@@ -9055,18 +10949,17 @@ def _fit_rate_payload(df, options=None):
     data["y transform note"] = transformed["y note"]
 
     fitline = {}
-    fit_specs = _fit_rate_range_specs(
+    fit_specs = _fit_rate_selection_specs(
         options,
         fallback_fit_indices=options.get("fit indices"),
         default_label=metric_col,
     )
     if do_fit:
-        for fit_label, fit_spec, is_fit_range in fit_specs:
+        for fit_label, fit_spec, is_named_selection in fit_specs:
             fit_x_sel, fit_y_sel = _fit_rate_selected_points(
                 plot_x,
                 plot_y,
                 fit_spec,
-                is_fit_range,
             )
 
             if len(fit_x_sel) < 2:
@@ -9082,7 +10975,7 @@ def _fit_rate_payload(df, options=None):
             fit_model_results[fit_label] = series_fit["model_result"]
             fit_rows.extend(series_fit["fit_rows"])
 
-        if len(fitline) == 1 and options.get("fit ranges") is None:
+        if len(fitline) == 1 and not isinstance(options.get("fit indices"), dict):
             fitline = next(iter(fitline.values()))
 
     if do_plot:
@@ -9094,12 +10987,11 @@ def _fit_rate_payload(df, options=None):
         ))
 
         if do_fit:
-            for fit_label, fit_spec, is_fit_range in fit_specs:
+            for fit_label, fit_spec, is_named_selection in fit_specs:
                 fit_x_sel, fit_y_sel = _fit_rate_selected_points(
                     plot_x,
                     plot_y,
                     fit_spec,
-                    is_fit_range,
                 )
                 series_fit = _fit_series_xy(
                     fit_x_sel,
@@ -9107,7 +10999,8 @@ def _fit_rate_payload(df, options=None):
                     options=options,
                     label=fit_label,
                 )
-                plot_options = _fit_rate_fit_options_for_range(options, fit_label, is_fit_range)
+                plot_options = _fit_rate_fit_options(options, fit_label)
+                fit_line_index = fit_color_index
                 plot_options = _options_with_default_fit_color(
                     plot_options,
                     raw_options,
@@ -9115,7 +11008,9 @@ def _fit_rate_payload(df, options=None):
                     index=fit_color_index,
                 )
                 fit_color_index += 1
-                plot_options.update({"new plot": False, "plot data": False, "model label": f"{fit_label} Fit"})
+                plot_options.update({"new plot": False, "plot data": False, "model label": f"{fit_label} Fit", "_fit line index": fit_line_index})
+                if len(fit_specs) > 1 and not plot_options.get("fit label", False):
+                    plot_options["fit label"] = str(fit_label)
                 _plot_fit_model_result(series_fit["model_result"], plot_options)
 
         plt.xlabel(
@@ -9128,11 +11023,17 @@ def _fit_rate_payload(df, options=None):
             )
         )
         if _normalize_y_mode(options.get("y mode")) == "raw":
-            y_axis_label = _format_fit_rate_metric_label(
-                metric_col,
-                log=transformed["y label"] == "log10",
-                unit=metric_unit,
-            )
+            if transformed["y label"] == "log10":
+                y_axis_label = _format_fit_rate_metric_label(
+                    metric_col,
+                    log=True,
+                    unit=metric_unit,
+                )
+            else:
+                y_axis_label = _format_y_transform_axis_label(
+                    _format_fit_rate_metric_label(metric_col, unit=metric_unit),
+                    y_transform,
+                )
         else:
             y_axis_label = _format_y_mode_axis_label(
                 _format_fit_rate_metric_label(metric_col),
@@ -9188,7 +11089,7 @@ def fit_rate(df, options=None):
 
 def _tafel_options_from_mapping(options):
     if isinstance(options, TafelAnalysisOptions):
-        return options.to_legacy_dict()
+        return options.to_options_dict()
     if options is None:
         options = {}
     if not isinstance(options, dict):
@@ -9199,7 +11100,7 @@ def _tafel_options_from_mapping(options):
     tafel_keys = {"overpotential range", "overpotential_range", "color"}
     return TafelAnalysisOptions.from_options(
         {key: value for key, value in options.items() if key in tafel_keys}
-    ).to_legacy_dict()
+    ).to_options_dict()
 
 
 def _coerce_tafel_cv_list(cv_or_list):
@@ -9255,7 +11156,7 @@ def tafel_analysis(cv, TOF_max, thermodynamic_potential, redox_potential, option
     >>> result = e.tafel_analysis(cvs, TOF_values, E_thermo, E_redox)
     """
     raw_options = {} if options is None else options
-    raw_mapping = raw_options.to_legacy_dict() if isinstance(raw_options, TafelAnalysisOptions) else raw_options
+    raw_mapping = raw_options.to_options_dict() if isinstance(raw_options, TafelAnalysisOptions) else raw_options
     tafel_options = _tafel_options_from_mapping(raw_options)
     cvs = _coerce_tafel_cv_list(cv)
     tof_values = _coerce_tafel_tof_values(TOF_max, len(cvs))
@@ -9268,7 +11169,7 @@ def tafel_analysis(cv, TOF_max, thermodynamic_potential, redox_potential, option
         style = _prepare_multiplot_style(cvs, plot_options)
         ax = style["ax"]
         color_spec = style["color spec"]
-        plot_labels = color_spec["plot labels"]
+        plot_labels = color_spec["labels"]
         line_colors = color_spec["line colors"]
         display_labels = style["display labels"]
     else:

@@ -8,8 +8,10 @@ the core `ecat` package internals and calls the public notebook-facing API.
 From the repository root:
 
 ```bash
-pip install -e .
+python -m pip install -e ".[app]"
 ```
+
+For an installed beta package, use `python -m pip install "ecat[app]"`.
 
 ## Run
 
@@ -72,7 +74,7 @@ The most common cause is a Python environment missing the installed eCAT
 dependencies. Reinstall from the repository root:
 
 ```bash
-python3 -m pip install -e .
+python3 -m pip install -e ".[app]"
 ```
 
 The double-click launchers show a popup with the same install instructions when
@@ -86,6 +88,30 @@ If you use a specific Python environment, point the launcher at it:
 export ECAT_PYTHON=/path/to/python
 open "apps/workbench/launchers/eCAT Workbench.app"
 ```
+
+## Maintainer Update Checklist
+
+When the package is updated, the source launchers should not need logic changes
+for ordinary Python edits. They are designed to prefer this checkout's
+development entrypoint before any stale globally installed `ecat-app` command.
+The package version is assigned only in `src/ecat/_version.py`; package metadata
+and the in-app About panel read it dynamically. The macOS shortcut's
+`Info.plist`, standalone bundle metadata, and public install text are checked
+against that source by CI.
+
+Do refresh the local editable install after changes to console commands,
+package metadata, optional app dependencies, or import paths:
+
+```bash
+python3 -m pip install -e ".[app]"
+ecat-app --help
+```
+
+Rebuild and ad-hoc sign the macOS `.app` only when the C wrapper, `Info.plist`,
+icon, bundled launcher script, or app bundle resources change. For public
+downloads, each released app bundle still needs normal platform signing:
+Developer ID signing/notarization/stapling on macOS and Authenticode signing on
+Windows. Signing is per released build, not a one-time setup.
 
 ## Code Execution
 

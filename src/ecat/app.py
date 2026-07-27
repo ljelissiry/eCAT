@@ -8,6 +8,13 @@ import threading
 import webbrowser
 
 
+_ECAT_APP_INSTALL_MESSAGE = (
+    "The eCAT app requires optional app dependencies. Install them with "
+    '`python -m pip install "ecat[app]"`. For a source checkout, use '
+    '`python -m pip install -e ".[app]"`.'
+)
+
+
 def _find_available_port(host: str, preferred_port: int, max_tries: int = 50) -> int:
     """Return preferred_port when free, otherwise the next free local port."""
     for port in range(int(preferred_port), int(preferred_port) + int(max_tries)):
@@ -27,10 +34,7 @@ def _create_app():
     try:
         from ecat_app.app import create_app
     except ModuleNotFoundError as exc:
-        raise RuntimeError(
-            "The eCAT app dependencies are missing. Reinstall or upgrade eCAT with "
-            "`python -m pip install --upgrade \"git+https://github.com/ljelissiry/eCAT.git@v0.1.0b3\"`."
-        ) from exc
+        raise RuntimeError(_ECAT_APP_INSTALL_MESSAGE) from exc
     return create_app()
 
 
@@ -39,8 +43,9 @@ def _run_native_app(app, host: str, port: int, *, title: str, width: int, height
         from ecat_app.app import _run_window_app
     except ModuleNotFoundError as exc:
         raise RuntimeError(
-            "The eCAT app window dependencies are missing. Reinstall or upgrade eCAT, "
-            "or call e.open_app(browser=True) to use the browser fallback."
+            "The eCAT app window dependencies are missing. Install them with "
+            '`python -m pip install "ecat[app]"`, or call e.open_app(browser=True) '
+            "to use the browser fallback."
         ) from exc
     return _run_window_app(app, host, port, title=title, width=width, height=height)
 

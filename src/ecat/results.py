@@ -75,9 +75,19 @@ class AnalysisResult(dict):
             for key, value in self.summary.items():
                 print(f"{key}: {value}")
         if self.table is not None:
-            print(self.table)
+            try:
+                from .plotting import _display_table
+
+                _display_table(self.table, options, title="Result Table")
+            except Exception:
+                print(self.table)
         if self.fit_table is not None:
-            print(self.fit_table)
+            try:
+                from .plotting import _display_table
+
+                _display_table(self.fit_table, options, title="Fit Table")
+            except Exception:
+                print(self.fit_table)
         if options.get("return", False):
             return self.table
         return None

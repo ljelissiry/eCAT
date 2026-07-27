@@ -64,7 +64,7 @@ ax = cv.plot({"print": False})
 - Used only eCAT helpers for selecting subsets: `e.filter()`, `e.sort()`,
   `e.group()`, and `e.show_groups()`.
 - Split `multiplot()` teaching into a basic overlay first, then a separate
-  customization section for plot labels, legend placement, colorbar gradients,
+  customization section for trace labels, legend placement, colorbar gradients,
   scale bars, titles, and subtitles.
 - Keep notebook 02 focused on the everyday workflow: load, inspect, filter,
   plot one CV, make one basic `multiplot()`, group, save/export. Detailed
@@ -93,7 +93,8 @@ ax = cv.plot({"print": False})
   without redrawing each CV.
 - Keep notebook 03 focused on CV metrics and diagnostic helpers. Do not put
   physical normalization, current standardization, or `i/ip0` workflows here.
-- Use notebook 04 for focused plotting mechanics: `trim()`, `multiplot()`
+- Use notebook 04 for focused plotting mechanics: `cv.trim()` for one trace,
+  `e.trim()` for lists/groups, `multiplot()`
   labels, titles/subtitles, legend location, outside legends, axis limits on
   the returned `ax`, scale bars, `gradient by`, `legend mode: "colorbar"`,
   `colorbar tick labels`, `colorbar trace ticks`, `gradient colormap`,

@@ -2,7 +2,7 @@
 
 import ecat as e
 
-from .adapters import validate_simulation_mechanism
+from .adapters import SIMULATION_INSTALL_MESSAGE, simulation_backend_available, validate_simulation_mechanism
 from .config import AppConfig
 from .table import ag_grid_column_defs, selected_column_values, selected_grid_rows_for_ids
 
@@ -45,8 +45,9 @@ def _dash():
         from dash import dcc, html
     except ModuleNotFoundError as exc:
         raise RuntimeError(
-            "The eCAT app requires Dash and dash-ag-grid. Reinstall or upgrade eCAT with "
-            '`python -m pip install --upgrade "git+https://github.com/ljelissiry/eCAT.git@v0.1.0b3"`.'
+            "The eCAT app requires optional app dependencies. Install them with "
+            '`python -m pip install "ecat[app]"`. For a source checkout, use '
+            '`python -m pip install -e ".[app]"`.'
         ) from exc
     return dag, dcc, html
 
@@ -267,9 +268,15 @@ def create_layout(config: AppConfig | None = None, initial_state: dict | None = 
                     html.Div(
                         className="ecat-about-meta",
                         children=[
-                            html.Div([html.Strong("Package"), html.Span("ecat 0.1.0b3")]),
+                            html.Div([html.Strong("Package"), html.Span(f"ecat {e.__version__}")]),
                             html.Div([html.Strong("Author"), html.Span("Luke Elissiry")]),
                             html.Div([html.Strong("License"), html.Span("MIT License, copyright 2026 Luke Elissiry")]),
+                            html.Div(
+                                [
+                                    html.Strong("Simulation backend"),
+                                    html.Span("Optional ElectroKitty backend by Ožbej Vodeb, BSD 3-Clause License"),
+                                ]
+                            ),
                             html.Div(
                                 [
                                     html.Strong("GitHub"),
@@ -1222,6 +1229,16 @@ def _plotting_tab(dcc, html):
                     ),
                     _control_row(
                         html,
+                        "",
+                        dcc.Checklist(
+                            id="ecat-plot-invert-y-axis",
+                            className="ecat-control-field",
+                            options=[{"label": "Invert y axis", "value": "invert_y_axis"}],
+                            value=[],
+                        ),
+                    ),
+                    _control_row(
+                        html,
                         "Plot Style",
                         dcc.Dropdown(
                             id="ecat-plot-style",
@@ -1581,10 +1598,17 @@ def _analysis_tab(dcc, html):
 
 
 def _model_tab(dcc, html):
+    simulation_notice = ""
+    if not simulation_backend_available():
+        simulation_notice = html.Div(
+            SIMULATION_INSTALL_MESSAGE,
+            className="ecat-model-status",
+        )
     return html.Div(
         className="ecat-tab-body",
         children=[
             html.Div("Build a mechanism once, then simulate or fit it against CV data.", className="ecat-tab-intro"),
+            simulation_notice,
             _plot_section(html, "Mechanism"),
             dcc.Store(id="ecat-model-mechanism-source", data="preset"),
             html.Div(
@@ -1610,7 +1634,7 @@ def _model_tab(dcc, html):
                 style={"display": "none"},
                 children=[
                     html.Div(
-                        "Enter one reaction per line using eCAT/ElectroKitty mechanism text. Include ':' to mark a raw mechanism.",
+                        "Enter one eCAT reaction per line. Use coefficients such as 2A or repeated terms such as A+A; eCAT compiles backend syntax automatically.",
                         className="ecat-control-help",
                     ),
                     dcc.Textarea(

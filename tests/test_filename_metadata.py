@@ -60,6 +60,20 @@ def test_extract_compounds_and_concentrations_parses_mole_fraction_x(
     assert concentrations == ["0.8 x", "10 mM"]
 
 
+def test_zero_concentration_species_are_absent_from_object_compounds(
+    cv_factory,
+):
+    obj = cv_factory(name="100mVs_sample_MeCN_0mM_HCO3_10mM_Fc_run01")
+
+    assert obj.compounds == ["Fc"]
+    assert obj.concentrations == ["10 mM"]
+    assert obj.zero_concentration_compounds == ["HCO3"]
+    assert obj.zero_concentrations == ["0 mM"]
+    assert obj.stats()["compounds"] == ["Fc"]
+    assert obj.parse_result.metadata["compounds"] == ["Fc"]
+    assert obj.parse_result.metadata["zero_concentration_compounds"] == ["HCO3"]
+
+
 def test_extract_compounds_and_concentrations_preserves_molarity_and_x_for_same_species(
     ecat_module,
     blank_echem_factory,
@@ -139,6 +153,51 @@ def test_extract_compounds_and_concentrations_space_delimited_fallback_parses_hu
 
     assert compounds == ["benzene", "TBAPF6"]
     assert concentrations == ["5 mM", "0.5 M"]
+
+
+def test_space_delimited_parser_uses_one_concentration_direction_per_filename(
+    ecat_module,
+    blank_echem_factory,
+):
+    obj = blank_echem_factory(ecat_module.echem)
+    obj.name = (
+        "CC-1-75 50 mM tosylpyrrolidine 125 mM h2nboc 1 mM h-act "
+        "0.1m tbapf6 mecn cart 0-2.5V 100 mVs 10^-3 sensitivity"
+    )
+
+    compounds, concentrations = obj.extract_compounds_and_concentrations()
+
+    assert compounds == ["tosylpyrrolidine", "h2nboc", "h-act"]
+    assert concentrations == ["50 mM", "125 mM", "1 mM"]
+
+
+def test_get_data_from_name_extracts_electrode_tokens(
+    ecat_module,
+    blank_echem_factory,
+):
+    obj = blank_echem_factory(ecat_module.echem)
+    obj.name = "sample_gcWE_ptCE_AgAgBF4RE_10mM_Fc_run01"
+
+    obj.get_data_from_name()
+
+    assert obj.working_electrode == "GC"
+    assert obj.counter_electrode == "Pt"
+    assert obj.reference_electrode == "AgAgBF4"
+
+
+def test_show_single_includes_combined_electrode_entry_when_available(
+    ecat_module,
+    cv_factory,
+):
+    obj = cv_factory(name="100mVs_sample_CO2_MeCN_10mM_Fc_run01")
+    obj.working_electrode = "GC"
+    obj.counter_electrode = "Pt"
+    obj.reference_electrode = "Ag/AgNO3"
+
+    table = ecat_module.show(obj, {"pretty print": False, "return": True})
+    values = dict(zip(table["Metric"], table["Value"]))
+
+    assert values["Electrode"] == "WE: GC; CE: Pt; RE: Ag/AgNO3"
 
 
 def test_get_data_from_name_uses_case_insensitive_default_aliases(

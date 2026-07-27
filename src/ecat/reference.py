@@ -28,7 +28,7 @@ from .utils import *  # noqa: F401,F403
 from .metadata import get_file_times
 from .objects import echem
 from .options import ImportOptions
-from .parsers import exp_type_short as _exp_type_short
+from .parsers import exp_type_short as _exp_type_short, _format_file_for_warning
 
 def _is_manual_shift(value):
     """Return True only for real numeric manual shifts, not bools."""
@@ -119,13 +119,16 @@ def _build_reference_failure_message(
     """
     ref_name = getattr(ref_cv, "name", "Unknown reference file")
     ref_path = getattr(ref_cv, "filepath", None)
+    ref_options = getattr(ref_cv, "options", {}) or {}
 
     lines = [
         f"Failed to identify a reference couple in: {ref_name}",
     ]
 
     if ref_path:
-        lines.append(f"  File: {ref_path}")
+        lines.append(
+            f"  File: {_format_file_for_warning(ref_path, ref_options.get('_display root'))}"
+        )
 
     if len(x_use) > 0:
         lines.append(
@@ -151,9 +154,9 @@ def _build_reference_failure_message(
         "",
         "Suggestions:",
         "  - Plot this reference file and confirm it actually contains a clean reversible couple.",
-        "  - Move 'shift guess' closer to the expected Fc/Fc+ position.",
-        "  - Increase 'shift window' if the search region is too narrow.",
-        "  - Increase 'shift max delta ep' if the couple is broader than expected.",
+        "  - Move 'reference guess' closer to the expected Fc/Fc+ position.",
+        "  - Increase 'reference window' if the search region is too narrow.",
+        "  - Increase 'reference max delta ep' if the couple is broader than expected.",
         "  - Try setting 'troubleshoot': True to inspect the search behavior.",
         "  - If the file is not a good reference, rename/exclude it or use a manual shift.",
     ])
@@ -309,7 +312,7 @@ def find_reference_midpoint_from_cv(
 
     return float(best["midpoint"]), best
 
-def _format_reference_display(ref_file, root_abs):
+def _format_reference_display(ref_file, root_abs, *, quote=False):
     """
     Return a compact display string for a reference file.
 
@@ -324,8 +327,10 @@ def _format_reference_display(ref_file, root_abs):
     filename = os.path.basename(ref_file)
 
     if rel_folder == ".":
-        return filename
-    return os.path.join(rel_folder, filename)
+        display = filename
+    else:
+        display = os.path.join(rel_folder, filename).replace(os.sep, "/")
+    return f"`{display}`" if quote else display
 
 def _resolve_reference_file_path(ref_file, root_abs):
     if not ref_file:
@@ -337,9 +342,11 @@ def _resolve_reference_file_path(ref_file, root_abs):
     ref_path = os.path.abspath(ref_path)
 
     if not os.path.exists(ref_path):
-        raise ValueError(f"Reference file does not exist:\n{ref_path}")
+        display_path = _format_file_for_warning(ref_path, root_abs)
+        raise ValueError(f"Reference file does not exist:\n{display_path}")
     if not os.path.isfile(ref_path):
-        raise ValueError(f"Reference file is not a file:\n{ref_path}")
+        display_path = _format_file_for_warning(ref_path, root_abs)
+        raise ValueError(f"Reference file is not a file:\n{display_path}")
 
     return ref_path
 
@@ -347,19 +354,18 @@ def _compute_explicit_reference_file_shift(reference_config, root_abs, options):
     ref_file = _resolve_reference_file_path(reference_config.get("file"), root_abs)
 
     ref_options = options.copy()
-    ref_options["shift potential"] = False
-    ref_options["shift guess"] = None
+    ref_options["reference mode"] = "none"
     ref_options["print"] = False
 
     ref_cv = echem.from_file(ref_file, ref_options)
     shift_guess, _ = find_reference_midpoint_from_cv(
         ref_cv=ref_cv,
         guess=reference_config.get("guess", 0.4),
-        window=options.get("shift window", 0.3),
+        window=options.get("reference window", 0.3),
         prominence=options.get("peak prominence", None),
-        max_delta_ep=options.get("shift max delta ep", 0.20),
-        target_delta_ep=options.get("shift target delta ep", 0.08),
-        smooth=options.get("shift smooth", True),
+        max_delta_ep=options.get("reference max delta ep", 0.20),
+        target_delta_ep=options.get("reference target delta ep", 0.08),
+        smooth=options.get("reference smooth", True),
         troubleshoot=options.get("troubleshoot", False),
     )
     return ref_file, shift_guess
@@ -389,15 +395,13 @@ def _resolve_reference_shifts(file_paths, root_abs, options):
         "self_ref_failures": {},      # failed self-reference-only files
     }
 
-    shift_pot = options.get("shift potential", False)
-    manual_shift = _is_manual_shift(shift_pot)
-
-    use_reference_files = (shift_pot not in (False, None)) and not manual_shift
+    reference_mode = _coerce_reference_mode(options.get("reference mode", "none"))
+    use_reference_files = reference_mode == "keyword"
     if not use_reference_files or len(file_paths) == 0:
         return result
 
     root_abs = os.path.abspath(root_abs)
-    ref_name = "Fc" if shift_pot is True else str(shift_pot)
+    ref_name = str(options.get("reference keyword") or "Fc")
     file_paths_abs = [os.path.abspath(p) for p in file_paths]
 
     # Collect all reference-like files, indexed by their containing folder
@@ -411,7 +415,7 @@ def _resolve_reference_shifts(file_paths, root_abs, options):
         print(
             f'Could not find any filenames containing "{ref_name}" in the searched folders.\n'
             "Files will remain unreferenced. Enter a manual shift with "
-            "{'shift potential': 0.4} if needed."
+            "{'reference mode': 'manual', 'reference offset': 0.4} if needed."
         )
         return result
 
@@ -451,18 +455,18 @@ def _resolve_reference_shifts(file_paths, root_abs, options):
 
     def _compute_shift(ref_file):
         ref_options = options.copy()
-        ref_options["shift potential"] = False
+        ref_options["reference mode"] = "none"
         ref_options["print"] = False
 
         ref_cv = echem.from_file(ref_file, ref_options)
         shift_guess, _ = find_reference_midpoint_from_cv(
             ref_cv=ref_cv,
-            guess=options.get("shift guess", 0.4),
-            window=options.get("shift window", 0.3),
+            guess=options.get("reference guess", 0.4),
+            window=options.get("reference window", 0.3),
             prominence=options.get("peak prominence", None),
-            max_delta_ep=options.get("shift max delta ep", 0.20),
-            target_delta_ep=options.get("shift target delta ep", 0.08),
-            smooth=options.get("shift smooth", True),
+            max_delta_ep=options.get("reference max delta ep", 0.20),
+            target_delta_ep=options.get("reference target delta ep", 0.08),
+            smooth=options.get("reference smooth", True),
             troubleshoot=options.get("troubleshoot", False),
         )
         return shift_guess
@@ -490,7 +494,7 @@ def _resolve_reference_shifts(file_paths, root_abs, options):
                 ref_failures[ref_file] = str(exc)
 
         if ref_mapping[folder_abs] is None and candidates:
-            display_name = _format_reference_display(candidates[0], root_abs)
+            display_name = _format_reference_display(candidates[0], root_abs, quote=True)
             raise ValueError(
                 f"Reference shift assignment failed for: {display_name}\n\n"
                 f"{ref_failures[candidates[0]]}"
@@ -598,7 +602,7 @@ def _print_reference_correction_summary(
 
     elif mode == "file":
         if explicit_reference_file is not None:
-            print(f"  File: {_format_reference_display(explicit_reference_file, root_abs)}")
+            print(f"  File: {_format_reference_display(explicit_reference_file, root_abs, quote=True)}")
         if explicit_reference_shift is not None:
             print(f"  Midpoint: {round_sigfigs(explicit_reference_shift, 4)} V")
 
@@ -635,7 +639,7 @@ def _print_reference_correction_summary(
                 folder_items.append((folder_label, "none"))
             else:
                 shift = ref_shift_guess.get(ref_file)
-                ref_text = _format_reference_display(ref_file, root_abs)
+                ref_text = _format_reference_display(ref_file, root_abs, quote=True)
                 if shift is not None:
                     ref_text = f"{ref_text} = {round_sigfigs(shift, 4)} V"
                 folder_items.append((folder_label, ref_text))
@@ -659,24 +663,24 @@ def _print_reference_usage_list(reference_records, root_abs):
     print("Reference assignments:")
     for r in reference_records:
         idx = r["index"]
-        name = r["display_name"]
+        name = _format_reference_display(r["filepath"], root_abs, quote=True)
 
         if r["mode"] == "self":
             print(f"  [{idx}] {name}  -> self  ({round_sigfigs(r['shift'], 4)} V)")
         elif r["mode"] == "fallback":
-            ref_display = _format_reference_display(r["ref_file"], root_abs)
+            ref_display = _format_reference_display(r["ref_file"], root_abs, quote=True)
             print(
                 f"  [{idx}] {name}  -> fallback to {ref_display} "
                 f"({round_sigfigs(r['shift'], 4)} V)"
             )
         elif r["mode"] == "folder":
-            ref_display = _format_reference_display(r["ref_file"], root_abs)
+            ref_display = _format_reference_display(r["ref_file"], root_abs, quote=True)
             print(
                 f"  [{idx}] {name}  -> {ref_display} "
                 f"({round_sigfigs(r['shift'], 4)} V)"
             )
         elif r["mode"] == "file":
-            ref_display = _format_reference_display(r["ref_file"], root_abs)
+            ref_display = _format_reference_display(r["ref_file"], root_abs, quote=True)
             print(
                 f"  [{idx}] {name}  -> explicit file {ref_display} "
                 f"({round_sigfigs(r['shift'], 4)} V)"
@@ -684,7 +688,7 @@ def _print_reference_usage_list(reference_records, root_abs):
         elif r["mode"] == "manual":
             print(f"  [{idx}] {name}  -> manual shift ({round_sigfigs(r['shift'], 4)} V)")
         elif r["mode"] == "map":
-            ref_display = _format_reference_display(r["ref_file"], root_abs)
+            ref_display = _format_reference_display(r["ref_file"], root_abs, quote=True)
             print(
                 f"  [{idx}] {name}  -> mapped to {ref_display} "
                 f"({round_sigfigs(r['shift'], 4)} V)"
@@ -696,12 +700,12 @@ def _print_reference_usage_troubleshoot(reference_records, root_abs):
     print("Detailed reference assignments:")
     for r in reference_records:
         idx = r["index"]
-        name = r["display_name"]
+        name = _format_reference_display(r["filepath"], root_abs, quote=True)
         print(f"  [{idx}] {name}")
         print(f"    mode: {r['mode']}")
 
         if r["ref_file"] is not None:
-            print(f"    reference file: {_format_reference_display(r['ref_file'], root_abs)}")
+            print(f"    reference file: {_format_reference_display(r['ref_file'], root_abs, quote=True)}")
 
         if r["shift"] is not None:
             print(f"    shift: {round_sigfigs(r['shift'], 4)} V")
@@ -754,11 +758,11 @@ def _apply_reference_map(object_list, reference_records, reference_map, referenc
                 shift_guess, _ = find_reference_midpoint_from_cv(
                     ref_cv=ref_obj,
                     guess=reference_config.get("guess", 0.4),
-                    window=options.get("shift window", 0.3),
+                    window=options.get("reference window", 0.3),
                     prominence=options.get("peak prominence", None),
-                    max_delta_ep=options.get("shift max delta ep", 0.20),
-                    target_delta_ep=options.get("shift target delta ep", 0.08),
-                    smooth=options.get("shift smooth", True),
+                    max_delta_ep=options.get("reference max delta ep", 0.20),
+                    target_delta_ep=options.get("reference target delta ep", 0.08),
+                    smooth=options.get("reference smooth", True),
                     troubleshoot=options.get("troubleshoot", False),
                 )
             finally:
@@ -784,48 +788,6 @@ def _apply_reference_map(object_list, reference_records, reference_map, referenc
         target_obj.reference_failure_message = None
 
 
-def normalize_legacy_reference_options(options):
-    options = dict(options)
-
-    # new names win over old ones
-    if "reference label" not in options and "shift label" in options:
-        options["reference label"] = options["shift label"]
-
-    if "reference guess" not in options and "shift guess" in options:
-        options["reference guess"] = options["shift guess"]
-
-    if "reference mode" in options:
-        if (
-                options.get("reference mode") == "manual"
-                and "reference offset" not in options
-        ):
-            legacy = options.get("shift potential", None)
-            if isinstance(legacy, (int, float)) and not isinstance(legacy, bool):
-                options["reference offset"] = float(legacy)
-        return options
-
-    legacy = options.get("shift potential", False)
-
-    if legacy is False:
-        options["reference mode"] = "none"
-
-    elif isinstance(legacy, (int, float)) and not isinstance(legacy, bool):
-        options["reference mode"] = "manual"
-        options["reference offset"] = float(legacy)
-
-    elif legacy is True:
-        options["reference mode"] = "keyword"
-        options["reference keyword"] = "Fc"
-
-    elif isinstance(legacy, str):
-        if legacy.lower() == "auto":
-            options["reference mode"] = "auto"
-        else:
-            options["reference mode"] = "keyword"
-            options["reference keyword"] = legacy
-
-    return options
-
 REFERENCE_LABEL_MAP = {
     "fc": "Fc/Fc+",
     "ferrocene": "Fc/Fc+",
@@ -846,7 +808,7 @@ def canonical_reference_label(keyword, default="reference"):
     return REFERENCE_LABEL_MAP.get(str(keyword).strip().lower(), str(keyword))
 
 def resolve_reference_options(options):
-    options = normalize_legacy_reference_options(options)
+    options = dict(options)
 
     mode = _coerce_reference_mode(options.get("reference mode", "none"))
     offset = options.get("reference offset")
@@ -935,11 +897,9 @@ def resolve_reference_options(options):
     raise ValueError(f"Unknown reference mode: {mode}")
 
 
-
 __all__ = [
     'midpoint_potential',
     'find_reference_midpoint_from_cv',
-    'normalize_legacy_reference_options',
     'canonical_reference_label',
     'resolve_reference_options',
 ]

@@ -208,7 +208,7 @@ def _append_model_code(lines: list[str], model_options: dict[str, object] | None
         else:
             lines.extend(
                 [
-                    "# Multiple-CV fitting is not wired in the eCAT app yet.",
+                    "# Multiple-CV fitting is not available in the eCAT app yet.",
                     "fit_result = None",
                 ]
             )

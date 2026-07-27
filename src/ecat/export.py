@@ -1,5 +1,6 @@
 """Export helpers for processed data and figures."""
 
+import json
 import os
 import re
 
@@ -123,11 +124,22 @@ def _save_data_csv(object_list, options=None):
 
         return pd.DataFrame({label: values})
 
-    def scale_and_label_frame(e, Y: pd.DataFrame, is_x: bool = False) -> pd.DataFrame:
+    def scale_and_label_frame(
+        e,
+        Y: pd.DataFrame,
+        is_x: bool = False,
+        x_column_count: int = 0,
+    ) -> pd.DataFrame:
         parts = []
-        for c in Y.columns:
+        for index, c in enumerate(Y.columns):
             col_series = pd.Series(Y[c].values, name=str(c))
-            parts.append(scale_and_label_series(e, col_series, is_x=is_x))
+            parts.append(
+                scale_and_label_series(
+                    e,
+                    col_series,
+                    is_x=is_x or index < x_column_count,
+                )
+            )
         return pd.concat(parts, axis=1)
 
     def is_grouped(seq) -> bool:
@@ -198,7 +210,11 @@ def _save_data_csv(object_list, options=None):
                     str(c) if c is not None and not str(c).startswith("Unnamed") else f"c{i + 1}"
                     for i, c in enumerate(df.columns)
                 ]
-                df_conv = scale_and_label_frame(e, df, is_x=False)
+                df_conv = scale_and_label_frame(
+                    e,
+                    df,
+                    x_column_count=max(0, int(getattr(e, "num_x_cols", 0))),
+                )
                 df_conv.columns = pd.MultiIndex.from_product([[nm], list(df_conv.columns)])
                 dprint(f"[Ungrouped {i}] using .data with shape {df.shape}")
             else:
@@ -379,6 +395,22 @@ def _xlsx_value(value):
     return value
 
 
+def _json_manifest_value(value):
+    if value is None or (
+        isinstance(value, (list, tuple, dict)) and len(value) == 0
+    ):
+        return ""
+
+    def json_default(item):
+        if isinstance(item, np.generic):
+            return item.item()
+        if isinstance(item, (pd.Timestamp, pd.Timedelta)):
+            return str(item)
+        raise TypeError(f"{type(item).__name__} is not JSON serializable")
+
+    return json.dumps(value, default=json_default, sort_keys=True)
+
+
 def _write_dataframe(ws, df):
     for col_idx, column in enumerate(df.columns, start=1):
         ws.cell(row=1, column=col_idx, value=str(column))
@@ -420,6 +452,8 @@ def _build_manifest(objects, routing, options):
         "reference shift",
         "reference label",
         "reference mode",
+        "filter",
+        "processing history",
     }
     requested_pretty = set()
     if mode not in {"used", "all"}:
@@ -457,6 +491,33 @@ def _build_manifest(objects, routing, options):
     for col in selected:
         if col not in manifest.columns:
             manifest[col] = display_df[col].values if col in display_df.columns else ""
+
+    filter_summaries = []
+    processing_histories = []
+    for obj in objects:
+        filter_metadata = getattr(obj, "filter_metadata", None)
+        if filter_metadata:
+            from .preprocessing import _filter_summary
+
+            filter_summaries.append(_filter_summary(filter_metadata))
+        else:
+            filter_summaries.append("")
+        processing_histories.append(
+            _json_manifest_value(getattr(obj, "processing_history", None))
+        )
+
+    provenance_columns = {
+        "Filter": filter_summaries,
+        "Processing History": processing_histories,
+    }
+    for column, values in provenance_columns.items():
+        include = (
+            mode == "all"
+            or column in requested_pretty
+            or any(str(value).strip() for value in values)
+        )
+        if include:
+            manifest[column] = values
 
     if "Name" not in manifest.columns:
         manifest["Name"] = [getattr(obj, "name", "") for obj in objects]

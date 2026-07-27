@@ -27,7 +27,9 @@ def test_ch_parser_handles_tab_delimiter_uA_units_and_raw_timestamp(ecat_module,
     assert type(obj).__name__ == "cv"
     assert obj.timestamp == "not-a-real-timestamp"
     assert list(obj.data.columns) == ["Potential", "Current"]
-    assert obj.units == {"Potential": "V", "Current": "uA"}
+    assert obj.units == {"Potential": "V", "Current": "A"}
+    assert obj.data["Current"].tolist() == pytest.approx([-0.10e-6, 0.20e-6, 0.30e-6])
+    assert obj.parse_result.raw_metadata["original_units"]["Current"] == "uA"
     assert obj.scan_rate == pytest.approx(0.05)
     assert obj.segments == 2
     assert obj.delta_x == pytest.approx(0.25)
@@ -63,6 +65,151 @@ def test_ch_parser_accepts_month_timestamp_without_period(ecat_module, tmp_path)
     assert obj.timestamp == datetime(2026, 5, 7, 15, 59, 59)
 
 
+@pytest.mark.parametrize(
+    ("month_name", "month_number"),
+    [
+        ("January", 1),
+        ("February", 2),
+        ("March", 3),
+        ("April", 4),
+        ("May", 5),
+        ("June", 6),
+        ("July", 7),
+        ("August", 8),
+        ("September", 9),
+        ("October", 10),
+        ("November", 11),
+        ("December", 12),
+    ],
+)
+def test_ch_parser_accepts_full_month_timestamps(
+    ecat_module,
+    tmp_path,
+    month_name,
+    month_number,
+):
+    path = tmp_path / f"{month_name.lower()}_timestamp.txt"
+    path.write_text(
+        "\n".join(
+            [
+                f"{month_name} 7, 2026   15:59:59",
+                "Cyclic Voltammetry",
+                "Instrument Model: CHI760E",
+                "Init E = -0.30",
+                "High E = 0.30",
+                "Low E = -0.30",
+                "Scan Rate = 0.05",
+                "Segment = 2",
+                "Sample Interval = 0.05",
+                "Sensitivity = 1e-6",
+                "Potential/V,Current/A",
+                "-0.30,-1e-7",
+                "0.00,0",
+                "0.30,1e-7",
+            ]
+        )
+        + "\n",
+        encoding="ISO-8859-1",
+    )
+
+    obj = ecat_module.echem.from_file(str(path), {})
+
+    assert obj.timestamp == datetime(2026, month_number, 7, 15, 59, 59)
+
+
+@pytest.mark.parametrize(
+    ("month_text", "month_number"),
+    [
+        ("Jan.", 1),
+        ("Feb.", 2),
+        ("Mar.", 3),
+        ("Apr.", 4),
+        ("May", 5),
+        ("June", 6),
+        ("July", 7),
+        ("Aug.", 8),
+        ("Sept.", 9),
+        ("Oct.", 10),
+        ("Nov.", 11),
+        ("Dec.", 12),
+    ],
+)
+def test_ch_parser_accepts_observed_personal_cv_month_spellings(
+    ecat_module,
+    tmp_path,
+    month_text,
+    month_number,
+):
+    path = tmp_path / f"{month_text.lower().rstrip('.')}_observed_timestamp.txt"
+    path.write_text(
+        "\n".join(
+            [
+                f"{month_text} 7, 2026   15:59:59",
+                "Cyclic Voltammetry",
+                "Instrument Model: CHI760E",
+                "Init E = -0.30",
+                "High E = 0.30",
+                "Low E = -0.30",
+                "Scan Rate = 0.05",
+                "Segment = 2",
+                "Sample Interval = 0.05",
+                "Sensitivity = 1e-6",
+                "Potential/V,Current/A",
+                "-0.30,-1e-7",
+                "0.00,0",
+                "0.30,1e-7",
+            ]
+        )
+        + "\n",
+        encoding="ISO-8859-1",
+    )
+
+    obj = ecat_module.echem.from_file(str(path), {})
+
+    assert obj.timestamp == datetime(2026, month_number, 7, 15, 59, 59)
+
+
+def test_ch_parser_warns_when_filename_scan_rate_disagrees_with_header(
+    ecat_module,
+    tmp_path,
+):
+    path = tmp_path / "MeCN_Ar_sample_500mVs.txt"
+    path.write_text(
+        "\n".join(
+            [
+                "June 16, 2026   14:41:35",
+                "Cyclic Voltammetry",
+                "Instrument Model: CHI760E",
+                "Init E = -0.30",
+                "High E = 0.30",
+                "Low E = -0.30",
+                "Scan Rate (V/s) = 0.2",
+                "Segment = 2",
+                "Sample Interval = 0.05",
+                "Sensitivity = 1e-6",
+                "Potential/V,Current/A",
+                "-0.30,-1e-7",
+                "0.00,0",
+                "0.30,1e-7",
+            ]
+        )
+        + "\n",
+        encoding="ISO-8859-1",
+    )
+
+    with pytest.warns(
+        UserWarning,
+        match=(
+            r"Scan rate mismatch.*MeCN_Ar_sample_500mVs\.txt"
+            r".*header.*200 mV/s.*filename.*500 mV/s"
+        ),
+    ):
+        obj = ecat_module.echem.from_file(str(path), {})
+
+    assert obj.scan_rate == pytest.approx(0.2)
+    assert any("Scan rate mismatch" in warning for warning in obj.parse_result.warnings)
+
+
 def test_basi_parser_handles_tab_delimiter_and_missing_switching_potential_2(
     ecat_module,
     fixtures_dir,
@@ -71,7 +218,9 @@ def test_basi_parser_handles_tab_delimiter_and_missing_switching_potential_2(
 
     assert type(obj).__name__ == "cv"
     assert obj.type == "Cyclic Voltammetry"
-    assert obj.units == {"Potential": "V", "Current": "uA"}
+    assert obj.units == {"Potential": "V", "Current": "A"}
+    assert obj.data["Current"].tolist() == pytest.approx([-0.10e-6, 0.20e-6, 0.30e-6])
+    assert obj.parse_result.raw_metadata["original_units"]["Current"] == "uA"
     assert obj.init_E == pytest.approx(-0.25)
     assert obj.min_E == pytest.approx(-0.25)
     assert obj.max_E == pytest.approx(0.25)
@@ -297,8 +446,9 @@ def test_cp_parsers_expose_same_core_data_and_metadata(ecat_module, tmp_path):
     for software, obj in parsed.items():
         assert type(obj).__name__ == "cp", software
         assert obj.type == "Chronopotentiometry"
-        assert list(obj.data.columns) == ["Time", "Potential"]
-        assert obj.units == {"Time": "s", "Potential": "V"}
+        assert list(obj.data.columns[:2]) == ["Time", "Potential"]
+        assert obj.units["Time"] == "s"
+        assert obj.units["Potential"] == "V"
         assert obj.data["Time"].tolist() == pytest.approx(expected_time)
         assert obj.data["Potential"].tolist() == pytest.approx(expected_potential)
         assert obj.x().tolist() == pytest.approx(expected_time)
@@ -326,6 +476,9 @@ def test_cp_parsers_expose_same_core_data_and_metadata(ecat_module, tmp_path):
     assert parsed["EC-Lab"].cathodic_current == pytest.approx(-0.025)
     assert parsed["EC-Lab"].segments == 2
     assert parsed["EC-Lab"].quiet_time == pytest.approx(4.0)
+    assert list(parsed["EC-Lab"].data.columns) == ["Time", "Potential", "Current", "Step", "Cycle"]
+    assert parsed["EC-Lab"].units["Current"] == "A"
+    assert parsed["EC-Lab"].data["Current"].tolist() == pytest.approx([0.025, 0.025, -0.025])
 
 
 def test_beta_exp_type_parser_matrix_exposes_expected_public_axes(ecat_module, fixtures_dir):
@@ -375,6 +528,38 @@ def test_loaded_objects_expose_standard_parse_result_contract(ecat_module, fixtu
         assert parsed.source == obj.filepath
 
 
+def test_parse_file_to_result_preserves_raw_text_metadata_before_promotion(
+    ecat_module,
+    fixtures_dir,
+):
+    parsed = ecat_module.echem.parse_file_to_result(
+        str(fixtures_dir / "ch_cv.txt"),
+        {},
+    )
+
+    assert isinstance(parsed, ecat_module.ParseResult)
+    assert parsed.technique == "CV"
+    assert parsed.software == "CH"
+    assert parsed.parser == "CH"
+    assert parsed.raw_metadata["header_lines"][1] == "Cyclic Voltammetry"
+    assert parsed.raw_metadata["data_header_line"] == "Potential/V,Current/A"
+    assert parsed.raw_metadata["original_columns"] == ["Potential/V", "Current/A"]
+    assert parsed.raw_metadata["delimiter"] == ","
+
+
+def test_promoted_object_keeps_preparse_raw_metadata_and_final_cv_metadata(
+    ecat_module,
+    fixtures_dir,
+):
+    obj = ecat_module.echem.from_file(str(fixtures_dir / "ch_cv.txt"), {})
+
+    assert type(obj).__name__ == "cv"
+    assert obj.parse_result.raw_metadata["data_header_line"] == "Potential/V,Current/A"
+    assert obj.parse_result.raw_metadata["original_columns"] == ["Potential/V", "Current/A"]
+    assert obj.parse_result.metadata["scan_rate"] == pytest.approx(0.05)
+    assert obj.parse_result.metadata["segments"] == 2
+
+
 def test_parse_file_returns_standard_parse_result_without_exposing_object(ecat_module, fixtures_dir):
     parsed = ecat_module.parse_file(str(fixtures_dir / "ch_cv.txt"), {})
 
@@ -383,6 +568,144 @@ def test_parse_file_returns_standard_parse_result_without_exposing_object(ecat_m
     assert parsed.software == "CH"
     assert list(parsed.data.columns[:2]) == ["Potential", "Current"]
     assert parsed.metadata["scan_rate"] == pytest.approx(0.05)
+
+
+def test_ch_and_basi_parse_file_to_result_use_parser_contract_without_legacy_reader(
+    ecat_module,
+    fixtures_dir,
+):
+    assert not hasattr(ecat_module.echem, "read_file_data")
+
+    cases = [
+        ("ch_cv.txt", "CH"),
+        ("basi_cv.txt", "BASI"),
+    ]
+    for filename, expected_software in cases:
+        parsed = ecat_module.echem.parse_file_to_result(str(fixtures_dir / filename), {})
+
+        assert isinstance(parsed, ecat_module.ParseResult), filename
+        assert parsed.technique == "CV"
+        assert parsed.software == expected_software
+        assert parsed.parser == expected_software
+        assert list(parsed.data.columns) == ["Potential", "Current"]
+        assert parsed.units == {"Potential": "V", "Current": "A"}
+        assert parsed.metadata["scan_rate"] == pytest.approx(0.05)
+        assert parsed.metadata["segments"] == 2
+
+
+def test_direct_cv_constructor_uses_parse_result_after_vendor_readers_removed(
+    ecat_module,
+    fixtures_dir,
+):
+    for name in ("_parse_ch_file", "_parse_basi_file", "_parse_eclab_file", "get_data_from_file"):
+        assert not hasattr(ecat_module.cv, name)
+
+    cases = [
+        ("ch_cv.txt", "CH"),
+        ("basi_cv.txt", "BASI"),
+        ("eclab_cv.txt", "EC-Lab"),
+    ]
+    for filename, expected_software in cases:
+        obj = ecat_module.cv(str(fixtures_dir / filename), {})
+
+        assert type(obj).__name__ == "cv", filename
+        assert obj.software == expected_software
+        assert obj.type == "Cyclic Voltammetry"
+        assert list(obj.data.columns) == ["Potential", "Current"]
+        assert obj.units == {"Potential": "V", "Current": "A"}
+        assert obj.scan_rate == pytest.approx(0.05)
+        assert obj.segments == 2
+        assert obj.parse_result.raw_metadata["data_header_line"]
+
+
+def test_direct_chrono_constructors_use_parse_result_after_legacy_readers_removed(
+    ecat_module,
+    fixtures_dir,
+):
+    assert not hasattr(ecat_module.ca, "_parse_ch_ca_file")
+    for name in ("_parse_ch_cp_file", "_parse_eclab_cp_file", "_parse_basi_cp_file", "get_data_from_file"):
+        assert not hasattr(ecat_module.cp, name)
+
+    ca_obj = ecat_module.ca(str(fixtures_dir / "ch_ca_tiny.txt"), {})
+    cp_obj = ecat_module.cp(str(fixtures_dir / "ch_cp_tiny.txt"), {})
+    eclab_cp_obj = ecat_module.cp(str(fixtures_dir / "eclab_gcpl_tiny.txt"), {})
+
+    assert type(ca_obj).__name__ == "ca"
+    assert ca_obj.software == "CH"
+    assert ca_obj.type == "Chronoamperometry"
+    assert list(ca_obj.data.columns) == ["Time", "Current"]
+    assert ca_obj.sample_interval == pytest.approx(0.1)
+    assert ca_obj.run_time == pytest.approx(3.0)
+
+    assert type(cp_obj).__name__ == "cp"
+    assert cp_obj.software == "CH"
+    assert cp_obj.type == "Chronopotentiometry"
+    assert list(cp_obj.data.columns) == ["Time", "Potential"]
+    assert cp_obj.sample_int == pytest.approx(0.5)
+    assert cp_obj.segments == 201
+
+    assert type(eclab_cp_obj).__name__ == "cp"
+    assert eclab_cp_obj.software == "EC-Lab"
+    assert list(eclab_cp_obj.data.columns) == ["Time", "Potential", "Current", "Step", "Cycle"]
+    assert eclab_cp_obj.sample_int == pytest.approx(2.0)
+    assert eclab_cp_obj.anodic_current == pytest.approx(0.025)
+    assert eclab_cp_obj.cathodic_current == pytest.approx(-0.025)
+
+
+def test_direct_dpv_constructor_uses_parse_result_after_legacy_ch_reader_removed(
+    ecat_module,
+    tmp_path,
+):
+    filepath = tmp_path / "ch_dpv.txt"
+    filepath.write_text(
+        "\n".join(
+            [
+                "July 23, 2023   12:00:08",
+                "Differential Pulse Voltammetry",
+                "Instrument Model: CHI840D",
+                "Init E (V) = 0.8",
+                "Final E (V) = 0.0",
+                "Incr E (V) = 0.02",
+                "Amplitude (V) = 0.05",
+                "Pulse Width (sec) = 0.05",
+                "Sample Width (sec) = 0.0167",
+                "Pulse Period (sec) = 0.5",
+                "Quiet Time (sec) = 2",
+                "Sensitivity (A/V) = 1e-5",
+                "Comp R (ohm) = 10",
+                "UC R (ohm) = 5",
+                "Potential/V, Current/A",
+                "0.80, -3.0e-6",
+                "0.78, -3.5e-6",
+                "0.76, -4.0e-6",
+            ]
+        )
+        + "\n",
+        encoding="ISO-8859-1",
+    )
+
+    assert not hasattr(ecat_module.dpv, "_parse_ch_dpv_file")
+    assert not hasattr(ecat_module.dpv, "get_data_from_file")
+
+    obj = ecat_module.dpv(str(filepath), {})
+
+    assert type(obj).__name__ == "dpv"
+    assert obj.software == "CH"
+    assert obj.type == "Differential Pulse Voltammetry"
+    assert list(obj.data.columns) == ["Potential", "Current"]
+    assert obj.units == {"Potential": "V", "Current": "A"}
+    assert obj.init_E == pytest.approx(0.8)
+    assert obj.final_E == pytest.approx(0.0)
+    assert obj.incr_E == pytest.approx(0.02)
+    assert obj.amplitude == pytest.approx(0.05)
+    assert obj.pulse_width == pytest.approx(0.05)
+    assert obj.sample_width == pytest.approx(0.0167)
+    assert obj.pulse_period == pytest.approx(0.5)
+    assert obj.quiet_time == pytest.approx(2.0)
+    assert obj.sensitivity == pytest.approx(1e-5)
+    assert obj.ir_comp_resistance == pytest.approx(10.0)
+    assert obj.ir_uncomp_resistance == pytest.approx(5.0)
+    assert obj.ir_comp_percent == pytest.approx(100 * 10.0 / 15.0)
 
 
 def test_ch_dpv_parser_exposes_expected_public_axis_contract(ecat_module, repo_root):
@@ -437,11 +760,25 @@ def test_basi_cp_parser_handles_header_and_begin_data_export(ecat_module, tmp_pa
 def test_generic_fallback_preserves_header_row_and_units_when_present(ecat_module, fixtures_dir):
     obj = ecat_module.echem.from_file(str(fixtures_dir / "generic_header_units.txt"), {})
 
-    assert type(obj).__name__ == "echem"
-    assert obj.type == "Unknown"
+    assert type(obj).__name__ == "cv"
+    assert obj.type == "Cyclic Voltammetry"
     assert list(obj.data.columns) == ["Potential", "Current"]
-    assert obj.units == {"Potential": "V", "Current": "mA"}
+    assert obj.units == {"Potential": "V", "Current": "A"}
     assert obj.data["Potential"].tolist() == pytest.approx([-0.25, 0.0, 0.25])
+    assert obj.data["Current"].tolist() == pytest.approx([-1e-4, 2e-4, 3e-4])
+    assert any("inferred" in warning.lower() for warning in obj.parse_result.warnings)
+
+
+def test_direct_generic_reader_canonicalizes_header_units(ecat_module, fixtures_dir):
+    obj = ecat_module.echem(
+        str(fixtures_dir / "generic_header_units.txt"),
+        {"software": None},
+    )
+
+    assert list(obj.data.columns) == ["Potential", "Current"]
+    assert obj.units == {"Potential": "V", "Current": "A"}
+    assert obj.data["Current"].tolist() == pytest.approx([-1e-4, 2e-4, 3e-4])
+    assert obj.parse_result.raw_metadata["original_units"]["Current"] == "mA"
 
 
 def test_generic_fallback_exposes_filename_gas_and_solvent_metadata(ecat_module, tmp_path):
@@ -455,7 +792,8 @@ def test_generic_fallback_exposes_filename_gas_and_solvent_metadata(ecat_module,
 
     obj = ecat_module.echem.from_file(str(filepath), {})
 
-    assert type(obj).__name__ == "echem"
+    assert type(obj).__name__ == "cv"
+    assert obj.type == "Cyclic Voltammetry"
     assert obj.gas == "CO2"
     assert obj.solvent == "MeCN"
     assert obj.stats()["gas"] == "CO2"
@@ -492,8 +830,8 @@ def test_from_file_honors_explicit_software_override_for_loading(ecat_module, fi
         {"software": None},
     )
 
-    assert type(obj).__name__ == "echem"
-    assert obj.type == "Unknown"
+    assert type(obj).__name__ == "cv"
+    assert obj.type == "Cyclic Voltammetry"
 
 
 def test_get_data_respects_recursive_search_flag_on_small_folder_tree(
@@ -520,7 +858,7 @@ def test_get_data_respects_recursive_search_flag_on_small_folder_tree(
             "folder path": str(tmp_path),
             "recursive search": False,
             "print": False,
-            "shift potential": False,
+            "reference mode": "none",
         }
     )
     recursive = ecat_module.get_data(
@@ -528,7 +866,7 @@ def test_get_data_respects_recursive_search_flag_on_small_folder_tree(
             "folder path": str(tmp_path),
             "recursive search": True,
             "print": False,
-            "shift potential": False,
+            "reference mode": "none",
         }
     )
 
@@ -681,10 +1019,11 @@ def test_from_file_promotes_eclab_gcpl_exports_to_cp(ecat_module, fixtures_dir):
 
     assert type(obj).__name__ == "cp"
     assert obj.type == "Chronopotentiometry"
-    assert list(obj.data.columns) == ["Time", "Potential"]
-    assert obj.units == {"Time": "s", "Potential": "V"}
+    assert list(obj.data.columns) == ["Time", "Potential", "Current", "Step", "Cycle"]
+    assert obj.units == {"Time": "s", "Potential": "V", "Current": "A"}
     assert obj.data["Time"].tolist() == pytest.approx([0.0, 2.0, 4.0])
     assert obj.data["Potential"].tolist() == pytest.approx([0.700, 0.750, 0.690])
+    assert obj.data["Current"].tolist() == pytest.approx([0.025, 0.025, -0.025])
     assert obj.sample_int == pytest.approx(2.0)
     assert obj.cathodic_current == pytest.approx(-0.025)
     assert obj.anodic_current == pytest.approx(0.025)
@@ -716,7 +1055,7 @@ def test_get_data_loads_ca_and_cp_subclasses_from_small_folder_tree(
             "folder path": str(tmp_path),
             "recursive search": True,
             "print": False,
-            "shift potential": False,
+            "reference mode": "none",
         }
     )
 
@@ -738,7 +1077,7 @@ def test_get_data_returns_empty_list_when_small_folder_tree_has_no_txt_files(eca
             "folder path": str(tmp_path),
             "recursive search": False,
             "print": False,
-            "shift potential": False,
+            "reference mode": "none",
         }
     )
 

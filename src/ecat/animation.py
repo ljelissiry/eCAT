@@ -15,7 +15,11 @@ from matplotlib.transforms import Bbox
 import numpy as np
 
 from ._progress import NotebookProgressDisplay, progress_enabled
-from .options import MultiplotOptions, PlotOptions, _canonical_option_key, _drop_legacy_alias_mirrors
+from .options import (
+    MultiplotOptions,
+    PlotOptions,
+    _canonical_option_key,
+)
 
 _PLOT_OPTION_KEYS = {field_name.replace("_", " ") for field_name in MultiplotOptions.__dataclass_fields__}
 _ANIMATION_SAVE_OPTION_KEYS = {
@@ -108,25 +112,23 @@ class AnimationResult:
 def _normalize_animation_options(options=None):
     if options is None:
         raw_options = {}
-    elif hasattr(options, "to_legacy_dict"):
-        raw_options = options.to_legacy_dict()
+    elif hasattr(options, "to_options_dict"):
+        raw_options = options.to_options_dict()
     elif isinstance(options, Mapping):
         raw_options = dict(options)
     else:
         raw_options = dict(options)
-    if any(str(key).startswith("_") for key in raw_options):
-        raw_options = _drop_legacy_alias_mirrors(raw_options)
-    legacy_options = MultiplotOptions.from_options(raw_options).to_legacy_dict()
-    if hasattr(options, "to_legacy_dict"):
-        return legacy_options
+    resolved_options = MultiplotOptions.from_options(raw_options).to_options_dict()
+    if hasattr(options, "to_options_dict"):
+        return resolved_options
     return {
-        _canonical_option_key(key).replace("_", " "): legacy_options[_canonical_option_key(key).replace("_", " ")]
+        _canonical_option_key(key).replace("_", " "): resolved_options[_canonical_option_key(key).replace("_", " ")]
         for key in raw_options
     }
 
 
 def _resolve_animation_options(options):
-    return MultiplotOptions.from_options(options).to_legacy_dict()
+    return MultiplotOptions.from_options(options).to_options_dict()
 
 
 def _normalize_animation_input(obj_or_list):
@@ -209,7 +211,6 @@ def _static_animation_plot_options(options, is_list, provided_options=None):
     provided_keys = set(dict(provided_options or {}).keys())
     if not is_list and "legend" not in provided_keys:
         plot_options["legend"] = "auto"
-    plot_options["animate"] = False
     plot_options["new plot"] = False if is_list else True
     return plot_options
 
@@ -553,7 +554,7 @@ def _display_animation_setup(summary, options):
     frame = _setup_table(summary)
     if options.get("pretty print", True):
         try:
-            from IPython.display import Markdown, display
+            from IPython.display import display
 
             styled = (
                 frame.style
@@ -561,12 +562,22 @@ def _display_animation_setup(summary, options):
                 .set_properties(**{"text-align": "left", "white-space": "pre-wrap"})
                 .set_table_styles(
                     [
+                        {
+                            "selector": "caption",
+                            "props": [
+                                ("caption-side", "top"),
+                                ("text-align", "left"),
+                                ("font-weight", "600"),
+                                ("color", "inherit"),
+                                ("margin-bottom", "0.35em"),
+                            ],
+                        },
                         {"selector": "th", "props": [("text-align", "left")]},
                         {"selector": "td", "props": [("text-align", "left")]},
                     ]
                 )
+                .set_caption("Animation Setup")
             )
-            display(Markdown("**Animation Setup:**"))
             display(styled)
             return
         except Exception:
@@ -708,11 +719,10 @@ def _merged_render_options(base_options, override_options=None):
 
 
 def _split_animation_override_options(override_options):
-    if hasattr(override_options, "to_legacy_dict"):
-        return override_options.to_legacy_dict(), {}
+    if hasattr(override_options, "to_options_dict"):
+        return override_options.to_options_dict(), {}
 
     raw_options = dict(override_options or {})
-    is_legacy_option_dict = any(str(key).startswith("_") for key in raw_options)
     plot_options = {}
     save_options = {}
     unknown = []
@@ -729,8 +739,6 @@ def _split_animation_override_options(override_options):
     if unknown:
         unknown_key = unknown[0]
         raise ValueError(f"Unknown animation render option '{unknown_key}'.")
-    if is_legacy_option_dict:
-        plot_options = _drop_legacy_alias_mirrors(plot_options)
     normalized_plot_options = _normalize_animation_options(plot_options) if plot_options else {}
     return normalized_plot_options, save_options
 

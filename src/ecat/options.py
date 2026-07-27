@@ -42,30 +42,35 @@ def normalize_key(key):
 _OPTION_KEY_ALIASES = {
     "colorbar_height": "colorbar_height_scale",
     "exact_potentials": "exact_potential",
-    "fit_colors": "fit_color",
     "guess_potentials": "guess_potential",
     "in_place": "inplace",
+    "invert_y": "invert_y_axis",
     "minimum_gradient_entries": "min_gradient_entries",
+    "n_cat": "catalyst_electrons",
+    "ncat": "catalyst_electrons",
+    "n_turn": "turnover_electrons",
+    "nturn": "turnover_electrons",
     "non_catalytic_guess_potentials": "non_catalytic_guess_potential",
     "peak_potentials": "peak_potential",
-    "plot_labels": "labels",
     "redox_potentials": "redox_potential",
-    "scan_rates": "scan_rate",
     "sig_fig": "sig_figs",
     "sigfig": "sig_figs",
     "sigfigs": "sig_figs",
     "significant_figure": "sig_figs",
     "significant_figures": "sig_figs",
     "tangent_potentials": "tangent_potential",
+    "wave_ranges": "wave_range",
 }
 
 _SECTION_ALIASES = {
+    "cv_data": "simulation.cv_data",
+    "fit_cv": "simulation.fit_cv",
     "import_data": "get_data",
-    "get_cvs": "get_data",
     "get_data_from_excel": "get_data",
     "nicholson_analysis": "nicholson",
     "peak_potential": "cv_analysis",
     "sevcik": "sevcik_analysis",
+    "simulate_cv": "simulation.simulate_cv",
     "trumpet": "trumpet_analysis",
     "tafel": "tafel_analysis",
 }
@@ -73,7 +78,6 @@ _SECTION_ALIASES = {
 _METHOD_SECTION_ALIASES = {
     "animate": "plot",
     "echem.from_file": "get_data",
-    "get_cvs": "get_data",
     "get_data_from_excel": "get_data",
     "echem.x": "plot",
     "echem.y": "plot",
@@ -83,6 +87,8 @@ _METHOD_SECTION_ALIASES = {
     "cv.y": "plot",
     "cv.xy": "plot",
     "cv.plot": "plot",
+    "cv.plot_program": "plot",
+    "cv.trim": "trim",
     "cv.current_at_potential": "cv_analysis",
     "cv.peak_potential": "cv_analysis",
     "cv.peak_current": "peak_current",
@@ -107,6 +113,10 @@ _METHOD_SECTION_ALIASES = {
     "ca.plot": "plot",
     "ca.charge": "plot",
     "ca.time_at_charge": "plot",
+    "ca.current_at_time": "plot",
+    "ca.average_current": "plot",
+    "ca.rate_at_time": "plot",
+    "ca.average_rate": "plot",
 }
 
 
@@ -131,26 +141,6 @@ def _option_values_equivalent(first, second):
         return False
 
 
-def _drop_legacy_alias_mirrors(options):
-    """Remove mirrored legacy alias keys from an already-normalized option dict."""
-    cleaned = dict(options or {})
-    for canonical_key, alias_key in (
-        ("labels", "plot labels"),
-        ("fit color", "fit colors"),
-        ("scan rate", "scan rates"),
-    ):
-        if canonical_key not in cleaned or alias_key not in cleaned:
-            continue
-        canonical_value = cleaned[canonical_key]
-        alias_value = cleaned[alias_key]
-        if canonical_value is None or _option_values_equivalent(canonical_value, alias_value):
-            cleaned[canonical_key] = alias_value if canonical_value is None else canonical_value
-            cleaned.pop(alias_key, None)
-        elif alias_value is None:
-            cleaned.pop(alias_key, None)
-    return cleaned
-
-
 def _friendly_key(key):
     return str(key).replace("_", " ")
 
@@ -167,7 +157,6 @@ _DISPLAY_KEY_OVERRIDES = {
 _SECTION_OPTION_DISPLAY_OVERRIDES = {
     "fowa": {
         "exact_potential": "exact potential(s)",
-        "fit_color": "fit color(s)",
         "guess_potential": "guess potential(s)",
         "non_catalytic_cv": "non-catalytic cv(s)",
         "non_catalytic_cvs": "non-catalytic cv(s)",
@@ -175,30 +164,28 @@ _SECTION_OPTION_DISPLAY_OVERRIDES = {
         "peak_potential": "peak potential(s)",
         "redox_potential": "redox potential(s)",
         "tangent_potential": "tangent potential(s)",
+        "wave_range": "wave range(s)",
     },
     "fit_peak_current": {
         "exact_potential": "exact potential(s)",
-        "fit_color": "fit color(s)",
         "guess_potential": "guess potential(s)",
         "tangent_potential": "tangent potential(s)",
     },
     "fit_peak_potential": {
         "exact_potential": "exact potential(s)",
-        "fit_color": "fit color(s)",
         "guess_potential": "guess potential(s)",
     },
     "fit_rate": {
-        "fit_color": "fit color(s)",
+    },
+    "multi_scatterplot": {
     },
     "nicholson": {
         "exact_potential": "exact potential(s)",
         "guess_potential": "guess potential(s)",
-        "scan_rate": "scan rate(s)",
         "tangent_potential": "tangent potential(s)",
     },
     "plateau_current": {
         "exact_potential": "exact potential(s)",
-        "fit_color": "fit color(s)",
         "guess_potential": "guess potential(s)",
         "non_catalytic_cv": "non-catalytic cv(s)",
         "non_catalytic_cvs": "non-catalytic cv(s)",
@@ -209,13 +196,11 @@ _SECTION_OPTION_DISPLAY_OVERRIDES = {
     },
     "sevcik_analysis": {
         "exact_potential": "exact potential(s)",
-        "fit_color": "fit color(s)",
         "guess_potential": "guess potential(s)",
         "tangent_potential": "tangent potential(s)",
     },
     "trumpet_analysis": {
         "exact_potential": "exact potential(s)",
-        "fit_color": "fit color(s)",
         "guess_potential": "guess potential(s)",
         "tangent_potential": "tangent potential(s)",
     },
@@ -326,11 +311,36 @@ _SIMULATION_OPTION_SCHEMAS = {
             "type": "float or str",
             "description": "Point-density target used by automatic stride selection when points is omitted.",
         },
+        "background correction": {
+            "category": "Reference/correction",
+            "default": None,
+            "type": "str or bool or None",
+            "choices": [None, "start current", "tangent"],
+            "description": "Measured-current background subtraction applied after potential-window/segment selection and before stride. 'start current' subtracts the first selected current point; 'tangent' subtracts a fitted tangent baseline.",
+        },
+        "tangent range": {
+            "category": "Reference/correction",
+            "default": "auto",
+            "type": "str or list[float] or tuple[float, float]",
+            "description": "Potential range used only when background correction is 'tangent' and eCAT anchors the tangent from a peak/exact/guess potential.",
+        },
+        "tangent potential": {
+            "category": "Reference/correction",
+            "default": None,
+            "type": "float or None",
+            "description": "Manual tangent anchor potential used by cv_data background correction when 'background correction' is 'tangent'.",
+        },
+        "percent threshold": {
+            "category": "Reference/correction",
+            "default": None,
+            "type": "float or None",
+            "description": "Percentile threshold passed to tangent-point selection when 'background correction' is 'tangent'.",
+        },
         "estimate Cdl": {
             "category": "Fitting/analysis",
             "default": "auto",
             "type": "bool or str",
-            "description": "'auto' estimates Cdl from measured current separation near the start potential when measured current and scan-rate metadata are available; False skips the estimate.",
+            "description": "'auto' estimates total Cdl in F from measured current separation near the start potential when measured current and scan-rate metadata are available; False skips the estimate.",
         },
         "Cdl window": {
             "category": "Fitting/analysis",
@@ -344,6 +354,12 @@ _SIMULATION_OPTION_SCHEMAS = {
             "type": "str",
             "choices": ["median", "mean"],
             "description": "Aggregation method used for automatic Cdl estimation.",
+        },
+        "incubation time": {
+            "category": "Data/input",
+            "default": 0.0,
+            "type": "float",
+            "description": "Bulk homogeneous chemical incubation time in seconds applied after thermodynamic pre-equilibrium and before the electrochemical quiet-time hold; surface and mixed-phase steps remain backend-only.",
         },
     },
     "simulation.simulate_cv": {
@@ -389,6 +405,12 @@ _SIMULATION_OPTION_SCHEMAS = {
             "default": False,
             "type": "bool",
             "description": "Print diagnostic checks for likely simulation-parameter interpretation issues such as missing diffusion values or mechanism/species mismatches.",
+        },
+        "print states": {
+            "category": "Output/display",
+            "default": False,
+            "type": "bool",
+            "description": "Display entered, equilibrated, and post-incubation concentrations for species whose prepared amount changed.",
         },
         "plot options": {
             "category": "Plotting",
@@ -536,8 +558,9 @@ _OPTION_CATEGORY_BY_KEY = {
     "y_column": "Data/input",
     "y_columns": "Data/input",
     "group_keys": "Data/input",
+    "group_by": "Data/input",
+    "group_mode": "Data/input",
     "scan_rate": "Data/input",
-    "scan_rates": "Data/input",
     "species": "Data/input",
     "metadata_columns": "Selection/filtering",
     "data_columns": "Selection/filtering",
@@ -552,9 +575,7 @@ _OPTION_CATEGORY_BY_KEY = {
     "guess_potential": "Selection/filtering",
     "exact_potential": "Selection/filtering",
     "wave_range": "Selection/filtering",
-    "fit_range": "Selection/filtering",
     "fit_indices": "Selection/filtering",
-    "fit_ranges": "Selection/filtering",
     "log_fit_indices": "Selection/filtering",
     "mode": "Selection/filtering",
     "logic": "Selection/filtering",
@@ -571,13 +592,10 @@ _OPTION_CATEGORY_BY_KEY = {
     "reference_guess": "Reference/correction",
     "reference_label": "Reference/correction",
     "allow_self_reference": "Reference/correction",
-    "shift_potential": "Reference/correction",
-    "shift_guess": "Reference/correction",
-    "shift_label": "Reference/correction",
-    "shift_window": "Reference/correction",
-    "shift_smooth": "Reference/correction",
-    "shift_max_delta_ep": "Reference/correction",
-    "shift_target_delta_ep": "Reference/correction",
+    "reference_window": "Reference/correction",
+    "reference_smooth": "Reference/correction",
+    "reference_max_delta_ep": "Reference/correction",
+    "reference_target_delta_ep": "Reference/correction",
     "background_correction": "Fitting/analysis",
     "ecat_shift_warning_threshold": "Reference/correction",
     "ip0": "Reference/correction",
@@ -588,8 +606,6 @@ _OPTION_CATEGORY_BY_KEY = {
     "scale": "Reference/correction",
 
     # Units and normalization
-    "convert_current": "Units/normalization",
-    "current_density": "Units/normalization",
     "invert_current": "Units/normalization",
     "electrode_diameter": "Units/normalization",
     "electrode_area": "Units/normalization",
@@ -604,8 +620,6 @@ _OPTION_CATEGORY_BY_KEY = {
     "v": "Units/normalization",
     "n": "Units/normalization",
     "num_electrons": "Units/normalization",
-    "normalize": "Units/normalization",
-    "normalize_params": "Units/normalization",
     "k_homo": "Units/normalization",
     "k0": "Units/normalization",
     "formula_mode": "Units/normalization",
@@ -613,15 +627,14 @@ _OPTION_CATEGORY_BY_KEY = {
     # Plotting
     "plot": "Plotting",
     "plot_all": "Plotting",
+    "plot_data": "Plotting",
     "plot_fit": "Plotting",
     "plot_log_log": "Plotting",
-    "log_log_plot": "Plotting",
     "plot_local_slopes": "Plotting",
     "plot_diagnostic": "Plotting",
     "new_plot": "Plotting",
     "label": "Plotting",
     "labels": "Plotting",
-    "plot_labels": "Plotting",
     "deduplicate_labels": "Plotting",
     "plot_convention": "Plotting",
     "offset": "Plotting",
@@ -641,7 +654,7 @@ _OPTION_CATEGORY_BY_KEY = {
     "title_fontsize": "Plotting",
     "subtitle_fontsize": "Plotting",
     "color": "Plotting",
-    "default_colors": "Plotting",
+    "colors": "Plotting",
     "default_discrete_colormap": "Plotting",
     "default_gradient_colormap": "Plotting",
     "color_mode": "Plotting",
@@ -661,16 +674,22 @@ _OPTION_CATEGORY_BY_KEY = {
     "gradient_gamma": "Plotting",
     "gradient_reverse": "Plotting",
     "directional_arrows": "Plotting",
+    "linestyle": "Plotting",
+    "simulation_linestyle": "Plotting",
     "min_gradient_entries": "Plotting",
     "plot_style": "Plotting",
+    "fit_band": "Plotting",
+    "fit_band_level": "Plotting",
     "fit_color": "Plotting",
     "fit_linestyle": "Plotting",
     "fit_linewidth": "Plotting",
+    "fit_line_range": "Plotting",
     "fit_alpha": "Plotting",
     "fit_label": "Plotting",
     "y_col": "Plotting",
-    "y_flip": "Plotting",
-    "invert_y": "Plotting",
+    "invert_y_axis": "Plotting",
+    "invert_current_axis": "Axes",
+    "invert_charge_axis": "Axes",
     "stacking": "Plotting",
     "label_alterations": "Plotting",
     "xlabel": "Axes",
@@ -680,9 +699,6 @@ _OPTION_CATEGORY_BY_KEY = {
     "one_column": "Plotting",
     "segment_color_mode": "Plotting",
     "segment_color_groups": "Plotting",
-    "animate": "Plotting",
-    "animate_minrate": "Plotting",
-    "animate_repeat": "Plotting",
     "trace_mode": "Animation",
     "schedule": "Animation",
     "timing_mode": "Animation",
@@ -796,7 +812,6 @@ _OPTION_CATEGORY_BY_SECTION = {
         "y_unit": "Axes",
         "xlabel": "Axes",
         "ylabel": "Axes",
-        "plot_labels": "Labels/titles",
         "labels": "Labels/titles",
         "deduplicate_labels": "Labels/titles",
         "label_alterations": "Labels/titles",
@@ -815,7 +830,7 @@ _OPTION_CATEGORY_BY_SECTION = {
         "legend_sample_length": "Legend",
         "legend_fontsize": "Legend",
         "color_mode": "Color mapping",
-        "default_colors": "Color mapping",
+        "colors": "Color mapping",
         "default_discrete_colormap": "Color mapping",
         "default_gradient_colormap": "Color mapping",
         "gradient_by": "Color mapping",
@@ -841,7 +856,6 @@ _OPTION_CATEGORY_BY_SECTION = {
         "y_axis": "Axes",
         "x_unit": "Axes",
         "y_unit": "Axes",
-        "plot_labels": "Labels/titles",
         "label_alterations": "Labels/titles",
         "title": "Labels/titles",
         "subtitle": "Labels/titles",
@@ -853,6 +867,7 @@ _OPTION_CATEGORY_BY_SECTION = {
         "legend_outside": "Legend",
         "legend_fontsize": "Legend",
         "color_mode": "Color mapping",
+        "colors": "Color mapping",
         "gradient_by": "Color mapping",
         "gradient_species": "Color mapping",
         "gradient_scale": "Color mapping",
@@ -877,9 +892,6 @@ _OPTION_CATEGORY_BY_SECTION = {
 OPTION_DESCRIPTIONS = {
     "allow_self_reference": "Allow a CV to be considered as its own reference candidate during automatic reference shifting.",
     "analysis": "Enable additional analysis output for multi-panel plotting workflows.",
-    "animate": "Animate the CV scan instead of making a static plot.",
-    "animate_minrate": "Minimum frame rate used for CV animation playback.",
-    "animate_repeat": "Repeat the animation after the final frame.",
     "trace_mode": "How each animated trace appears after its scheduled start time.",
     "schedule": "How multiple traces are offset relative to one another during animation playback.",
     "timing_mode": "Whether animation timing uses experiment-derived timing, normalized timing, or auto selection.",
@@ -894,12 +906,21 @@ OPTION_DESCRIPTIONS = {
     "baseline_correction": "Baseline-current correction for CA charge integration: False, True, tail, or threshold.",
     "baseline_tail_fraction": "Final fraction of a CA trace used for tail baseline correction.",
     "baseline_threshold": "Current threshold in A used for threshold CA baseline correction.",
+    "corrected_current": "Use the baseline-corrected CA current trace for CA plotting or current extraction when baseline correction is enabled.",
+    "method": "Filtering method: savgol, gaussian, median, butterworth, or moving average.",
+    "column": "Data column to filter; matching is case-insensitive.",
+    "window": "Point window for Savitzky-Golay or moving-average filtering; 'auto' resolves to a valid odd window.",
+    "polyorder": "Polynomial order for Savitzky-Golay filtering.",
+    "size": "Kernel size in points for median filtering.",
+    "cutoff": "Butterworth low-pass cutoff as a fraction of the Nyquist frequency.",
+    "order": "Butterworth filter order.",
     "background_correction": "Background correction method used before kinetic analysis.",
     "c": "Analyte or catalyst concentration; strings are parsed as concentration units when supported. For normalize, explicit C overrides species-based lookup.",
     "c_unit": "Unit for numeric concentration values. Required for numeric C; not needed when C is a concentration string or normalize resolves C from species.",
-    "catalyst_electrons": "Number of catalyst redox-wave electron-transfer processes used in kinetic equations.",
+    "catalyst_electrons": "Catalyst redox-wave electron count n_cat used in kinetic equations. Aliases: n_cat, ncat.",
     "charge_color": "Color used for cumulative charge overlays and target markers.",
     "color": "Primary plot color.",
+    "colors": "Explicit discrete colors for multi-trace or multi-segment plots. If omitted, eCAT uses its internal default palette.",
     "color_mode": "Color assignment mode for multi-trace plots.",
     "cycles": "Cycle selection for CP cycle plots: int, list of ints, (start, end), or (start, end, step).",
     "colorbar_height_scale": "Scale factor for colorbar height in gradient legends.",
@@ -911,8 +932,6 @@ OPTION_DESCRIPTIONS = {
     "colorbar_trace_ticks": "Show tick marks for each trace value on gradient colorbars.",
     "columns": "Number of columns expected in imported data files.",
     "compounds": "Compound names associated with the electrochemical object.",
-    "convert_current": "Convert current values to a requested display or analysis unit.",
-    "current_density": "Normalize current by electrode area to report current density.",
     "custom_formula": "Callable custom kinetic formula used instead of the built-in formula.",
     "custom_reader": "User-provided file reader for custom import formats.",
     "custom_parser": "User-provided filename metadata parser.",
@@ -920,7 +939,6 @@ OPTION_DESCRIPTIONS = {
     "data_columns": "Data columns included in Excel exports: 'all', 'x', 'y', or an explicit column/list of columns.",
     "d": "Diffusion coefficient in cm^2/s.",
     "decimal": "Decimal separator used in imported text files.",
-    "default_colors": "Default discrete colors used for multi-trace plots.",
     "default_discrete_colormap": "Default colormap used for discrete color legends.",
     "default_gradient_colormap": "Default colormap used for gradient legends.",
     "deduplicate_labels": "Append distinguishing metadata to duplicate multiplot labels; True uses scan window and segments.",
@@ -942,20 +960,28 @@ OPTION_DESCRIPTIONS = {
     "experiment_type": "Experiment type to assume or require during import.",
     "fit": "Whether to fit the analysis result.",
     "fit_alpha": "Alpha transparency for plotted fit lines.",
+    "fit_band": "Shaded uncertainty band around plotted fitted model lines: none, confidence, prediction, or both. Confidence bands show uncertainty in the fitted mean curve; prediction bands include residual scatter for a new observation.",
+    "fit_band_level": "Confidence level for plotted fit bands, such as 0.95 for a 95% band.",
     "fit_basis": "Axis or quantity used to select the fit region.",
-    "fit_color": "Color of plotted fit lines. Use a single color or a list for multiple fits; the plural alias 'fit colors' is accepted.",
-    "fit_colors": "Sequence of colors for plotted fit lines when multiple fits are drawn.",
+    "fit_color": "Color of plotted fit lines. Use a single color or a list for multiple fits.",
     "fit_indices": "Row/position-based fit selection. Use [start, stop] with Python-style exclusive stop, None for an open-ended side, a boolean mask, explicit indices, multiple windows for one disconnected fit, or a dict for named fits.",
     "fit_label": "Whether to label the fit line, or custom label text.",
+    "fit_line_range": "Plot-only x-value range for drawing fitted model lines. A dict or list may configure multiple fit lines. This does not change fitted points, parameters, residuals, or fit statistics.",
     "fit_model": "Fit model name, callable, or formula string.",
     "fit_params": "Parameter names for a custom callable or formula fit model.",
     "fit_init": "Initial parameter guesses for a fit model.",
     "fit_bounds": "Lower and upper bounds for a fit model; use None for an unbounded side.",
     "fit_residual": "Residual mode used for model fitting.",
     "fit_max_evals": "Maximum function evaluations for model fitting.",
+    "fit_method": "SciPy curve_fit method: auto, lm, trf, or dogbox.",
+    "fit_sigma": "Sigma/uncertainty weights passed to scipy.optimize.curve_fit.",
+    "fit_absolute_sigma": "Whether fit sigma is absolute for covariance/error estimates.",
+    "fit_check_finite": "check_finite argument passed to scipy.optimize.curve_fit.",
+    "fit_nan_policy": "nan_policy argument passed to scipy.optimize.curve_fit.",
+    "fit_jac": "Jacobian callable or finite-difference scheme passed to scipy.optimize.curve_fit.",
+    "curve_fit_options": "Advanced scipy.optimize.curve_fit keyword passthrough; eCAT still owns fit init and bounds.",
     "print_fit": "Fit print style: auto, summary, or details.",
     "print_fit_details": "If True, force detailed two-table fit printing.",
-    "fit_ranges": "Multiple x-value fit windows on the resolved/transformed x axis. Use a dict for named fits, a list for generated labels, or nested windows when one fit should use disconnected x regions.",
     "fit_linestyle": "Line style for plotted fit lines.",
     "fit_linewidth": "Line width for plotted fit lines.",
     "fit_range": "Single x-value fit window [x_min, x_max] on the resolved/transformed x axis. Bounds are inclusive; use None for an open-ended side where supported.",
@@ -977,6 +1003,8 @@ OPTION_DESCRIPTIONS = {
     "gradient_species": "Species used to resolve concentration-based gradient coloring.",
     "grid": "Whether to show major grid lines on plots.",
     "group_keys": "Metadata field or fields used to group objects before summarizing.",
+    "group_by": "Metadata field or fields used by plateau_current when auto-grouping a flat CV list into conditions.",
+    "group_mode": "Plateau-current grouping behavior: auto groups flat lists by metadata, as given treats a flat list as one validation group, and each analyzes every CV independently.",
     "guess_potential": "Initial potential guess for peak or wave selection. In complex CV analyses, the plural alias 'guess potentials' accepts per-CV values; scalar guesses keep running-guess behavior where supported.",
     "ic": "Manual catalytic plateau current.",
     "ilim": "Manual limiting or plateau current.",
@@ -984,13 +1012,15 @@ OPTION_DESCRIPTIONS = {
     "internal_call": "Mark an internal helper call to suppress user-facing side effects.",
     "invert_current": "Multiply current by -1.",
     "inplace": "Mutate the existing object instead of returning a copied result.",
-    "invert_y": "Invert the plotted y-axis.",
+    "invert_y_axis": "Invert the plotted y-axis.",
+    "invert_current_axis": "Override shared y-axis inversion for a CA current axis; None inherits invert y axis.",
+    "invert_charge_axis": "Override shared y-axis inversion for a CA charge axis; None inherits invert y axis.",
     "ip0": "Non-catalytic reference peak current.",
     "ip0_scan_rate": "Scan rate of the CV used to measure ip0.",
     "ip0_sqrt_scan_rate_slope": "Forced-origin slope for ip0 versus sqrt(scan rate).",
     "label": "Label for a plotted trace or analysis output.",
     "label_alterations": "Text replacements applied to generated labels.",
-    "labels": "Explicit labels for plotted objects. The legacy alias 'plot labels' is accepted; use only one spelling.",
+    "labels": "Explicit labels for plotted objects.",
     "legend": "Whether to show a plot legend.",
     "legend_bbox_to_anchor": "Matplotlib legend anchor box.",
     "legend_fontsize": "Font size for plot legends.",
@@ -999,12 +1029,14 @@ OPTION_DESCRIPTIONS = {
     "legend_outside": "Place the legend outside the axes.",
     "legend_pad": "Padding used when placing legends outside the axes.",
     "legend_sample_length": "Visual sample length used for legend handles.",
+    "linestyle": "Line style for plotted traces.",
+    "simulation_linestyle": "Line style for simulated traces in multiplot overlays.",
     "local_slope_mode": "Method for calculating local slopes.",
     "log_fit_indices": "Fit indices used for log-transformed fits.",
-    "log_log_plot": "Plot the fit result on log-log axes.",
-    "logic": "Logical rule used to combine filter criteria.",
+    "logic": "Logical rule used to combine top-level filter criteria. For membership keys such as compounds, concentrations, and species, lists require all values by default; use {'any': [...]} or {'all': [...]} inside the filter key for per-key logic.",
     "mechanism": "Electrocatalytic mechanism label or model choice.",
     "metadata_columns": "Object metadata columns included in exported manifests: 'used', 'all', or an explicit column/list of columns.",
+    "method": "Filtering algorithm or model method selected by the operation.",
     "metric": "Metric column or quantity to analyze.",
     "min_fit_points": "Minimum recommended number of fit points.",
     "min_gradient_entries": "Minimum number of entries before using gradient color mapping.",
@@ -1023,7 +1055,6 @@ OPTION_DESCRIPTIONS = {
     "non_catalytic_cvs": "List of non-catalytic reference CVs.",
     "non_catalytic_guess_potential": "Potential guess used for non-catalytic reference extraction. The plural alias 'non-catalytic guess potentials' accepts per-CV values.",
     "normalize": "Whether to normalize current or axes during processing.",
-    "normalize_params": "Parameters used for legacy normalization.",
     "n": "Number of electrons used in dimensionless or kinetic equations.",
     "num_electrons": "Number of electrons in the redox event.",
     "offset": "Vertical offset applied to plotted traces.",
@@ -1032,7 +1063,8 @@ OPTION_DESCRIPTIONS = {
     "overpotential_range": "Potential range used for Tafel or overpotential analysis.",
     "peak_potential": "Manual peak potential. In complex CV analyses, the plural alias 'peak potentials' accepts per-CV values.",
     "peak_fallback": "Fallback used by peak_current when peak_potential cannot find a local extremum.",
-    "peak_prominence": "Minimum peak prominence for automatic peak detection.",
+    "peak_kind": "Extremum kind used for peak-potential selection: both, infer, max, or min. The default 'both' considers maxima and minima because the current sign convention determines which one is cathodic or anodic. 'infer' maps increasing selected current to maxima and decreasing selected current to minima.",
+    "peak_prominence": "Minimum peak prominence for automatic peak detection. None uses the automatic noise estimate.",
     "parser_settings": "Advanced settings for filename metadata parsing such as prefer file metadata, compound stopwords, and recognized gases/solvents.",
     "percent_threshold": "Percent threshold used in peak or tangent selection.",
     "plateau_average_method": "Average method used to combine accepted plateau currents.",
@@ -1046,16 +1078,18 @@ OPTION_DESCRIPTIONS = {
     "plot_convention": "Electrochemical plotting convention for axis orientation and signs.",
     "plot_cv": "Whether CV analysis helpers redraw the underlying CV trace before adding diagnostics.",
     "plot_diagnostic": "Whether to show diagnostic plots for the analysis.",
+    "plot_data": "Whether fit_model should draw the original data points when plotting.",
     "plot_fit": "Whether to overlay fitted curves or lines.",
-    "plot_labels": "Explicit labels for plotted traces.",
     "plot_local_slopes": "Whether to plot local slope diagnostics.",
     "plot_log_log": "Whether to include a log-log plot.",
+    "plot_quiet_time": "When plotting a CV potential program, prepend quiet time as a negative-time hold at the starting potential.",
     "plot_scale": "Convenience axis-scale preset for scatter plots, such as log-log, semilogx, semilogy, symlog, or linear. Uses Matplotlib axis scaling and does not transform fit values.",
     "plot_options": "Nested plotting options passed through to plot helpers.",
     "scale_bar": "Draw a vertical scale bar on plot axes. Use False to hide, True to auto-pick a nice round length near 20-25% of the displayed y-axis range, a numeric value as the displayed y-axis length, or a dict with length, loc, label, unit, color, linewidth, cap width, label pad, fontsize/font size, ha, va, and remove y ticks. loc may be lower right, lower left, upper right, upper left, or an explicit (x, y) data-coordinate pair.",
     "potential_window": "Two-value potential window used to select or trim CV data.",
     "_provided_options": "Internal record of explicitly provided options.",
     "plot_peak_potential": "Whether peak-potential diagnostics are plotted during peak-current extraction.",
+    "plot_reference_diagnostic": "Whether normalize_current plot-all output includes the reference CV peak-current diagnostic before the normalized overlay. Defaults to False.",
     "plot_segment": "Segment to emphasize or plot.",
     "plot_segments": "Segments to emphasize or plot.",
     "plot_style": "Plot style such as scatter or line.",
@@ -1086,21 +1120,17 @@ OPTION_DESCRIPTIONS = {
     "return_stats": "Return a statistics dictionary instead of only a compact fit result.",
     "return": "Return the options table or menu as a pandas DataFrame.",
     "scan_dependence": "Exponent applied to scan rate.",
-    "scan_rate": "Scan rate in V/s. In Nicholson analysis, the plural alias 'scan rates' accepts per-CV values.",
-    "scan_rates": "Manual scan rates in V/s.",
+    "scan_rate": "Scan rate in V/s. A scalar applies to all CVs; a sequence supplies one value per CV.",
     "s": "Electrode area alias used for physical dimensionless CV normalization.",
     "scale": "Multiplier applied to raw current columns by scale_current.",
     "segment": "CV segment to analyze.",
     "segment_color_groups": "Segment grouping used for cv.plot segment coloring; integer minimum size or explicit segment groups.",
     "segment_color_mode": "Segment color mode for cv.plot, such as off, discrete, discrete gradient, or continuous gradient.",
     "segments": "One or more CV segments to analyze.",
-    "shift_guess": "Legacy potential guess for reference shifting.",
-    "shift_label": "Legacy label used after potential shifting.",
-    "shift_max_delta_ep": "Maximum reference peak separation allowed during reference matching.",
-    "shift_potential": "Legacy flag or value for shifting the potential axis.",
-    "shift_smooth": "Smooth data before locating reference-shift peaks.",
-    "shift_target_delta_ep": "Target reference peak separation used during reference matching.",
-    "shift_window": "Potential window used to locate reference-shift peaks.",
+    "reference_max_delta_ep": "Maximum reference peak separation allowed during reference matching.",
+    "reference_smooth": "Smooth data before locating reference peaks.",
+    "reference_target_delta_ep": "Target reference peak separation used during reference matching.",
+    "reference_window": "Potential window used to locate reference peaks.",
     "sig_figs": "Significant figures used for reported values.",
     "share_x_axes": "In Excel export, combine objects with equivalent x axes into shared x-axis blocks.",
     "sigma": "Stoichiometric or pathway exponent used in FOWA kinetics.",
@@ -1125,7 +1155,7 @@ OPTION_DESCRIPTIONS = {
     "titles": "Titles for multiple plots or panels.",
     "transform_mode": "Transform mode applied to x and/or y data.",
     "troubleshoot": "Print additional troubleshooting output.",
-    "turnover_electrons": "Catalyst equivalents or electrons used per turnover in kinetic equations.",
+    "turnover_electrons": "Turnover electron count n_turn used in kinetic equations. Aliases: n_turn, nturn.",
     "units": "Column-specific unit overrides, as a dict mapping column names to target units.",
     "validate_plateau": "Validate plateau-current scan-rate independence.",
     "v": "Scan-rate alias used for physical dimensionless CV normalization.",
@@ -1148,7 +1178,6 @@ OPTION_DESCRIPTIONS = {
     "y_column": "DataFrame column used as y data.",
     "y_column_index": "Column index used as y data.",
     "y_columns": "Multiple DataFrame columns used as y data.",
-    "y_flip": "Flip the sign of y values.",
     "y_mode": "Y-series adjustment mode before y transforms, such as raw, delta, ratio, or enhancement.",
     "y0": "Baseline y value for y-series adjustment; may be a scalar or keyed mapping.",
     "y_scale": "Scale factor applied to y values for plotting.",
@@ -1186,6 +1215,7 @@ OPTION_CHOICES = {
     "plot_convention": ["US", "IUPAC"],
     "plot_style": ["scatter", "line", "line+markers"],
     "plot_scale": ["linear", "log-log", "semilogx", "semilogy", "symlog"],
+    "fit_band": ["none", "confidence", "prediction", "both"],
     "psi_source": ["agarwal table", "empirical"],
     "redox_mode": ["half wave", "half peak", "manual"],
     "reference_mode": ["auto", "manual", "keyword", "file", "none"],
@@ -1195,6 +1225,9 @@ OPTION_CHOICES = {
 }
 
 OPTION_CHOICES_BY_SECTION = {
+    "trim": {
+        "mode": ["expand", "pointwise", "strict"],
+    },
     "scale_current": {
         "reference_mode": ["single", "both"],
     },
@@ -1249,10 +1282,10 @@ def _build_option_metadata():
             "description": "Temperature in K assigned to imported objects when the file does not provide one.",
         },
         "electrode_area": {
-            "description": "Electrode area in cm^2 assigned to imported objects; may be computed from electrode diameter when current density is requested.",
+            "description": "Electrode area in cm^2 assigned to imported objects for later current-density plotting, normalization, and kinetic analysis.",
         },
         "electrode_diameter": {
-            "description": "Electrode diameter in cm used to compute electrode area for current-density conversion when electrode area is not provided.",
+            "description": "Electrode diameter in cm used to compute electrode area when electrode area is not provided.",
         },
         "scan_rate": {
             "description": "Scan rate in V/s assigned to imported objects when the parser or file metadata does not provide one.",
@@ -1262,9 +1295,6 @@ def _build_option_metadata():
         },
         "reference_guess": {
             "description": "'auto' locates the reference wave automatically; a numeric value searches near that potential.",
-        },
-        "shift_guess": {
-            "description": "Legacy reference-shift guess. 'auto' locates the shifted reference wave automatically.",
         },
         "reference_keywords": {
             "description": "Reference keywords tried by reference mode 'auto'; the first successful keyword defines the shift source.",
@@ -1339,6 +1369,22 @@ def _build_option_metadata():
         },
     })
 
+    update("trim", {
+        "potential_window": {
+            "description": "Two-value potential window used to trim CV data. The shorthand e.trim(cvs, [start, stop]) fills this option.",
+        },
+        "mode": {
+            "choices": ["expand", "pointwise", "strict"],
+            "description": "Trim mode: expand preserves connected CV segments, pointwise keeps only points inside the requested window, and strict raises if the window would disconnect the CV.",
+        },
+        "inplace": {
+            "description": "When True, mutate the source CV instead of returning a trimmed copy.",
+        },
+        "x_axis": {
+            "description": "Optional x-axis used to evaluate the trim window; by default eCAT uses the CV potential axis, including reference shift when active.",
+        },
+    })
+
     update("plot", {
         "x_unit": {
             "description": "'auto' auto scales from the displayed data and object units; explicit units force the requested x-axis unit.",
@@ -1365,7 +1411,7 @@ def _build_option_metadata():
             "description": "'auto' auto colors multi-segment CVs with discrete gradients when enough segments are present and keeps simple line styling for short CVs.",
         },
         "noise_window": {
-            "description": "'auto' chooses an odd Savitzky-Golay window from the selected data length when smoothing is requested.",
+            "description": "'auto' chooses an odd Savitzky-Golay window from the selected data length when smoothing is requested; None disables Savitzky-Golay smoothing.",
         },
         "noise_polyorder": {
             "description": "'auto' chooses a Savitzky-Golay polynomial order compatible with the resolved smoothing window.",
@@ -1428,7 +1474,7 @@ def _build_option_metadata():
             "description": "'auto' builds panel subtitles from grouped-object metadata.",
         },
         "labels": {
-            "description": "Explicit labels for plotted objects. If omitted, labels are generated from object metadata. The legacy alias 'plot labels' is accepted; use only one spelling.",
+            "description": "Explicit labels for plotted objects. If omitted, labels are generated from object metadata.",
         },
         "color_mode": {
             "description": "'auto' detects scan-rate or concentration gradients and colors those groups by gradient; remaining traces use discrete colors.",
@@ -1440,7 +1486,7 @@ def _build_option_metadata():
             "description": "'auto' uses the species whose concentration varies within the detected concentration-gradient group.",
         },
         "gradient_scale": {
-            "description": "'auto' uses log scale for scan rate, square-root scale for concentration, and linear scale otherwise.",
+            "description": "'auto' uses log scale for scan rate and concentration gradients, and linear scale otherwise.",
         },
         "gradient_reverse": {
             "description": "Reverse trace color assignment within the gradient; unlike colorbar reverse, this changes which colors are applied to traces.",
@@ -1489,6 +1535,33 @@ def _build_option_metadata():
         },
     })
 
+    update("ca.plot", {
+        "invert_y_axis": {
+            "category": "Axes",
+            "description": "Invert both current and charge y axes. A specific current/charge-axis option overrides this shared setting.",
+        },
+        "invert_current_axis": {
+            "category": "Axes",
+            "description": "Invert only the current axis. None inherits invert y axis.",
+        },
+        "invert_charge_axis": {
+            "category": "Axes",
+            "description": "Invert only the charge axis. None inherits invert y axis.",
+        },
+        "y_unit": {
+            "category": "Units/normalization",
+            "description": "Current display unit, or [current unit, charge unit] for a charge overlay. A scalar controls current only and leaves charge on auto scaling.",
+        },
+        "plot_charge": {
+            "category": "Plotting",
+            "description": "Plot cumulative charge on a styled secondary y axis.",
+        },
+        "charge_color": {
+            "category": "Color mapping",
+            "description": "Color for the charge trace, secondary-axis label, ticks, and right spine.",
+        },
+    })
+
     cv_auto = {
         "x_unit": {
             "description": "'auto' auto scales from the selected CV data and stored units.",
@@ -1497,13 +1570,16 @@ def _build_option_metadata():
             "description": "'auto' auto scales from the selected CV data and stored units.",
         },
         "noise_window": {
-            "description": "'auto' chooses an odd Savitzky-Golay window from the selected data length.",
+            "description": "'auto' chooses an odd Savitzky-Golay window from the selected data length; None disables Savitzky-Golay smoothing.",
         },
         "noise_polyorder": {
             "description": "'auto' chooses a Savitzky-Golay polynomial order compatible with the resolved smoothing window.",
         },
         "peak_prominence": {
-            "description": "Minimum peak prominence for automatic peak detection; None uses the peak-detection default.",
+            "description": "Minimum peak prominence for automatic peak detection; None uses an automatic noise estimate, local to the guess potential when one is provided.",
+        },
+        "peak_kind": {
+            "description": "Extremum kind to consider for peak-potential selection. 'both' considers maxima and minima; 'infer' maps increasing selected current to maxima and decreasing selected current to minima; 'max' and 'min' force one kind.",
         },
         "peak_fallback": {
             "description": "Fallback used by peak_current when no local peak is detected. 'highest current' uses the largest absolute current in the selected segment; 'guess potential' treats the guess as an exact potential; None/'none' keeps the strict error.",
@@ -1600,6 +1676,10 @@ def _build_option_metadata():
         "reference_guess_potential": {
             "description": "Guess potential used when extracting ip0 from reference CVs; omitted values use the peak-current guess potential.",
         },
+        "plot_reference_diagnostic": {
+            "category": "Plotting",
+            "description": "When True, plot all is True, and ip0 is extracted from reference CVs, plot the reference CV peak-current diagnostic before the normalized overlay. Defaults to False.",
+        },
         "tangent_range": {
             "description": "'auto' is passed to peak_current so ip0 extraction uses automatic tangent-baseline selection.",
         },
@@ -1628,6 +1708,9 @@ def _build_option_metadata():
     })
 
     update("fowa", {
+        "fit": {
+            "description": "Whether to fit each transformed FOWA trace. True fits each CV independently and warns/skips only traces with unusable fit regions; False returns and plots transformed traces without regression or kinetic values.",
+        },
         "redox_mode": {
             "description": "Method used to resolve redox potential: half-wave, half-peak, or manual redox potential.",
         },
@@ -1650,13 +1733,19 @@ def _build_option_metadata():
             "description": "Guess potential used only for non-catalytic reference-current extraction; omitted values fall back to guess potential. The plural alias 'non-catalytic guess potentials' accepts per-CV values.",
         },
         "wave_range": {
-            "description": "Manual catalytic-wave window. If omitted, FOWA auto-selects a wave region from the transformed diagnostic curve.",
+            "description": "Manual catalytic-wave potential window. Use 'wave range' for one shared range or 'wave ranges' for one [min, max] range per catalytic CV; if omitted, FOWA selects each wave independently.",
         },
         "fit_range": {
             "description": "Single FOWA fit window on the selected fit basis. Use [min, max] for one shared window, or one [min, max] window per CV where supported.",
         },
         "tangent_range": {
             "description": "'auto' is passed to peak_current so background/current extraction uses automatic tangent-baseline selection.",
+        },
+        "y_axis": {
+            "description": "Convenience alias for diagnostic y axis in plot-all CV overlays. Use 'Current' for raw current or 'i/ip0' for normalized current.",
+        },
+        "y_unit": {
+            "description": "Display unit for raw-current plot-all diagnostic overlays; ignored for dimensionless i/ip0 overlays.",
         },
         "background_correction": {
             "description": "Background correction method used before FOWA; tangent uses the auto/manual tangent-baseline controls.",
@@ -1710,7 +1799,22 @@ def _build_option_metadata():
             "description": "Manual forced-origin slope of ip0 versus sqrt(scan rate); if omitted, it can be fitted from multiple non-catalytic CVs.",
         },
         "formula_mode": {
-            "description": "'auto' chooses direct, slope-normalized, or normalized kobs formula based on which inputs are available.",
+            "description": "'auto' chooses direct, slope-normalized, or normalized kobs formula based on which inputs are available: D/C/electrode area, ip0 sqrt scan rate slope or multiple non-catalytic CVs, or ip0 plus scan rate from manual inputs or one non-catalytic CV.",
+        },
+        "diagnostic_y_axis": {
+            "description": "Y-axis for plot-all CV overlays. The default 'i/ip0' makes one combined normalized overlay for catalytic CVs and available non-catalytic CVs when ip0 can be resolved from manual inputs, non-catalytic CVs, or an ip0 sqrt scan-rate slope; otherwise plateau_current falls back to current and records a warning.",
+        },
+        "y_axis": {
+            "description": "Convenience alias for diagnostic y axis in plot-all CV overlays. Use 'Current' for raw current or 'i/ip0' for normalized current.",
+        },
+        "y_unit": {
+            "description": "Display unit for raw-current plot-all diagnostic overlays; ignored for dimensionless i/ip0 overlays.",
+        },
+        "group_mode": {
+            "description": "How plateau_current interprets multiple catalytic CVs: auto groups a flat list by group by, as given treats the flat list as one plateau-validation condition, and each analyzes every CV independently. Nested lists are always explicit validation groups.",
+        },
+        "group_by": {
+            "description": "Metadata key(s) passed to e.group when group mode is auto. The default species groups by concentration-qualified compound identity.",
         },
         "tangent_range": {
             "description": "'auto' is passed to peak_current so catalytic/reference current extraction uses automatic tangent-baseline selection.",
@@ -1730,12 +1834,6 @@ def _build_option_metadata():
         "fit_indices": {
             "description": "Row/position-based fit selection on the resolved points. Use [start, stop] with Python-style exclusive stop; when omitted, all resolved points are included.",
         },
-        "fit_range": {
-            "description": "Single x-value fit window [x_min, x_max] on the resolved/transformed x axis.",
-        },
-        "fit_ranges": {
-            "description": "Multiple x-value fit windows on the resolved/transformed x axis. Use a dict for named fits, a list for generated labels, or nested windows when one fit should use disconnected x regions.",
-        },
         "fit_model": {
             "description": "Model fit on the resolved x/y values. Supported models are linear, power, power offset, exponential, michaelis menten, logistic, callables, and restricted formulas such as k0 + k1*x + k2*x^2.",
         },
@@ -1753,6 +1851,28 @@ def _build_option_metadata():
         },
         "fit_max_evals": {
             "description": "Maximum function evaluations for direct model fitting.",
+        },
+        "fit_method": {
+            "description": "SciPy curve_fit method. 'auto' lets SciPy choose; 'lm' is unconstrained Levenberg-Marquardt, while 'trf' and 'dogbox' support bounds and least_squares keyword options such as robust losses.",
+            "choices": ["auto", "lm", "trf", "dogbox"],
+        },
+        "fit_sigma": {
+            "description": "Sigma/uncertainty weights passed to scipy.optimize.curve_fit. If omitted, fit residual='relative' supplies sigma from |y| automatically; direct/log residuals leave sigma unset unless provided.",
+        },
+        "fit_absolute_sigma": {
+            "description": "Passed as absolute_sigma to scipy.optimize.curve_fit; controls whether parameter covariance uses absolute sigma values.",
+        },
+        "fit_check_finite": {
+            "description": "Passed as check_finite to scipy.optimize.curve_fit; leave None for SciPy's default behavior.",
+        },
+        "fit_nan_policy": {
+            "description": "Passed as nan_policy to scipy.optimize.curve_fit, such as 'omit' or 'raise'.",
+        },
+        "fit_jac": {
+            "description": "Jacobian callable or finite-difference scheme passed to scipy.optimize.curve_fit.",
+        },
+        "curve_fit_options": {
+            "description": "Advanced scipy.optimize.curve_fit keyword passthrough for optimizer details such as loss, f_scale, x_scale, or maxfev. eCAT owns p0 and bounds through fit init and fit bounds; full_output is managed internally.",
         },
         "print_fit": {
             "description": "Fit print style: auto, summary, or details. Auto uses details for explicit init/bounds, custom or constrained models, 3+ parameters, or bound-hitting fits.",
@@ -1832,13 +1952,7 @@ def _build_option_metadata():
             "description": "Metric column to fit; if omitted from plotting helpers, common rate/output metric columns are preferred.",
         },
         "fit_indices": {
-            "description": "Row/position-based fit selection on the resolved rate table. Use [start, stop] with Python-style exclusive stop; dict entries create named fits, matching fit ranges behavior.",
-        },
-        "fit_range": {
-            "description": "Single x-value fit window [x_min, x_max] on the resolved/transformed x axis.",
-        },
-        "fit_ranges": {
-            "description": "Multiple x-value fit windows on the resolved/transformed x axis. Use a dict for named fits, a list for generated labels, or nested windows when one fit should use disconnected x regions.",
+            "description": "Row/position-based fit selection on the resolved rate table. Use [start, stop], disconnected windows, or a dict of named fits; stops follow Python's exclusive convention.",
         },
         "fit_model": {
             "description": "Model fit on resolved x/y values. Supported models are linear, power, power offset, exponential, michaelis menten, logistic, callables, and restricted formulas such as k0 + k1*x + k2*x^2.",
@@ -1970,6 +2084,7 @@ def _deep_merge(base, override):
 def _option_default_registry():
     return [
         (ImportOptions, ["get_data"]),
+        (TrimOptions, ["trim"]),
         (PlotOptions, ["plot", "normalize_current"]),
         (MultiplotOptions, ["plot", "multiplot", "normalize_current"]),
         (MultiMultiplotOptions, ["plot", "multiplot", "multimultiplot", "normalize_current"]),
@@ -1980,6 +2095,7 @@ def _option_default_registry():
         (NormalizationOptions, ["cv_selection", "cv_analysis", "peak_current", "normalize_current"]),
         (ScaleCurrentOptions, ["cv_analysis", "peak_current", "scale_current"]),
         (FOWAOptions, ["plot", "multiplot", "cv_selection", "cv_analysis", "peak_current", "fowa"]),
+        (FitModelOptions, ["fit_model"]),
         (FitRateOptions, ["fit_rate"]),
         (FitPeakPotentialOptions, ["plot", "cv_selection", "cv_analysis", "fit_peak_potential"]),
         (SevcikAnalysisOptions, ["plot", "cv_selection", "cv_analysis", "peak_current", "sevcik_analysis"]),
@@ -2249,7 +2365,24 @@ def _coerce_options(cls, raw, sections):
         if str(key).startswith("_") and str(key) != "_provided_options":
             continue
         norm = _canonical_option_key(key)
+        if cls.__name__ == "ImportOptions" and norm == "shift_potential":
+            norm = "reference_mode"
+            value = "none" if value is False or str(value).strip().lower() in {"false", "off", "none", "0"} else "auto"
+        if cls.__name__ in {"PlotOptions", "MultiplotOptions"} and norm == "y_flip":
+            raise OptionError("'y flip' was removed; use 'invert y axis' to invert the plotted y-axis.")
         if norm not in valid:
+            if cls.__name__ == "ImportOptions" and norm == "convert_current":
+                raise OptionError(
+                    "'convert current' is not an import option. eCAT stores imported "
+                    "current in SI units (A); use plot/display options such as "
+                    "'y unit': 'uA' when you want microamp axes."
+                )
+            if cls.__name__ == "ImportOptions" and norm == "current_density":
+                raise OptionError(
+                    "'current density' is not an import option. Pass 'electrode area' "
+                    "during import, then use plot/display options such as "
+                    "'y axis': 'current density'."
+                )
             suggestions = difflib.get_close_matches(norm, sorted(valid), n=3)
             if len(suggestions) == 1:
                 hint = f" Did you mean '{_friendly_key(suggestions[0])}'?"
@@ -2261,6 +2394,17 @@ def _coerce_options(cls, raw, sections):
             raise OptionError(f"Unknown option '{key}' for {cls.__name__}.{hint}")
         if norm in normalized:
             first_key = original_keys[norm]
+            alias_key = None
+            if norm == "labels":
+                for candidate in (first_key, key):
+                    if _canonical_option_key(candidate) == norm and normalize_key(candidate) != norm:
+                        alias_key = candidate
+                        break
+            if alias_key is not None:
+                raise OptionError(
+                    f"Unknown option '{alias_key}' for {cls.__name__}. "
+                    "Did you mean 'labels'?"
+                )
             raise OptionError(
                 f"Options '{first_key}' and '{key}' both resolve to "
                 f"'{_friendly_key(norm)}'. Use only one spelling."
@@ -2280,13 +2424,34 @@ def _coerce_options(cls, raw, sections):
     kwargs.update(normalized)
     if "_provided_options" in valid:
         kwargs["_provided_options"] = tuple(normalized)
-    if "segments" in normalized and "segment" not in normalized and "segment" in valid:
+    if (
+        "segments" in normalized
+        and normalized["segments"] is not None
+        and "segment" not in normalized
+        and "segment" in valid
+    ):
         kwargs["segment"] = None
-    if "segment" in normalized and "segments" not in normalized and "segments" in valid:
+    if (
+        "segment" in normalized
+        and normalized["segment"] is not None
+        and "segments" not in normalized
+        and "segments" in valid
+    ):
         kwargs["segments"] = None
     opts = cls(**kwargs)
     opts.validate()
     return opts
+
+
+def _validate_fit_band_options(opts):
+    fit_band = getattr(opts, "fit_band", None)
+    if fit_band not in (None, False):
+        token = str(fit_band).strip().lower().replace("_", " ").replace("-", " ")
+        if token not in {"none", "confidence", "prediction", "both"}:
+            raise OptionError("'fit band' must be none, confidence, prediction, or both.")
+    level = float(getattr(opts, "fit_band_level", 0.95))
+    if not 0 < level < 1:
+        raise OptionError("'fit band level' must be between 0 and 1.")
 
 
 def _validate_common_cv(opts):
@@ -2294,15 +2459,31 @@ def _validate_common_cv(opts):
         raise OptionError("Use either 'segment' or 'segments', not both.")
     if opts.exact_potential is not None and opts.guess_potential is not None:
         raise OptionError("Use either 'exact potential' or 'guess potential', not both.")
-    if opts.noise_window != "auto":
+    if opts.noise_window not in (None, "auto"):
         if not isinstance(opts.noise_window, int) or opts.noise_window < 3 or opts.noise_window % 2 == 0:
-            raise OptionError("'noise window' must be 'auto' or an odd integer >= 3.")
+            raise OptionError("'noise window' must be None, 'auto', or an odd integer >= 3.")
     if (
         opts.noise_polyorder != "auto"
-        and opts.noise_window != "auto"
+        and opts.noise_window not in (None, "auto")
         and int(opts.noise_polyorder) >= int(opts.noise_window)
     ):
         raise OptionError("'noise polyorder' must be less than 'noise window'.")
+    peak_kind = getattr(opts, "peak_kind", "both")
+    if peak_kind is not None:
+        token = _choice_token(peak_kind)
+        if token not in {
+            "both",
+            "any",
+            "all",
+            "none",
+            "infer",
+            "inferred",
+            "max",
+            "maximum",
+            "min",
+            "minimum",
+        }:
+            raise OptionError("'peak kind' must be 'both', 'infer', 'max', or 'min'.")
 
 
 @dataclass(frozen=True, slots=True)
@@ -2322,7 +2503,7 @@ class ImportOptions:
     recursive_search: bool = True
     name_alterations: object | None = None
     pretty_print: bool = True
-    sort_keys: object = field(default_factory=lambda: ["timestamp"])
+    sort_keys: object = field(default_factory=lambda: ["subfolder", "timestamp"])
     reference_mode: str = "auto"
     reference_keywords: list[str] | None = None
     reference_keyword: str | None = None
@@ -2332,22 +2513,17 @@ class ImportOptions:
     reference_guess: float | str | None = "auto"
     reference_label: str = "Fc/Fc+"
     allow_self_reference: bool = True
-    shift_potential: bool | str | float = False
-    shift_guess: float | str | None = "auto"
-    shift_label: str = "Fc/Fc+"
-    shift_window: float = 0.3
-    shift_smooth: bool = True
-    shift_max_delta_ep: float = 0.20
-    shift_target_delta_ep: float = 0.08
+    reference_window: float = 0.3
+    reference_smooth: bool = True
+    reference_max_delta_ep: float = 0.20
+    reference_target_delta_ep: float = 0.08
     peak_prominence: float | None = None
     compounds: object | None = None
     gas: str | None = None
     solvent: str | None = None
     temperature: float = 298
-    convert_current: bool = False
     electrode_diameter: float = 0
     electrode_area: float = 0
-    current_density: bool = False
     invert_current: bool = False
     scan_rate: float | None = None
     _provided_options: tuple[str, ...] = field(default=(), repr=False, compare=False)
@@ -2377,10 +2553,7 @@ class ImportOptions:
             for target_idx, reference_idx in self.reference_map.items():
                 if not isinstance(target_idx, int) or not isinstance(reference_idx, int):
                     raise OptionError("'reference map' keys and values must be integer object indices.")
-        if self.current_density and not (self.electrode_area or self.electrode_diameter):
-            raise OptionError("'current density' requires 'electrode area' or 'electrode diameter'.")
-
-    def to_legacy_dict(self):
+    def to_options_dict(self):
         data = {
             field.name.replace("_", " "): getattr(self, field.name)
             for field in fields(self)
@@ -2407,28 +2580,23 @@ class ImportOptions:
         data["reference guess"] = self.reference_guess
         data["reference label"] = self.reference_label
         data["allow self reference"] = self.allow_self_reference
-        data["shift potential"] = self.shift_potential
-        data["shift guess"] = self.shift_guess
-        data["shift label"] = self.shift_label
-        data["shift window"] = self.shift_window
-        data["shift smooth"] = self.shift_smooth
-        data["shift max delta ep"] = self.shift_max_delta_ep
-        data["shift target delta ep"] = self.shift_target_delta_ep
+        data["reference window"] = self.reference_window
+        data["reference smooth"] = self.reference_smooth
+        data["reference max delta ep"] = self.reference_max_delta_ep
+        data["reference target delta ep"] = self.reference_target_delta_ep
         data["peak prominence"] = self.peak_prominence
-        data["convert current"] = self.convert_current
         data["electrode diameter"] = self.electrode_diameter
         data["electrode area"] = self.electrode_area
         data["_electrode area provided"] = "electrode_area" in self._provided_options
-        data["current density"] = self.current_density
         data["invert current"] = self.invert_current
         data["scan rate"] = self.scan_rate
         return data
 
 
-def import_options_to_legacy_dict(options=None):
+def resolve_import_options(options=None):
     if isinstance(options, dict) and "_electrode area provided" in options:
         return dict(options)
-    return ImportOptions.from_options(options).to_legacy_dict()
+    return ImportOptions.from_options(options).to_options_dict()
 
 
 @dataclass(frozen=True, slots=True)
@@ -2465,7 +2633,7 @@ class TrimOptions:
         if mode not in {"expand", "pointwise", "strict"}:
             raise OptionError("'mode' must be 'expand', 'pointwise', or 'strict'.")
 
-    def to_legacy_dict(self):
+    def to_options_dict(self):
         mode = self._canonical_mode("expand" if self.mode is None else self.mode)
         return {
             "potential window": self.potential_window,
@@ -2479,17 +2647,17 @@ class TrimOptions:
 class PlotOptions:
     plot: bool = True
     print: bool = True
+    pretty_print: bool = True
     plot_all: bool = False
     print_all: bool = False
     new_plot: bool = False
     label: str | None = None
+    linestyle: str | None = None
     legend: bool | str = "auto"
     title: bool | str = True
     subtitle: bool | str | None = "auto"
     color: str | None = "black"
-    default_colors: list[str] = field(
-        default_factory=lambda: ["black", "tab:blue", "tab:red", "tab:green", "tab:orange", "tab:purple"]
-    )
+    colors: list[str] = field(default_factory=list)
     default_gradient_colormap: str = "viridis"
     color_mode: str = "auto"
     gradient_by: str = "auto"
@@ -2510,8 +2678,9 @@ class PlotOptions:
     colorbar_trace_ticks: bool = True
     legend_mode: str = "auto"
     y_col: int = -1
-    y_flip: bool = False
-    invert_y: bool = False
+    invert_y_axis: bool = False
+    invert_current_axis: bool | None = None
+    invert_charge_axis: bool | None = None
     plot_convention: str = "IUPAC"
     sig_figs: int = 4
     offset: float = 0
@@ -2526,7 +2695,7 @@ class PlotOptions:
     title_fontsize: int | str | None = None
     subtitle_fontsize: int | str | None = None
     x_unit: str | None = "auto"
-    y_unit: str | None = "auto"
+    y_unit: str | list[str | None] | tuple[str | None, str | None] | None = "auto"
     x_scale: float | int = 1
     y_scale: float | int = 1
     xlabel: str | None = None
@@ -2537,7 +2706,7 @@ class PlotOptions:
     y_column_index: int = -1
     derivative: int | float | None = 0
     smooth: bool = False
-    noise_window: int | str = "auto"
+    noise_window: int | str | None = "auto"
     noise_polyorder: int | str = "auto"
     one_column: bool = True
     cycles: object = None
@@ -2549,6 +2718,7 @@ class PlotOptions:
     plot_charge: bool = False
     plot_ca: bool = True
     plot_target: bool = True
+    plot_quiet_time: bool = True
     target_charge: float | None = None
     target_moles: float | None = None
     target_electrons: float | None = None
@@ -2557,9 +2727,7 @@ class PlotOptions:
     baseline_correction: bool | str = False
     baseline_threshold: float | None = None
     baseline_tail_fraction: float = 0.05
-    animate: bool = False
-    animate_minrate: float | int = 0
-    animate_repeat: bool = False
+    corrected_current: bool = False
     trace_mode: str = "auto"
     schedule: str = "auto"
     timing_mode: str = "auto"
@@ -2573,8 +2741,6 @@ class PlotOptions:
     include_quiet_time: bool = False
     progress: bool | str = True
     scan_rate: float | None = None
-    normalize: bool = False
-    normalize_params: dict | None = None
     ip0: float | list[float] | None = None
     reference_index: int = 0
     reference_cv: object | None = None
@@ -2664,6 +2830,10 @@ class PlotOptions:
         _require_non_negative_number("end hold", self.end_hold)
         _require_bool("loop", self.loop)
         _require_bool("include quiet time", self.include_quiet_time)
+        if self.invert_current_axis is not None:
+            _require_bool("invert current axis", self.invert_current_axis)
+        if self.invert_charge_axis is not None:
+            _require_bool("invert charge axis", self.invert_charge_axis)
         baseline_correction = self.baseline_correction
         if isinstance(baseline_correction, str):
             baseline_correction = _normalized_choice(baseline_correction)
@@ -2694,7 +2864,7 @@ class PlotOptions:
         except ValueError as exc:
             raise OptionError(str(exc)) from exc
 
-    def to_legacy_dict(self):
+    def to_options_dict(self):
         data = {
             item.name.replace("_", " "): getattr(self, item.name)
             for item in fields(self)
@@ -2704,8 +2874,9 @@ class PlotOptions:
         data["print all"] = self.print_all
         data["new plot"] = self.new_plot
         data["y col"] = self.y_col
-        data["y flip"] = self.y_flip
-        data["invert y"] = self.invert_y
+        data["invert y axis"] = self.invert_y_axis
+        data["invert current axis"] = self.invert_current_axis
+        data["invert charge axis"] = self.invert_charge_axis
         data["plot convention"] = self.plot_convention
         data["sig figs"] = self.sig_figs
         data["label alterations"] = self.label_alterations
@@ -2715,7 +2886,6 @@ class PlotOptions:
         data["legend mode"] = self.legend_mode
         data["legend outside"] = self.legend_outside
         data["legend pad"] = self.legend_pad
-        data["default colors"] = list(self.default_colors)
         data["default gradient colormap"] = self.default_gradient_colormap
         data["color mode"] = self.color_mode
         data["gradient by"] = self.gradient_by
@@ -2755,6 +2925,7 @@ class PlotOptions:
         data["plot charge"] = self.plot_charge
         data["plot ca"] = self.plot_ca
         data["plot target"] = self.plot_target
+        data["plot quiet time"] = self.plot_quiet_time
         data["target charge"] = self.target_charge
         data["target moles"] = self.target_moles
         data["target electrons"] = self.target_electrons
@@ -2763,8 +2934,7 @@ class PlotOptions:
         data["baseline correction"] = self.baseline_correction
         data["baseline threshold"] = self.baseline_threshold
         data["baseline tail fraction"] = self.baseline_tail_fraction
-        data["animate minrate"] = self.animate_minrate
-        data["animate repeat"] = self.animate_repeat
+        data["corrected current"] = self.corrected_current
         data["trace mode"] = self.trace_mode
         data["schedule"] = self.schedule
         data["timing mode"] = self.timing_mode
@@ -2777,7 +2947,6 @@ class PlotOptions:
         data["include quiet time"] = self.include_quiet_time
         data["progress"] = self.progress
         data["scan rate"] = self.scan_rate
-        data["normalize params"] = self.normalize_params
         data["reference index"] = self.reference_index
         data["reference cv"] = self.reference_cv
         data["reference cvs"] = self.reference_cvs
@@ -2794,14 +2963,10 @@ class MultiplotOptions(PlotOptions):
     title: bool | str = "auto"
     subtitle: bool | str | None = "auto"
     labels: list[str] | None = None
-    plot_labels: list[str] | None = None
     deduplicate_labels: object = False
     legend_bbox_to_anchor: object | None = None
     titles: list[str] | str | None = "auto"
     subtitles: list[str] | str | None = "auto"
-    default_colors: list[str] = field(
-        default_factory=lambda: ["black", "tab:blue", "tab:red", "tab:green", "tab:orange", "tab:purple"]
-    )
     default_discrete_colormap: str = "tab20"
     default_gradient_colormap: str = "viridis"
     color_mode: str = "auto"
@@ -2819,6 +2984,7 @@ class MultiplotOptions(PlotOptions):
     gradient_colors: list[str] = field(default_factory=list)
     gradient_gamma: float = 1.0
     gradient_reverse: bool = False
+    simulation_linestyle: str | None = None
     colorbar_tick_labels: str = "endpoints"
     colorbar_trace_ticks: bool = True
 
@@ -2826,12 +2992,10 @@ class MultiplotOptions(PlotOptions):
     def from_options(cls, options=None):
         return _coerce_options(cls, options, ["plot", "multiplot", "normalize_current"])
 
-    def to_legacy_dict(self):
-        data = PlotOptions.to_legacy_dict(self)
+    def to_options_dict(self):
+        data = PlotOptions.to_options_dict(self)
         data["_deduplicate labels explicit"] = "deduplicate_labels" in self._provided_options
-        labels = self.labels if self.labels is not None else self.plot_labels
-        data["labels"] = labels
-        data["plot labels"] = labels
+        data["labels"] = self.labels
         data["deduplicate labels"] = self.deduplicate_labels
         data["legend loc"] = self.legend_loc
         data["legend outside"] = self.legend_outside
@@ -2839,7 +3003,6 @@ class MultiplotOptions(PlotOptions):
         data["legend bbox to anchor"] = self.legend_bbox_to_anchor
         data["titles"] = self.titles
         data["subtitles"] = self.subtitles
-        data["default colors"] = list(self.default_colors)
         data["default discrete colormap"] = self.default_discrete_colormap
         data["default gradient colormap"] = self.default_gradient_colormap
         data["color mode"] = self.color_mode
@@ -2857,6 +3020,7 @@ class MultiplotOptions(PlotOptions):
         data["gradient colors"] = list(self.gradient_colors)
         data["gradient gamma"] = self.gradient_gamma
         data["gradient reverse"] = self.gradient_reverse
+        data["simulation linestyle"] = self.simulation_linestyle
         data["colorbar tick labels"] = self.colorbar_tick_labels
         data["colorbar trace ticks"] = self.colorbar_trace_ticks
         return data
@@ -2867,18 +3031,97 @@ class MultiMultiplotOptions(MultiplotOptions):
     titles: list[str] | str | None = "auto"
     subtitles: list[str] | str | None = "auto"
     analysis: bool = False
-    Ehalf: float | None = None
+    ehalf: float | None = None
 
     @classmethod
     def from_options(cls, options=None):
         return _coerce_options(cls, options, ["plot", "multiplot", "multimultiplot", "normalize_current"])
 
-    def to_legacy_dict(self):
-        data = MultiplotOptions.to_legacy_dict(self)
+    def to_options_dict(self):
+        data = MultiplotOptions.to_options_dict(self)
         data["titles"] = self.titles
         data["subtitles"] = self.subtitles
         data["analysis"] = self.analysis
-        data["Ehalf"] = self.Ehalf
+        data["Ehalf"] = self.ehalf
+        return data
+
+
+@dataclass(frozen=True, slots=True)
+class CVFilterOptions(MultiplotOptions):
+    method: str = "savgol"
+    column: str = "Current"
+    window: int | str = "auto"
+    polyorder: int = 3
+    sigma: float = 1.0
+    size: int = 3
+    cutoff: float = 0.1
+    order: int = 3
+    inplace: bool = False
+    plot: bool = False
+    print: bool = True
+
+    @classmethod
+    def from_options(cls, options=None):
+        return _coerce_options(cls, options, ["plot", "multiplot", "cv_filter"])
+
+    @staticmethod
+    def _method(value):
+        token = str(value).strip().lower().replace("_", " ").replace("-", " ")
+        aliases = {
+            "savitzky golay": "savgol",
+            "savitzkygolay": "savgol",
+            "butter": "butterworth",
+            "movingaverage": "moving average",
+            "mean": "moving average",
+        }
+        return aliases.get(token, token)
+
+    def validate(self):
+        MultiplotOptions.validate(self)
+        method = self._method(self.method)
+        choices = {"savgol", "gaussian", "median", "butterworth", "moving average"}
+        if method not in choices:
+            raise OptionError(
+                "'method' must be 'savgol', 'gaussian', 'median', "
+                "'butterworth', or 'moving average'."
+            )
+        if not isinstance(self.column, str) or not self.column.strip():
+            raise OptionError("'column' must name a data column.")
+        if self.window != "auto":
+            try:
+                window = int(self.window)
+            except (TypeError, ValueError) as exc:
+                raise OptionError("'window' must be 'auto' or a positive integer.") from exc
+            if window <= 0:
+                raise OptionError("'window' must be 'auto' or a positive integer.")
+        if int(self.polyorder) < 0:
+            raise OptionError("'polyorder' must be a non-negative integer.")
+        if float(self.sigma) <= 0:
+            raise OptionError("'sigma' must be positive.")
+        if int(self.size) <= 0:
+            raise OptionError("'size' must be a positive integer.")
+        if not 0 < float(self.cutoff) < 1:
+            raise OptionError("'cutoff' must be between 0 and 1 as a fraction of Nyquist.")
+        if int(self.order) <= 0:
+            raise OptionError("'order' must be a positive integer.")
+
+    def to_options_dict(self):
+        data = MultiplotOptions.to_options_dict(self)
+        data.update(
+            {
+                "method": self._method(self.method),
+                "column": self.column,
+                "window": self.window,
+                "polyorder": int(self.polyorder),
+                "sigma": float(self.sigma),
+                "size": int(self.size),
+                "cutoff": float(self.cutoff),
+                "order": int(self.order),
+                "inplace": self.inplace,
+                "plot": self.plot,
+                "print": self.print,
+            }
+        )
         return data
 
 
@@ -2905,12 +3148,22 @@ class MultiScatterplotOptions(MultiplotOptions):
     fit_bounds: object | None = "auto"
     fit_residual: str = "direct"
     fit_max_evals: int = 10000
+    fit_method: str | None = "auto"
+    fit_sigma: object | None = None
+    fit_absolute_sigma: bool = False
+    fit_check_finite: bool | None = None
+    fit_nan_policy: str | None = None
+    fit_jac: object | None = None
+    curve_fit_options: dict | None = None
     sig_figs: int = 4
     plot_style: str = "scatter"
     xscale: str | None = None
     yscale: str | None = None
     plot_scale: str | None = None
     plot_fit: bool = True
+    fit_band: str | None = None
+    fit_band_level: float = 0.95
+    fit_line_range: object | None = None
     fit_linestyle: str = "--"
     fit_linewidth: int | float = 1
     fit_alpha: int | float = 1
@@ -2931,9 +3184,10 @@ class MultiScatterplotOptions(MultiplotOptions):
             raise OptionError("'fit alpha' must be between 0 and 1.")
         if float(self.fit_linewidth) < 0:
             raise OptionError("'fit linewidth' must be non-negative.")
+        _validate_fit_band_options(self)
 
-    def to_legacy_dict(self):
-        data = MultiplotOptions.to_legacy_dict(self)
+    def to_options_dict(self):
+        data = MultiplotOptions.to_options_dict(self)
         data["x column"] = self.x_column
         data["y column"] = self.y_column
         data["y columns"] = self.y_columns
@@ -2954,12 +3208,22 @@ class MultiScatterplotOptions(MultiplotOptions):
         data["fit bounds"] = self.fit_bounds
         data["fit residual"] = self.fit_residual
         data["fit max evals"] = self.fit_max_evals
+        data["fit method"] = self.fit_method
+        data["fit sigma"] = self.fit_sigma
+        data["fit absolute sigma"] = self.fit_absolute_sigma
+        data["fit check finite"] = self.fit_check_finite
+        data["fit nan policy"] = self.fit_nan_policy
+        data["fit jac"] = self.fit_jac
+        data["curve fit options"] = self.curve_fit_options
         data["sig figs"] = self.sig_figs
         data["plot style"] = self.plot_style
         data["xscale"] = self.xscale
         data["yscale"] = self.yscale
         data["plot scale"] = self.plot_scale
         data["plot fit"] = self.plot_fit
+        data["fit band"] = self.fit_band
+        data["fit band level"] = self.fit_band_level
+        data["fit line range"] = self.fit_line_range
         data["fit linestyle"] = self.fit_linestyle
         data["fit linewidth"] = self.fit_linewidth
         data["fit alpha"] = self.fit_alpha
@@ -2986,16 +3250,16 @@ class PeakPotentialOptions:
     plot_segments: list[int] | int | None = None
     segment: int | None = None
     segments: list[int] | None = None
-    noise_window: int | str = "auto"
+    noise_window: int | str | None = "auto"
     noise_polyorder: int | str = "auto"
     sig_figs: int = 4
     peak_prominence: float | None = None
+    peak_kind: str | None = "both"
     guess_potential: float | list[float] | list[list[float]] | None = None
     exact_potential: float | list[float] | None = None
     troubleshoot: bool = False
     internal_call: bool = False
     offset: float = 0
-    normalize: bool = False
 
     @classmethod
     def from_options(cls, options=None):
@@ -3004,10 +3268,11 @@ class PeakPotentialOptions:
     def validate(self):
         _validate_common_cv(self)
 
-    def to_legacy_dict(self):
+    def to_options_dict(self):
         data = {field.name.replace("_", " "): getattr(self, field.name) for field in fields(self)}
         data["sig figs"] = self.sig_figs
         data["peak prominence"] = self.peak_prominence
+        data["peak kind"] = self.peak_kind
         data["guess potential"] = self.guess_potential
         data["exact potential"] = self.exact_potential
         data["noise window"] = self.noise_window
@@ -3069,14 +3334,100 @@ class PeakCurrentOptions(PeakPotentialOptions):
             }
         )
 
-    def to_legacy_dict(self):
-        data = PeakPotentialOptions.to_legacy_dict(self)
+    def to_options_dict(self):
+        data = PeakPotentialOptions.to_options_dict(self)
         data["tangent range"] = self.tangent_range
         data["tangent min points"] = self.tangent_min_points
         data["tangent potential"] = self.tangent_potential
         data["percent threshold"] = self.percent_threshold
         data["plot peak potential"] = self.plot_peak_potential
         data["peak fallback"] = self.peak_fallback
+        return data
+
+
+@dataclass(frozen=True, slots=True)
+class FitModelOptions:
+    plot: bool = False
+    print: bool = True
+    pretty_print: bool = True
+    new_plot: bool = True
+    x_column: str | int | None = "auto"
+    y_column: str | int | None = "auto"
+    fit: bool = True
+    fit_model: object | None = "linear"
+    fit_params: object | None = None
+    fit_init: object | None = "auto"
+    fit_bounds: object | None = "auto"
+    fit_residual: str = "direct"
+    fit_max_evals: int = 10000
+    fit_method: str | None = "auto"
+    fit_sigma: object | None = None
+    fit_absolute_sigma: bool = False
+    fit_check_finite: bool | None = None
+    fit_nan_policy: str | None = None
+    fit_jac: object | None = None
+    curve_fit_options: dict | None = None
+    fit_indices: object | None = None
+    print_fit: str = "auto"
+    print_fit_details: bool = False
+    sig_figs: int = 4
+    plot_fit: bool = True
+    plot_data: bool = True
+    fit_band: str | None = None
+    fit_band_level: float = 0.95
+    fit_line_range: object | None = None
+    legend: bool = False
+    legend_fontsize: int | float | None = None
+    fit_label: bool | str = False
+    fit_color: object = "tab:red"
+    fit_linestyle: str = "--"
+    fit_linewidth: int | float = 1
+    fit_alpha: int | float = 1
+
+    @classmethod
+    def from_options(cls, options=None):
+        return _coerce_options(cls, options, ["fit_model"])
+
+    def validate(self):
+        if not 0 <= float(self.fit_alpha) <= 1:
+            raise OptionError("'fit alpha' must be between 0 and 1.")
+        if float(self.fit_linewidth) < 0:
+            raise OptionError("'fit linewidth' must be non-negative.")
+        _validate_fit_band_options(self)
+
+    def to_options_dict(self):
+        data = {field.name.replace("_", " "): getattr(self, field.name) for field in fields(self)}
+        data["pretty print"] = self.pretty_print
+        data["new plot"] = self.new_plot
+        data["x column"] = self.x_column
+        data["y column"] = self.y_column
+        data["fit model"] = self.fit_model
+        data["fit params"] = self.fit_params
+        data["fit init"] = self.fit_init
+        data["fit bounds"] = self.fit_bounds
+        data["fit residual"] = self.fit_residual
+        data["fit max evals"] = self.fit_max_evals
+        data["fit method"] = self.fit_method
+        data["fit sigma"] = self.fit_sigma
+        data["fit absolute sigma"] = self.fit_absolute_sigma
+        data["fit check finite"] = self.fit_check_finite
+        data["fit nan policy"] = self.fit_nan_policy
+        data["fit jac"] = self.fit_jac
+        data["curve fit options"] = self.curve_fit_options
+        data["fit indices"] = self.fit_indices
+        data["print fit"] = self.print_fit
+        data["print fit details"] = self.print_fit_details
+        data["plot fit"] = self.plot_fit
+        data["plot data"] = self.plot_data
+        data["fit band"] = self.fit_band
+        data["fit band level"] = self.fit_band_level
+        data["fit line range"] = self.fit_line_range
+        data["legend fontsize"] = self.legend_fontsize
+        data["fit label"] = self.fit_label
+        data["fit color"] = self.fit_color
+        data["fit linestyle"] = self.fit_linestyle
+        data["fit linewidth"] = self.fit_linewidth
+        data["fit alpha"] = self.fit_alpha
         return data
 
 
@@ -3113,7 +3464,7 @@ class NormalizeOptions:
         if n_value is None or float(n_value) <= 0:
             raise OptionError("'n' must be positive.")
 
-    def to_legacy_dict(self):
+    def to_options_dict(self):
         data = {
             field.name.replace("_", " "): getattr(self, field.name)
             for field in fields(self)
@@ -3134,16 +3485,16 @@ class NormalizeOptions:
 class NormalizationOptions:
     print: bool = True
     plot_all: bool = False
+    plot_reference_diagnostic: bool = False
     pretty_print: bool = True
     print_conditions: bool = True
     legend: bool = True
     title: bool | str = "auto"
     subtitle: bool | str | None = "auto"
     labels: list[str] | None = None
-    plot_labels: list[str] | None = None
     segment: int | None = None
     segments: list[int] | int | None = None
-    noise_window: int | str = "auto"
+    noise_window: int | str | None = "auto"
     noise_polyorder: int | str = "auto"
     sig_figs: int = 4
     peak_prominence: float | None = None
@@ -3201,18 +3552,17 @@ class NormalizationOptions:
             }
         )
 
-    def to_legacy_dict(self):
+    def to_options_dict(self):
         data = {field.name.replace("_", " "): getattr(self, field.name) for field in fields(self)}
         data["print"] = self.print
         data["plot all"] = self.plot_all
+        data["plot reference diagnostic"] = self.plot_reference_diagnostic
         data["pretty print"] = self.pretty_print
         data["print conditions"] = self.print_conditions
         data["legend"] = self.legend
         data["title"] = self.title
         data["subtitle"] = self.subtitle
-        labels = self.labels if self.labels is not None else self.plot_labels
-        data["labels"] = labels
-        data["plot labels"] = labels
+        data["labels"] = self.labels
         data["noise window"] = self.noise_window
         data["noise polyorder"] = self.noise_polyorder
         data["sig figs"] = self.sig_figs
@@ -3243,7 +3593,7 @@ class ScaleCurrentOptions:
     reference_cvs: object | None = None
     segment: int | None = 1
     segments: list[int] | int | None = None
-    noise_window: int | str = "auto"
+    noise_window: int | str | None = "auto"
     noise_polyorder: int | str = "auto"
     sig_figs: int = 4
     peak_prominence: float | None = None
@@ -3294,7 +3644,7 @@ class ScaleCurrentOptions:
             }
         )
 
-    def to_legacy_dict(self):
+    def to_options_dict(self):
         data = {field.name.replace("_", " "): getattr(self, field.name) for field in fields(self)}
         data["pretty print"] = self.pretty_print
         data["plot all"] = self.plot_all
@@ -3321,6 +3671,7 @@ class ScaleCurrentOptions:
 class FOWAOptions:
     plot: bool = True
     print: bool = True
+    pretty_print: bool = True
     plot_all: bool = False
     print_all: bool = False
     legend: bool = False
@@ -3335,13 +3686,16 @@ class FOWAOptions:
     title: bool | str = True
     offset: float = 0
     color: str = "black"
-    plot_labels: list[str] | None = None
     labels: list[str] | None = None
+    x_axis: str | None = None
+    y_axis: str | None = None
+    x_unit: str | None = "auto"
+    y_unit: str | None = "auto"
     new_plot: bool = False
     segment: int | None = None
     segments: list[int] | int | None = None
     plot_segments: list[int] | int | None = None
-    noise_window: int | str = "auto"
+    noise_window: int | str | None = "auto"
     noise_polyorder: int | str = "auto"
     sig_figs: int = 4
     peak_prominence: float | None = None
@@ -3354,13 +3708,13 @@ class FOWAOptions:
     peak_fallback: str | None = "highest current"
     peak_potential: float | list[float] | None = None
     troubleshoot: bool = False
+    fit: bool = True
     fit_basis: str = "x"
     fit_range: list[float] | tuple[float, float] = (0.0, 0.2)
     wave_range: list[float] | tuple[float, float] | None = None
     plot_fit: bool = True
     fit_label: bool | str = False
     fit_color: object | None = None
-    fit_colors: object | None = None
     fit_linestyle: str = "--"
     fit_linewidth: int | float = 1.5
     fit_alpha: int | float = 1
@@ -3445,13 +3799,12 @@ class FOWAOptions:
             "print all": self.print_all,
         })
 
-    def to_legacy_dict(self):
+    def to_options_dict(self):
         data = {field.name.replace("_", " "): getattr(self, field.name) for field in fields(self)}
         data["plot all"] = self.plot_all
         data["print all"] = self.print_all
-        labels = self.labels if self.labels is not None else self.plot_labels
-        data["labels"] = labels
-        data["plot labels"] = labels
+        data["pretty print"] = self.pretty_print
+        data["labels"] = self.labels
         data["colorbar height scale"] = self.colorbar_height_scale
         data["min gradient entries"] = self.min_gradient_entries
         data["new plot"] = self.new_plot
@@ -3467,6 +3820,7 @@ class FOWAOptions:
         data["percent threshold"] = self.percent_threshold
         data["peak fallback"] = self.peak_fallback
         data["peak potential"] = self.peak_potential
+        data["fit"] = self.fit
         data["fit basis"] = self.fit_basis
         data["fit range"] = self.fit_range
         data["wave range"] = self.wave_range
@@ -3512,6 +3866,8 @@ class PlateauCurrentOptions(FOWAOptions):
     scan_rate: float | None = None
     temperature: float = 298
     warn_ir_drop: bool = True
+    group_mode: str = "auto"
+    group_by: object = "species"
 
     @classmethod
     def from_options(cls, options=None):
@@ -3533,6 +3889,9 @@ class PlateauCurrentOptions(FOWAOptions):
             raise OptionError("'plateau average method' must be 'mean' or 'median'.")
         if str(self.plateau_selection_mode).strip().lower() != "high scan suffix":
             raise OptionError("Only 'high scan suffix' plateau selection mode is currently supported.")
+        group_mode = str(self.group_mode).strip().lower().replace("_", " ").replace("-", " ")
+        if group_mode not in {"auto", "as given", "each"}:
+            raise OptionError("'group mode' must be 'auto', 'as given', or 'each'.")
         mode = str(self.formula_mode).strip().lower()
         if mode not in {"auto", "normalized", "slope normalized", "slope-normalized", "direct"}:
             raise OptionError("'formula mode' must be 'auto', 'normalized', 'slope normalized', or 'direct'.")
@@ -3541,8 +3900,8 @@ class PlateauCurrentOptions(FOWAOptions):
         if self.electrode_area is not None and float(self.electrode_area) <= 0:
             raise OptionError("'electrode area' must be positive when provided.")
 
-    def to_legacy_dict(self):
-        data = FOWAOptions.to_legacy_dict(self)
+    def to_options_dict(self):
+        data = FOWAOptions.to_options_dict(self)
         data["ilim"] = self.ilim
         data["ic"] = self.ic
         data["ip0 scan rate"] = self.ip0_scan_rate
@@ -3562,6 +3921,8 @@ class PlateauCurrentOptions(FOWAOptions):
         data["scan rate"] = self.scan_rate
         data["temperature"] = self.temperature
         data["warn ir drop"] = self.warn_ir_drop
+        data["group mode"] = str(self.group_mode).strip().lower().replace("_", " ").replace("-", " ")
+        data["group by"] = self.group_by
         return data
 
 
@@ -3586,10 +3947,7 @@ class FitRateOptions:
     yscale: str | None = None
     plot_scale: str | None = None
     plot_log_log: bool = False
-    log_log_plot: bool = False
     fit_indices: object | None = None
-    fit_range: object | None = None
-    fit_ranges: object | None = None
     log_fit_indices: object | None = None
     fit_model: object | None = "linear"
     fit_params: object | None = None
@@ -3597,10 +3955,20 @@ class FitRateOptions:
     fit_bounds: object | None = "auto"
     fit_residual: str = "direct"
     fit_max_evals: int = 10000
+    fit_method: str | None = "auto"
+    fit_sigma: object | None = None
+    fit_absolute_sigma: bool = False
+    fit_check_finite: bool | None = None
+    fit_nan_policy: str | None = None
+    fit_jac: object | None = None
+    curve_fit_options: dict | None = None
     print_fit: str = "auto"
     print_fit_details: bool = False
     sig_figs: int = 4
     plot_fit: bool = True
+    fit_band: str | None = None
+    fit_band_level: float = 0.95
+    fit_line_range: object | None = None
     exclude_warnings: bool = False
     exclude_low_r2: bool = False
     min_r2: float = 0.95
@@ -3611,7 +3979,6 @@ class FitRateOptions:
     legend_fontsize: int | float | None = None
     fit_label: bool | str = False
     fit_color: object = "tab:red"
-    fit_colors: object | None = None
     fit_linestyle: str = "--"
     fit_linewidth: int | float = 1
     fit_alpha: int | float = 1
@@ -3635,8 +4002,9 @@ class FitRateOptions:
             raise OptionError("'fit alpha' must be between 0 and 1.")
         if float(self.fit_linewidth) < 0:
             raise OptionError("'fit linewidth' must be non-negative.")
+        _validate_fit_band_options(self)
 
-    def to_legacy_dict(self):
+    def to_options_dict(self):
         data = {field.name.replace("_", " "): getattr(self, field.name) for field in fields(self)}
         data["x column"] = self.x_column
         data["x transform"] = self.x_transform
@@ -3651,10 +4019,7 @@ class FitRateOptions:
         data["yscale"] = self.yscale
         data["plot scale"] = self.plot_scale
         data["plot log-log"] = self.plot_log_log
-        data["log log plot"] = self.log_log_plot
         data["fit indices"] = self.fit_indices
-        data["fit range"] = self.fit_range
-        data["fit ranges"] = self.fit_ranges
         data["log fit indices"] = self.log_fit_indices
         data["fit model"] = self.fit_model
         data["fit params"] = self.fit_params
@@ -3662,10 +4027,20 @@ class FitRateOptions:
         data["fit bounds"] = self.fit_bounds
         data["fit residual"] = self.fit_residual
         data["fit max evals"] = self.fit_max_evals
+        data["fit method"] = self.fit_method
+        data["fit sigma"] = self.fit_sigma
+        data["fit absolute sigma"] = self.fit_absolute_sigma
+        data["fit check finite"] = self.fit_check_finite
+        data["fit nan policy"] = self.fit_nan_policy
+        data["fit jac"] = self.fit_jac
+        data["curve fit options"] = self.curve_fit_options
         data["print fit"] = self.print_fit
         data["print fit details"] = self.print_fit_details
         data["sig figs"] = self.sig_figs
         data["plot fit"] = self.plot_fit
+        data["fit band"] = self.fit_band
+        data["fit band level"] = self.fit_band_level
+        data["fit line range"] = self.fit_line_range
         data["exclude warnings"] = self.exclude_warnings
         data["exclude low r2"] = self.exclude_low_r2
         data["min r2"] = self.min_r2
@@ -3676,7 +4051,6 @@ class FitRateOptions:
         data["legend fontsize"] = self.legend_fontsize
         data["fit label"] = self.fit_label
         data["fit color"] = self.fit_color
-        data["fit colors"] = self.fit_colors
         data["fit linestyle"] = self.fit_linestyle
         data["fit linewidth"] = self.fit_linewidth
         data["fit alpha"] = self.fit_alpha
@@ -3694,23 +4068,30 @@ class FitPeakPotentialOptions(PeakPotentialOptions):
     y_mode: str | None = None
     y0: object | None = None
     fit_indices: object | None = None
-    fit_range: object | None = None
-    fit_ranges: object | None = None
     fit_model: object | None = "linear"
     fit_params: object | None = None
     fit_init: object | None = "auto"
     fit_bounds: object | None = "auto"
     fit_residual: str = "direct"
     fit_max_evals: int = 10000
+    fit_method: str | None = "auto"
+    fit_sigma: object | None = None
+    fit_absolute_sigma: bool = False
+    fit_check_finite: bool | None = None
+    fit_nan_policy: str | None = None
+    fit_jac: object | None = None
+    curve_fit_options: dict | None = None
     print_fit: str = "auto"
     print_fit_details: bool = False
     sig_figs: int = 6
     plot_fit: bool = True
+    fit_band: str | None = None
+    fit_band_level: float = 0.95
+    fit_line_range: object | None = None
     legend: bool = False
     legend_fontsize: int | float | None = None
     fit_label: bool | str = False
     fit_color: object = "tab:red"
-    fit_colors: object | None = None
     fit_linestyle: str = "--"
     fit_linewidth: int | float = 1
     fit_alpha: int | float = 1
@@ -3724,9 +4105,10 @@ class FitPeakPotentialOptions(PeakPotentialOptions):
         _validate_common_cv(self)
         if not 0 <= float(self.fit_alpha) <= 1:
             raise OptionError("'fit alpha' must be between 0 and 1.")
+        _validate_fit_band_options(self)
 
-    def to_legacy_dict(self):
-        data = PeakPotentialOptions.to_legacy_dict(self)
+    def to_options_dict(self):
+        data = PeakPotentialOptions.to_options_dict(self)
         data["follow e1/2"] = self.follow_e1_2
         data["fit"] = self.fit
         data["x unit"] = self.x_unit
@@ -3735,23 +4117,30 @@ class FitPeakPotentialOptions(PeakPotentialOptions):
         data["y mode"] = self.y_mode
         data["y0"] = self.y0
         data["fit indices"] = self.fit_indices
-        data["fit range"] = self.fit_range
-        data["fit ranges"] = self.fit_ranges
         data["fit model"] = self.fit_model
         data["fit params"] = self.fit_params
         data["fit init"] = self.fit_init
         data["fit bounds"] = self.fit_bounds
         data["fit residual"] = self.fit_residual
         data["fit max evals"] = self.fit_max_evals
+        data["fit method"] = self.fit_method
+        data["fit sigma"] = self.fit_sigma
+        data["fit absolute sigma"] = self.fit_absolute_sigma
+        data["fit check finite"] = self.fit_check_finite
+        data["fit nan policy"] = self.fit_nan_policy
+        data["fit jac"] = self.fit_jac
+        data["curve fit options"] = self.curve_fit_options
         data["print fit"] = self.print_fit
         data["print fit details"] = self.print_fit_details
         data["sig figs"] = self.sig_figs
         data["plot fit"] = self.plot_fit
+        data["fit band"] = self.fit_band
+        data["fit band level"] = self.fit_band_level
+        data["fit line range"] = self.fit_line_range
         data["legend"] = self.legend
         data["legend fontsize"] = self.legend_fontsize
         data["fit label"] = self.fit_label
         data["fit color"] = self.fit_color
-        data["fit colors"] = self.fit_colors
         data["fit linestyle"] = self.fit_linestyle
         data["fit linewidth"] = self.fit_linewidth
         data["fit alpha"] = self.fit_alpha
@@ -3766,11 +4155,13 @@ class SevcikAnalysisOptions(PeakCurrentOptions):
     species: str | None = None
     fit_indices: object | None = None
     plot_fit: bool = True
+    fit_band: str | None = None
+    fit_band_level: float = 0.95
+    fit_line_range: object | None = None
     legend: bool = False
     legend_fontsize: int | float | None = None
     fit_label: bool | str = False
     fit_color: object = "tab:red"
-    fit_colors: object | None = None
     fit_linestyle: str = "--"
     fit_linewidth: int | float = 1
     fit_alpha: int | float = 1
@@ -3791,19 +4182,22 @@ class SevcikAnalysisOptions(PeakCurrentOptions):
             raise OptionError("'scan dependence' must be positive.")
         if not 0 <= float(self.fit_alpha) <= 1:
             raise OptionError("'fit alpha' must be between 0 and 1.")
+        _validate_fit_band_options(self)
 
-    def to_legacy_dict(self):
-        data = PeakCurrentOptions.to_legacy_dict(self)
+    def to_options_dict(self):
+        data = PeakCurrentOptions.to_options_dict(self)
         data["x unit"] = self.x_unit
         data["y unit"] = self.y_unit
         data["species"] = self.species
         data["fit indices"] = self.fit_indices
         data["plot fit"] = self.plot_fit
+        data["fit band"] = self.fit_band
+        data["fit band level"] = self.fit_band_level
+        data["fit line range"] = self.fit_line_range
         data["legend"] = self.legend
         data["legend fontsize"] = self.legend_fontsize
         data["fit label"] = self.fit_label
         data["fit color"] = self.fit_color
-        data["fit colors"] = self.fit_colors
         data["fit linestyle"] = self.fit_linestyle
         data["fit linewidth"] = self.fit_linewidth
         data["fit alpha"] = self.fit_alpha
@@ -3857,23 +4251,30 @@ class FitPeakCurrentOptions(PeakCurrentOptions):
     yscale: str | None = None
     plot_scale: str | None = None
     fit_indices: object | None = None
-    fit_range: object | None = None
-    fit_ranges: object | None = None
     fit_model: object | None = "linear"
     fit_params: object | None = None
     fit_init: object | None = "auto"
     fit_bounds: object | None = "auto"
     fit_residual: str = "direct"
     fit_max_evals: int = 10000
+    fit_method: str | None = "auto"
+    fit_sigma: object | None = None
+    fit_absolute_sigma: bool = False
+    fit_check_finite: bool | None = None
+    fit_nan_policy: str | None = None
+    fit_jac: object | None = None
+    curve_fit_options: dict | None = None
     print_fit: str = "auto"
     print_fit_details: bool = False
     sig_figs: int = 6
     plot_fit: bool = True
+    fit_band: str | None = None
+    fit_band_level: float = 0.95
+    fit_line_range: object | None = None
     legend: bool = False
     legend_fontsize: int | float | None = None
     fit_label: bool | str = False
     fit_color: object = "tab:red"
-    fit_colors: object | None = None
     fit_linestyle: str = "--"
     fit_linewidth: int | float = 1
     fit_alpha: int | float = 1
@@ -3893,9 +4294,10 @@ class FitPeakCurrentOptions(PeakCurrentOptions):
             raise OptionError("'fit alpha' must be between 0 and 1.")
         if float(self.fit_linewidth) < 0:
             raise OptionError("'fit linewidth' must be non-negative.")
+        _validate_fit_band_options(self)
 
-    def to_legacy_dict(self):
-        data = PeakCurrentOptions.to_legacy_dict(self)
+    def to_options_dict(self):
+        data = PeakCurrentOptions.to_options_dict(self)
         data["fit"] = self.fit
         data["x unit"] = self.x_unit
         data["y unit"] = self.y_unit
@@ -3912,23 +4314,30 @@ class FitPeakCurrentOptions(PeakCurrentOptions):
         data["yscale"] = self.yscale
         data["plot scale"] = self.plot_scale
         data["fit indices"] = self.fit_indices
-        data["fit range"] = self.fit_range
-        data["fit ranges"] = self.fit_ranges
         data["fit model"] = self.fit_model
         data["fit params"] = self.fit_params
         data["fit init"] = self.fit_init
         data["fit bounds"] = self.fit_bounds
         data["fit residual"] = self.fit_residual
         data["fit max evals"] = self.fit_max_evals
+        data["fit method"] = self.fit_method
+        data["fit sigma"] = self.fit_sigma
+        data["fit absolute sigma"] = self.fit_absolute_sigma
+        data["fit check finite"] = self.fit_check_finite
+        data["fit nan policy"] = self.fit_nan_policy
+        data["fit jac"] = self.fit_jac
+        data["curve fit options"] = self.curve_fit_options
         data["print fit"] = self.print_fit
         data["print fit details"] = self.print_fit_details
         data["sig figs"] = self.sig_figs
         data["plot fit"] = self.plot_fit
+        data["fit band"] = self.fit_band
+        data["fit band level"] = self.fit_band_level
+        data["fit line range"] = self.fit_line_range
         data["legend"] = self.legend
         data["legend fontsize"] = self.legend_fontsize
         data["fit label"] = self.fit_label
         data["fit color"] = self.fit_color
-        data["fit colors"] = self.fit_colors
         data["fit linestyle"] = self.fit_linestyle
         data["fit linewidth"] = self.fit_linewidth
         data["fit alpha"] = self.fit_alpha
@@ -3966,11 +4375,13 @@ class TrumpetAnalysisOptions(PeakCurrentOptions):
     segment: int | None = 1
     fit_indices: object | None = None
     plot_fit: bool = True
+    fit_band: str | None = None
+    fit_band_level: float = 0.95
+    fit_line_range: object | None = None
     legend: bool = False
     legend_fontsize: int | float | None = None
     fit_label: bool | str = False
     fit_color: object = "tab:red"
-    fit_colors: object | None = None
     fit_linestyle: str = "--"
     fit_linewidth: int | float = 1
     fit_alpha: int | float = 1
@@ -3992,19 +4403,22 @@ class TrumpetAnalysisOptions(PeakCurrentOptions):
             raise OptionError("'temperature' must be positive.")
         if not 0 <= float(self.fit_alpha) <= 1:
             raise OptionError("'fit alpha' must be between 0 and 1.")
+        _validate_fit_band_options(self)
 
-    def to_legacy_dict(self):
-        data = PeakCurrentOptions.to_legacy_dict(self)
+    def to_options_dict(self):
+        data = PeakCurrentOptions.to_options_dict(self)
         if self.segment is None and self.segments is not None:
             data["segment"] = _resolve_trumpet_base_segment(self.segment, self.segments)
             data["segments"] = None
         data["fit indices"] = self.fit_indices
         data["plot fit"] = self.plot_fit
+        data["fit band"] = self.fit_band
+        data["fit band level"] = self.fit_band_level
+        data["fit line range"] = self.fit_line_range
         data["legend"] = self.legend
         data["legend fontsize"] = self.legend_fontsize
         data["fit label"] = self.fit_label
         data["fit color"] = self.fit_color
-        data["fit colors"] = self.fit_colors
         data["fit linestyle"] = self.fit_linestyle
         data["fit linewidth"] = self.fit_linewidth
         data["fit alpha"] = self.fit_alpha
@@ -4037,6 +4451,7 @@ def _resolve_trumpet_base_segment(segment, segments):
 class NicholsonOptions(PeakCurrentOptions):
     segment: int | None = 1
     plot_fit: bool = True
+    fit_line_range: object | None = None
     fit_model: object | None = "origin"
     num_electrons: int | float = 1
     d: float | None = None
@@ -4049,7 +4464,6 @@ class NicholsonOptions(PeakCurrentOptions):
     empirical_psi_equation: str = "lavagnini"
     warn_ir_drop: bool = True
     scan_rate: object | None = None
-    scan_rates: object | None = None
 
     @classmethod
     def from_options(cls, options=None):
@@ -4057,8 +4471,17 @@ class NicholsonOptions(PeakCurrentOptions):
 
     def validate(self):
         _validate_common_cv(self)
-        if self.segment is None:
-            raise OptionError("'segment' is required for Nicholson.")
+        if self.segment is None and self.segments is None:
+            raise OptionError("'segment' or 'segments' is required for Nicholson.")
+        if self.segments is not None:
+            try:
+                values = [self.segments] if isinstance(self.segments, int) else list(self.segments)
+            except TypeError as exc:
+                raise OptionError("'segments' for Nicholson must be an int or a 1- or 2-element sequence.") from exc
+            if len(values) not in {1, 2}:
+                raise OptionError("'segments' for Nicholson must contain one base segment or a 2-segment pair.")
+            if not all(isinstance(value, int) for value in values):
+                raise OptionError("'segments' for Nicholson must contain integer segment numbers.")
         model = str(self.fit_model).strip().lower().replace("_", " ").replace("-", " ")
         if model not in {"origin", "linear"}:
             raise OptionError("'fit model' for Nicholson must be 'origin' or 'linear'.")
@@ -4071,9 +4494,10 @@ class NicholsonOptions(PeakCurrentOptions):
         if float(self.nicholson_delta_ep_max_mv) <= float(self.nicholson_delta_ep_min_mv):
             raise OptionError("'nicholson delta ep max mv' must be greater than the minimum.")
 
-    def to_legacy_dict(self):
-        data = PeakCurrentOptions.to_legacy_dict(self)
+    def to_options_dict(self):
+        data = PeakCurrentOptions.to_options_dict(self)
         data["plot fit"] = self.plot_fit
+        data["fit line range"] = self.fit_line_range
         data["fit model"] = self.fit_model
         data["num electrons"] = self.num_electrons
         data["D"] = self.d
@@ -4085,9 +4509,7 @@ class NicholsonOptions(PeakCurrentOptions):
         data["plot diagnostic"] = self.plot_diagnostic
         data["empirical psi equation"] = self.empirical_psi_equation
         data["warn ir drop"] = self.warn_ir_drop
-        scan_rate = self.scan_rate if self.scan_rate is not None else self.scan_rates
-        data["scan rate"] = scan_rate
-        data["scan rates"] = scan_rate
+        data["scan rate"] = self.scan_rate
         return data
 
 
@@ -4104,7 +4526,7 @@ class TafelAnalysisOptions:
         if len(self.overpotential_range) != 2:
             raise OptionError("'overpotential range' must contain [start, end].")
 
-    def to_legacy_dict(self):
+    def to_options_dict(self):
         return {
             "overpotential range": list(self.overpotential_range),
             "color": self.color,
@@ -4130,7 +4552,7 @@ class FilterOptions:
         if self.logic is not None and str(self.logic).strip().upper() not in {"AND", "OR"}:
             raise OptionError("'logic' must be 'AND', 'OR', or None.")
 
-    def to_legacy_dict(self):
+    def to_options_dict(self):
         return {
             "print": self.print,
             "pretty print": self.pretty_print,
@@ -4153,7 +4575,7 @@ class SortGroupOptions:
     def validate(self):
         return None
 
-    def to_legacy_dict(self):
+    def to_options_dict(self):
         return {
             "print": self.print,
             "pretty print": self.pretty_print,
@@ -4176,7 +4598,7 @@ class GroupSummaryOptions:
     def validate(self):
         return None
 
-    def to_legacy_dict(self):
+    def to_options_dict(self):
         return {
             "print": self.print,
             "pretty print": self.pretty_print,
@@ -4221,7 +4643,6 @@ _DESCRIBE_WORKFLOW_ORDER = (
 _DESCRIBE_FUNCTION_WORKFLOWS = {
     "all": "Overview",
     "get_data": "Import and metadata",
-    "get_cvs": "Import and metadata",
     "get_data_from_excel": "Import and metadata",
     "echem.from_file": "Import and metadata",
     "plot": "Object plotting",
@@ -4247,9 +4668,12 @@ _DESCRIBE_FUNCTION_WORKFLOWS = {
     "cv.normalize": "CV preprocessing",
     "cv.normalize_current": "CV preprocessing",
     "cv.scale_current": "CV preprocessing",
+    "cv.filter": "CV preprocessing",
+    "cv.trim": "CV preprocessing",
     "normalize": "CV preprocessing",
     "normalize_current": "CV preprocessing",
     "scale_current": "CV preprocessing",
+    "trim": "CV preprocessing",
     "cv.current_at_potential": "Single CV analysis",
     "cv.peak_potential": "Single CV analysis",
     "cv.peak_current": "Single CV analysis",
@@ -4290,7 +4714,6 @@ _DESCRIBE_FUNCTION_WORKFLOWS = {
 _DESCRIBE_FUNCTION_DESCRIPTIONS = {
     "all": "Show every registered option table, grouped by workflow and function.",
     "get_data": "Import supported electrochemistry files, parse filename/file metadata, apply reference handling, and return eCAT objects.",
-    "get_cvs": "Load CV-like text exports from one folder into eCAT CV objects.",
     "echem.from_file": "Load one supported data file and promote it to the detected eCAT object type when possible.",
     "get_data_from_excel": "Load worksheet-based exported eCAT data back into eCAT objects.",
     "plot": "General object plot options shared by echem, CV, DPV, CA, and CP plots. For class-specific controls, use cv.plot, ca.plot, cp.plot, or dpv.plot.",
@@ -4318,7 +4741,10 @@ _DESCRIBE_FUNCTION_DESCRIPTIONS = {
     "cv.normalize_current": "Normalize CV current by a reference peak current resolved from ip0, a reference CV, or a reference CV list.",
     "normalize_current": "Normalize current for one or more CVs by a reference peak current resolved from ip0 or reference CVs.",
     "cv.scale_current": "Scale one CV current against manual or reference-wave current values.",
+    "cv.filter": "Filter one CV current trace with a recorded SciPy-backed preprocessing operation.",
     "scale_current": "Scale CV currents against manual or reference-wave current values.",
+    "trim": "Trim one or more CVs to a potential window while preserving connected scan data by default.",
+    "cv.trim": "Trim one CV to a potential window while preserving connected scan data by default.",
     "cv.current_at_potential": "Extract current from a CV at a requested potential with segment and interpolation controls.",
     "cv.peak_potential": "Locate a CV peak potential using segment selection, smoothing, prominence, and fallback controls.",
     "cv.peak_current": "Measure CV peak current with peak selection, tangent/background handling, fallback behavior, plotting, and printing controls.",
@@ -4669,6 +5095,107 @@ def _describe_options_schema_for_section(section, type_lookup):
     )
 
 
+def _option_model_for_function(function):
+    function_key = normalize_key(function)
+    section_key = _canonical_section_key(function)
+    model_by_function = {
+        "get_data": ImportOptions,
+        "get_data_from_excel": ImportOptions,
+        "echem.from_file": ImportOptions,
+        "trim": TrimOptions,
+        "cv.trim": TrimOptions,
+        "plot": PlotOptions,
+        "echem.x": PlotOptions,
+        "echem.y": PlotOptions,
+        "echem.xy": PlotOptions,
+        "echem.plot": PlotOptions,
+        "cv.x": PlotOptions,
+        "cv.y": PlotOptions,
+        "cv.xy": PlotOptions,
+        "cv.plot": PlotOptions,
+        "cv.plot_program": PlotOptions,
+        "dpv.x": PlotOptions,
+        "dpv.y": PlotOptions,
+        "dpv.xy": PlotOptions,
+        "dpv.plot": PlotOptions,
+        "ca.plot": PlotOptions,
+        "ca.charge": PlotOptions,
+        "ca.time_at_charge": PlotOptions,
+        "ca.current_at_time": PlotOptions,
+        "ca.average_current": PlotOptions,
+        "ca.rate_at_time": PlotOptions,
+        "ca.average_rate": PlotOptions,
+        "cp.plot": PlotOptions,
+        "cp.get_cycles": PlotOptions,
+        "cp.plot_cycles": PlotOptions,
+        "cp.cycling_plot": PlotOptions,
+        "cp.cycle_info": PlotOptions,
+        "multiplot": MultiplotOptions,
+        "multimultiplot": MultiMultiplotOptions,
+        "multi_scatterplot": MultiScatterplotOptions,
+        "cv_analysis": PeakPotentialOptions,
+        "cv.current_at_potential": PeakPotentialOptions,
+        "cv.peak_potential": PeakPotentialOptions,
+        "cv.half_peak_potential": PeakPotentialOptions,
+        "dpv.peak_potential": PeakPotentialOptions,
+        "peak_current": PeakCurrentOptions,
+        "cv.peak_current": PeakCurrentOptions,
+        "cv.peak_info": PeakCurrentOptions,
+        "cv.half_wave_potential": PeakCurrentOptions,
+        "cv.wave_info": PeakCurrentOptions,
+        "normalize": NormalizeOptions,
+        "cv.normalize": NormalizeOptions,
+        "normalize_current": NormalizationOptions,
+        "cv.normalize_current": NormalizationOptions,
+        "scale_current": ScaleCurrentOptions,
+        "cv.scale_current": ScaleCurrentOptions,
+        "cv.filter": CVFilterOptions,
+        "fowa": FOWAOptions,
+        "plateau_current": PlateauCurrentOptions,
+        "cv.plateau_current": PlateauCurrentOptions,
+        "fit_model": FitModelOptions,
+        "fit_rate": FitRateOptions,
+        "fit_peak_potential": FitPeakPotentialOptions,
+        "fit_peak_current": FitPeakCurrentOptions,
+        "sevcik_analysis": SevcikAnalysisOptions,
+        "trumpet_analysis": TrumpetAnalysisOptions,
+        "nicholson": NicholsonOptions,
+        "nicholson_analysis": NicholsonOptions,
+        "tafel_analysis": TafelAnalysisOptions,
+        "filter": FilterOptions,
+        "sort_group": SortGroupOptions,
+        "group_summary": GroupSummaryOptions,
+    }
+    return model_by_function.get(function_key) or model_by_function.get(section_key)
+
+
+def _describe_options_schema_for_model(cls, type_lookup, metadata_section=None):
+    sections = _sections_for_option_model(cls)
+    if metadata_section is None:
+        metadata_section = sections[0] if len(sections) == 1 else None
+    defaults = {}
+    for section in sections:
+        defaults.update(get_defaults(section))
+
+    hints = _type_hints_for_model(cls)
+    schema = {}
+    hidden_fields = set()
+    for field in fields(cls):
+        if field.name.startswith("_") or field.name in hidden_fields:
+            continue
+        default = defaults.get(field.name, _default_for_field(field))
+        display_key = _display_option_key(field.name, section=metadata_section)
+        if display_key in schema:
+            continue
+        schema[display_key] = _schema_entry(
+            field.name,
+            default,
+            hints.get(field.name, field.type),
+            section=metadata_section,
+        )
+    return schema
+
+
 def _describe_options_all_schema(type_lookup):
     schema = {
         _display_section_key(section): _describe_options_schema_for_section(section, type_lookup)
@@ -4742,10 +5269,26 @@ def describe_options(option_model_or_section=None, options=None):
             return display_and_return(
                 _options_schema_to_dataframe(deepcopy(_SIMULATION_OPTION_SCHEMAS[section_input_key]))
             )
+        if section_key in _SIMULATION_OPTION_SCHEMAS:
+            return display_and_return(
+                _options_schema_to_dataframe(deepcopy(_SIMULATION_OPTION_SCHEMAS[section_key]))
+            )
 
         if section_key == "all":
             return display_and_return(
                 _options_schema_to_dataframe(_describe_options_all_schema(type_lookup))
+            )
+
+        option_model = _option_model_for_function(section)
+        if option_model is not None:
+            return display_and_return(
+                _options_schema_to_dataframe(
+                    _describe_options_schema_for_model(
+                        option_model,
+                        type_lookup,
+                        metadata_section=section_key,
+                    )
+                )
             )
 
         if section_key not in _default_section_names():
@@ -4762,23 +5305,9 @@ def describe_options(option_model_or_section=None, options=None):
     if not hasattr(cls, "__dataclass_fields__"):
         raise TypeError("describe_options() accepts a defaults section name or option dataclass.")
 
-    sections = _sections_for_option_model(cls)
-    metadata_section = sections[0] if len(sections) == 1 else None
-    defaults = {}
-    for section in sections:
-        defaults.update(get_defaults(section))
-
-    hints = _type_hints_for_model(cls)
-    schema = {}
-    for field in fields(cls):
-        default = defaults.get(field.name, _default_for_field(field))
-        schema[_display_option_key(field.name, section=metadata_section)] = _schema_entry(
-            field.name,
-            default,
-            hints.get(field.name, field.type),
-            section=metadata_section,
-        )
-    return display_and_return(_options_schema_to_dataframe(schema))
+    return display_and_return(
+        _options_schema_to_dataframe(_describe_options_schema_for_model(cls, type_lookup))
+    )
 
 __all__ = [
     'MISSING',
@@ -4810,12 +5339,14 @@ __all__ = [
     'reset_defaults_option',
     'reset_defaults_section',
     'ImportOptions',
-    'import_options_to_legacy_dict',
+    'resolve_import_options',
     'TrimOptions',
     'PlotOptions',
     'MultiplotOptions',
     'MultiMultiplotOptions',
+    'CVFilterOptions',
     'MultiScatterplotOptions',
+    'FitModelOptions',
     'PeakPotentialOptions',
     'PeakCurrentOptions',
     'NormalizeOptions',

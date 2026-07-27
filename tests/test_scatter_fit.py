@@ -2,6 +2,21 @@ import numpy as np
 import pandas as pd
 import pytest
 import matplotlib.pyplot as plt
+from matplotlib.collections import PolyCollection
+
+
+def _fit_band_collections(ax):
+    return [collection for collection in ax.collections if isinstance(collection, PolyCollection)]
+
+
+def _band_width_near_x(collection, x_value):
+    vertices = collection.get_paths()[0].vertices
+    x = vertices[:, 0]
+    y = vertices[:, 1]
+    x_unique = np.unique(x[np.isfinite(x)])
+    nearest = x_unique[np.argmin(np.abs(x_unique - float(x_value)))]
+    y_at_x = y[np.isclose(x, nearest)]
+    return float(np.nanmax(y_at_x) - np.nanmin(y_at_x))
 
 
 def test_complex_potential_series_helper_normalizes_scalar_and_per_cv_lists(ecat_module):
@@ -20,6 +35,33 @@ def test_complex_potential_series_helper_normalizes_scalar_and_per_cv_lists(ecat
         option_name="guess potential",
         analysis_name="fit_peak_current",
     ) == [-0.1, -0.2, -0.3]
+
+
+@pytest.mark.parametrize(
+    ("option_name", "plural_name"),
+    [
+        ("guess potential", "guess potentials"),
+        ("exact potential", "exact potentials"),
+        ("tangent potential", "tangent potentials"),
+        ("peak potential", "peak potentials"),
+        ("non-catalytic guess potential", "non-catalytic guess potentials"),
+        ("redox potential", "redox potentials"),
+    ],
+)
+def test_complex_potential_series_helper_resolves_every_plural_alias(
+    ecat_module,
+    option_name,
+    plural_name,
+):
+    values = [-0.1, -0.2, -0.3]
+
+    assert ecat_module._resolve_complex_potential_series(
+        {plural_name: values},
+        {option_name: values},
+        n_cvs=3,
+        option_name=option_name,
+        analysis_name="alias contract",
+    ) == values
 
 
 def test_complex_potential_series_helper_handles_paired_guess_shapes(ecat_module):
@@ -60,14 +102,63 @@ def test_complex_potential_series_helper_handles_paired_guess_shapes(ecat_module
     ) == [[-0.1, 0.1], [-0.1, 0.1], [-0.1, 0.1]]
 
 
-def test_complex_potential_series_helper_reports_mismatched_lengths(ecat_module):
-    with pytest.raises(ValueError, match="guess potential.*fit_peak_current.*3 CVs.*2 entries"):
+@pytest.mark.parametrize(
+    ("option_name", "plural_name"),
+    [
+        ("guess potential", "guess potentials"),
+        ("exact potential", "exact potentials"),
+        ("tangent potential", "tangent potentials"),
+        ("peak potential", "peak potentials"),
+        ("non-catalytic guess potential", "non-catalytic guess potentials"),
+        ("redox potential", "redox potentials"),
+    ],
+)
+def test_complex_potential_series_helper_reports_mismatched_lengths(
+    ecat_module,
+    option_name,
+    plural_name,
+):
+    with pytest.raises(
+        ValueError,
+        match=f"{option_name}.*fit_peak_current.*1 scalar value or 3 scalar values.*2 entries",
+    ):
         ecat_module._resolve_complex_potential_series(
-            {"guess potentials": [-0.1, -0.2]},
-            {"guess potential": [-0.1, -0.2]},
+            {plural_name: [-0.1, -0.2]},
+            {option_name: [-0.1, -0.2]},
             n_cvs=3,
-            option_name="guess potential",
+            option_name=option_name,
             analysis_name="fit_peak_current",
+        )
+
+
+def test_other_plural_length_errors_describe_scalar_values_not_cv_objects(ecat_module):
+    with pytest.raises(
+        ValueError,
+        match="scan rate.*1 scalar value or 3 scalar values.*2 entries",
+    ):
+        ecat_module._resolve_nicholson_scan_rates(
+            [object(), object(), object()],
+            {"scan rate": [0.1, 0.2]},
+        )
+
+    with pytest.raises(
+        ValueError,
+        match="redox potentials.*1 scalar value or 3 scalar values.*2 entries",
+    ):
+        ecat_module._resolve_fowa_scalar_or_sequence(
+            [0.1, 0.2],
+            3,
+            "redox potentials",
+        )
+
+    with pytest.raises(
+        ValueError,
+        match="fit range.*1 range or 3 ranges.*2 entries",
+    ):
+        ecat_module._resolve_fowa_range_or_sequence(
+            [[0.1, 0.2], [0.2, 0.3]],
+            3,
+            option_name="fit range",
         )
 
 
@@ -174,6 +265,27 @@ def test_fit_plot_uses_selected_indices(ecat_module):
     np.testing.assert_allclose(line.get_ydata(), [-2, 1, 10, 13])
 
 
+def test_fit_line_range_extends_low_level_fit_plot_without_changing_stats(ecat_module):
+    x = np.arange(6, dtype=float)
+    y = 2 * x + 1
+    y[2:4] = [50, -50]
+
+    _coeffs, stats = ecat_module.fit(
+        x,
+        y,
+        options={
+            "fit indices": [[0, 2], [4, 6]],
+            "fit line range": [0, 10],
+            "return stats": True,
+        },
+    )
+
+    line = plt.gca().lines[0]
+    assert stats["x fit"].tolist() == pytest.approx([0, 1, 4, 5])
+    np.testing.assert_allclose([line.get_xdata()[0], line.get_xdata()[-1]], [0, 10])
+    np.testing.assert_allclose([line.get_ydata()[0], line.get_ydata()[-1]], [1, 21])
+
+
 def test_transform_values_accepts_numeric_and_text_powers(ecat_module):
     values = np.asarray([2.0, 3.0, 4.0])
 
@@ -222,6 +334,32 @@ def test_fit_rate_lineweaver_burk_uses_independent_xy_transforms(ecat_module):
     assert data["y transformed"].tolist() == pytest.approx([0.5, 0.25, 0.125, 0.0625])
     assert fitline["parameters"]["m"] == pytest.approx(0.5)
     assert fitline["parameters"]["b"] == pytest.approx(0.0, abs=1e-12)
+
+
+def test_fit_rate_lineweaver_burk_plot_formats_reciprocal_axis_labels(ecat_module):
+    df = pd.DataFrame(
+        {
+            "CO2 (%)": [5.0, 10.0, 20.0, 40.0],
+            "kobs": [1.0, 1.7, 2.6, 3.4],
+        }
+    )
+
+    ecat_module.fit_rate(
+        df,
+        {
+            "plot": True,
+            "print": False,
+            "x column": "CO2 (%)",
+            "metric": "kobs",
+            "transform mode": "lineweaver-burk",
+        },
+    )
+
+    ax = plt.gca()
+    assert "1/" in ax.get_xlabel()
+    assert "CO" in ax.get_xlabel()
+    assert "1/" in ax.get_ylabel()
+    assert "k" in ax.get_ylabel()
 
 
 def test_fit_rate_y_mode_enhancement_adjusts_before_fit(ecat_module):
@@ -435,6 +573,80 @@ def test_fit_rate_plot_scale_uses_axis_scale_without_transforming_values(ecat_mo
     plt.close(ax.figure)
 
 
+def test_fit_rate_log_axis_default_fit_line_range_skips_zero_for_display(ecat_module):
+    df = pd.DataFrame({"Scan Rate": [0.0, 0.1, 1.0, 10.0], "kobs": [9.5, 8.0, 4.5, 1.0]})
+
+    result = ecat_module.fit_rate(
+        df,
+        {
+            "plot": True,
+            "print": False,
+            "metric": "kobs",
+            "fit indices": [0, None],
+            "fit": True,
+            "plot scale": "log-log",
+            "transform mode": None,
+            "legend": False,
+        },
+    )
+
+    ax = plt.gca()
+    line = ax.lines[0]
+    assert ax.get_xscale() == "log"
+    assert result.fit_table.loc[0, "fit x min"] == pytest.approx(0.0)
+    assert line.get_xdata()[0] == pytest.approx(0.1)
+    assert line.get_xdata()[-1] == pytest.approx(10.0)
+    plt.close(ax.figure)
+
+
+def test_fit_rate_log_axis_explicit_nonpositive_fit_line_range_errors(ecat_module):
+    df = pd.DataFrame({"Scan Rate": [0.0, 0.1, 1.0, 10.0], "kobs": [9.5, 8.0, 4.5, 1.0]})
+
+    with pytest.raises(ValueError, match="fit line range.*positive"):
+        ecat_module.fit_rate(
+            df,
+            {
+                "plot": True,
+                "print": False,
+                "metric": "kobs",
+                "fit indices": [0, None],
+                "plot scale": "log-log",
+                "fit line range": [0, 10],
+                "legend": False,
+            },
+        )
+    plt.close("all")
+
+
+def test_fit_rate_log_log_transform_does_not_apply_plot_scale_to_transformed_coordinates(ecat_module):
+    df = pd.DataFrame({"Scan Rate": [0.01, 0.1, 1.0], "kobs": [0.02, 0.2, 2.0]})
+
+    result = ecat_module.fit_rate(
+        df,
+        {
+            "plot": True,
+            "print": False,
+            "metric": "kobs",
+            "transform mode": "log-log",
+            "plot scale": "log-log",
+            "legend": False,
+        },
+    )
+
+    ax = plt.gca()
+    assert ax.get_xscale() == "linear"
+    assert ax.get_yscale() == "linear"
+    assert result.table["x transformed"].tolist() == pytest.approx([-2.0, -1.0, 0.0])
+    assert result.table["y transformed"].tolist() == pytest.approx(
+        [np.log10(0.02), np.log10(0.2), np.log10(2.0)]
+    )
+    np.testing.assert_allclose(
+        [ax.lines[0].get_xdata()[0], ax.lines[0].get_xdata()[-1]],
+        [-2.0, 0.0],
+    )
+    plt.close(ax.figure)
+
+
 def test_fit_rate_y_mode_label_is_adjusted_before_transform_wrapping(ecat_module):
     df = pd.DataFrame({"Scan Rate": [1.0, 2.0, 3.0], "kobs": [2.0, 4.0, 8.0]})
 
@@ -581,6 +793,128 @@ def test_fit_rate_fit_label_respects_explicit_legend_false(ecat_module):
     )
 
     assert plt.gca().get_legend() is None
+
+
+def test_fit_rate_fit_line_range_does_not_change_fit_selection_metadata(ecat_module):
+    df = pd.DataFrame({"Scan Rate": [0.0, 1.0, 2.0, 3.0, 4.0], "kobs": [1.0, 3.0, 5.0, 7.0, 9.0]})
+
+    result = ecat_module.fit_rate(
+        df,
+        {
+            "plot": True,
+            "print": False,
+            "fit indices": [1, 3],
+            "fit line range": [0.0, 5.0],
+        },
+    )
+
+    ax = plt.gca()
+    line = ax.lines[0]
+    fit_table = result.fit_table
+
+    assert fit_table["fit x min"].iloc[0] == pytest.approx(1.0)
+    assert fit_table["fit x max"].iloc[0] == pytest.approx(2.0)
+    np.testing.assert_allclose([line.get_xdata()[0], line.get_xdata()[-1]], [0.0, 5.0])
+    np.testing.assert_allclose([line.get_ydata()[0], line.get_ydata()[-1]], [1.0, 11.0])
+
+
+def test_fit_rate_fit_line_range_dict_maps_to_named_fit_indices(ecat_module):
+    df = pd.DataFrame({"Scan Rate": [0.0, 1.0, 2.0, 3.0, 4.0, 5.0], "kobs": [1.0, 3.0, 5.0, 7.0, 9.0, 11.0]})
+
+    result = ecat_module.fit_rate(
+        df,
+        {
+            "plot": True,
+            "print": False,
+            "fit indices": {
+                "early": [0, 2],
+                "late": [3, 5],
+            },
+            "fit line range": {
+                "early": [0.0, 3.0],
+                "late": [2.0, 6.0],
+            },
+        },
+    )
+
+    lines = plt.gca().lines
+    fit_table = result.fit_table
+
+    assert fit_table.loc[fit_table["series"] == "early", "fit x max"].iloc[0] == pytest.approx(1.0)
+    assert fit_table.loc[fit_table["series"] == "late", "fit x min"].iloc[0] == pytest.approx(3.0)
+    np.testing.assert_allclose([lines[0].get_xdata()[0], lines[0].get_xdata()[-1]], [0.0, 3.0])
+    np.testing.assert_allclose([lines[1].get_xdata()[0], lines[1].get_xdata()[-1]], [2.0, 6.0])
+
+
+def test_fit_model_fit_line_range_extends_line_but_not_fit_range_table(ecat_module):
+    x = np.asarray([0.0, 1.0, 2.0, 3.0, 4.0])
+    y = 2.0 * x + 1.0
+
+    result = ecat_module.fit_model(
+        x,
+        y,
+        options={
+            "plot": True,
+            "print": False,
+            "fit indices": [1, 3],
+            "fit line range": [0.0, 5.0],
+        },
+    )
+
+    line = plt.gca().lines[0]
+    assert result.fit_table["fit x min"].iloc[0] == pytest.approx(1.0)
+    assert result.fit_table["fit x max"].iloc[0] == pytest.approx(2.0)
+    np.testing.assert_allclose([line.get_xdata()[0], line.get_xdata()[-1]], [0.0, 5.0])
+    np.testing.assert_allclose([line.get_ydata()[0], line.get_ydata()[-1]], [1.0, 11.0])
+
+
+def test_fit_model_confidence_band_uses_fit_line_range(ecat_module):
+    x = np.asarray([0.0, 1.0, 2.0, 3.0, 4.0])
+    y = np.asarray([1.1, 2.8, 5.2, 7.1, 8.9])
+
+    ecat_module.fit_model(
+        x,
+        y,
+        options={
+            "plot": True,
+            "print": False,
+            "fit band": "confidence",
+            "fit line range": [0.0, 6.0],
+        },
+    )
+
+    ax = plt.gca()
+    bands = _fit_band_collections(ax)
+
+    assert len(bands) == 1
+    vertices = bands[0].get_paths()[0].vertices
+    assert np.nanmin(vertices[:, 0]) == pytest.approx(0.0)
+    assert np.nanmax(vertices[:, 0]) == pytest.approx(6.0)
+    assert _band_width_near_x(bands[0], 3.0) > 0
+
+
+def test_fit_model_prediction_band_is_wider_than_confidence_band(ecat_module):
+    x = np.asarray([0.0, 1.0, 2.0, 3.0, 4.0])
+    y = np.asarray([1.1, 2.8, 5.2, 7.1, 8.9])
+
+    ecat_module.fit_model(
+        x,
+        y,
+        options={"plot": True, "print": False, "fit band": "confidence"},
+    )
+    confidence_band = _fit_band_collections(plt.gca())[0]
+    confidence_width = _band_width_near_x(confidence_band, 2.0)
+    plt.close("all")
+
+    ecat_module.fit_model(
+        x,
+        y,
+        options={"plot": True, "print": False, "fit band": "prediction"},
+    )
+    prediction_band = _fit_band_collections(plt.gca())[0]
+    prediction_width = _band_width_near_x(prediction_band, 2.0)
+
+    assert prediction_width > confidence_width
 
 
 def test_fit_model_power_recovers_parameters_and_can_plot_and_print(ecat_module, capsys):
@@ -772,7 +1106,11 @@ def test_fit_model_log_residual_display_uses_ln_r2_label(ecat_module, monkeypatc
         options={"plot": False, "print": True, "fit residual": "log"},
     )
 
-    summary_table = next(table for table in displayed if "Setting" in table.columns)
+    summary_table = next(
+        getattr(table, "data", table)
+        for table in displayed
+        if "Setting" in getattr(table, "data", table).columns
+    )
     assert "ln R²" in summary_table["Setting"].tolist()
     assert "R²" not in summary_table["Setting"].tolist()
 
@@ -795,6 +1133,8 @@ def test_fit_model_print_uses_pretty_details_and_parameter_tables(ecat_module, c
     assert "Field" in printed
     assert "Value" in printed
     assert "y = A x^n" in printed
+    assert "Fit Parameters" in printed
+    assert "A, n (2)" in printed
     assert "y = 2x^0.5" not in printed
     assert "±" in printed
     assert "A" in printed
@@ -842,12 +1182,104 @@ def test_fit_model_details_print_for_bounded_power_offset(ecat_module, capsys):
     assert "Value" in printed
     assert "Equation" in printed
     assert "y = b + A x^n" in printed
+    assert "Fit Parameters" in printed
+    assert "b, A, n (3)" in printed
     assert "Fit Model Parameters:" in printed
     assert "Initial" in printed
     assert "Lower Bound" in printed
     assert "Upper Bound" in printed
     assert "Fit Value" in printed
     assert "Std. Error" in printed
+
+
+def test_fit_model_curve_fit_method_and_passthrough_print_when_used(ecat_module, capsys):
+    x = np.linspace(0.0, 5.0, 20)
+    y = 1.0 + 2.0 * x
+
+    result = ecat_module.fit_model(
+        x,
+        y,
+        model="linear",
+        options={
+            "plot": False,
+            "print": True,
+            "print fit": "details",
+            "fit method": "trf",
+            "curve fit options": {"loss": "soft_l1", "x_scale": "jac"},
+        },
+    )
+
+    printed = capsys.readouterr().out
+    model_result = result.fit_model_results["Model"]
+    assert model_result["fit method"] == "curve_fit / trf"
+    assert model_result["curve fit options"]["loss"] == "soft_l1"
+    assert model_result["curve fit options"]["x_scale"] == "jac"
+    assert "Fit Method" in printed
+    assert "curve_fit / trf" in printed
+
+
+def test_fit_model_rejects_curve_fit_passthrough_owned_by_ecat(ecat_module):
+    x = np.asarray([0.0, 1.0, 2.0])
+    y = 1.0 + 2.0 * x
+
+    with pytest.raises(ValueError, match="fit init.*fit bounds"):
+        ecat_module.fit_model(
+            x,
+            y,
+            model="linear",
+            options={
+                "plot": False,
+                "print": False,
+                "curve fit options": {"p0": [1.0, 0.0]},
+            },
+        )
+
+
+def test_fit_model_warns_when_fit_points_equal_fit_parameters(ecat_module):
+    x = np.asarray([0.0, 1.0])
+    y = 1.0 + 2.0 * x
+
+    with pytest.warns(UserWarning, match="2 points and 2 fitted parameters"):
+        ecat_module.fit_model(
+            x,
+            y,
+            model="linear",
+            options={"plot": False, "print": False},
+        )
+
+
+def test_fit_model_strongly_warns_when_underdetermined(ecat_module):
+    x = np.asarray([0.0, 1.0])
+    y = np.asarray([1.0, 2.0])
+
+    with pytest.warns(UserWarning, match="the model is underdetermined"):
+        ecat_module.fit_model(
+            x,
+            y,
+            model="k0 + k1*x + k2*x^2",
+            options={"plot": False, "print": False, "fit method": "trf"},
+        )
+
+
+def test_fit_rate_accepts_curve_fit_method_options(ecat_module):
+    x = np.linspace(0.0, 1.0, 6)
+    df = pd.DataFrame({"H2O Concentration (M)": x, "kobs": 1.0 + 2.0 * x})
+
+    result = ecat_module.fit_rate(
+        df,
+        {
+            "plot": False,
+            "print": False,
+            "x column": "H2O Concentration (M)",
+            "metric": "kobs",
+            "fit model": "linear",
+            "fit method": "trf",
+            "curve fit options": {"loss": "soft_l1"},
+        },
+    )
+
+    assert result.fit_model_results["kobs"]["fit method"] == "curve_fit / trf"
+    assert result.fit_model_results["kobs"]["curve fit options"]["loss"] == "soft_l1"
 
 
 def test_fit_model_print_fit_summary_forces_one_table(ecat_module, capsys):
@@ -917,7 +1349,7 @@ def test_fit_model_fit_indices_selects_points_without_dropping_output_rows(ecat_
     assert result.table.loc[4, "Predicted"] == pytest.approx(9.0)
 
 
-def test_fit_model_fit_range_selects_x_value_window(ecat_module):
+def test_fit_model_fit_indices_selects_row_window(ecat_module):
     x = np.asarray([0.0, 1.0, 2.0, 3.0, 4.0])
     y = np.asarray([1.0, 3.0, 5.0, 100.0, 200.0])
 
@@ -925,14 +1357,15 @@ def test_fit_model_fit_range_selects_x_value_window(ecat_module):
         x,
         y,
         model="linear",
-        options={"fit range": [0.0, 2.0]},
+        options={"fit indices": [0, 2]},
     )
 
-    assert result.fit_table["Fit Points"].iloc[0] == 3
-    assert result.fits["parameters"]["m"] == pytest.approx(2.0)
-    assert result.fits["parameters"]["b"] == pytest.approx(1.0)
+    assert result.fit_table["Fit Points"].iloc[0] == 2
+    model_fit = result.fits[next(iter(result.fits))]
+    assert model_fit["parameters"]["m"] == pytest.approx(2.0)
+    assert model_fit["parameters"]["b"] == pytest.approx(1.0)
     assert result.fit_table["fit x min"].iloc[0] == pytest.approx(0.0)
-    assert result.fit_table["fit x max"].iloc[0] == pytest.approx(2.0)
+    assert result.fit_table["fit x max"].iloc[0] == pytest.approx(1.0)
 
 
 def test_fit_model_bounds_accept_none_as_unbounded(ecat_module):
@@ -1201,6 +1634,28 @@ def test_fit_model_accepts_formula_string_with_caret_power(ecat_module):
     assert result.fits["parameters"]["k0"] == pytest.approx(1.5)
     assert result.fits["parameters"]["k1"] == pytest.approx(2.0)
     assert result.fits["parameters"]["k2"] == pytest.approx(0.25)
+
+
+def test_fit_model_custom_formula_plot_label_braces_decimal_power(ecat_module):
+    x = np.asarray([1.0, 2.0, 4.0, 8.0])
+    y = 2.5 * x ** 1.5
+
+    ecat_module.fit_model(
+        x,
+        y,
+        options={
+            "plot": True,
+            "print": False,
+            "fit label": True,
+            "fit model": "A*x^1.5",
+            "fit init": {"A": 1.0},
+            "sig figs": 3,
+        },
+    )
+
+    labels = [text.get_text() for text in plt.gca().get_legend().get_texts()]
+    assert any("x^{1.5}" in label for label in labels)
+    assert not any("x^1.5" in label for label in labels)
 
 
 def test_fit_model_custom_formula_eval_errors_are_user_friendly(ecat_module, monkeypatch):
@@ -1510,6 +1965,38 @@ def test_fit_peak_potential_handles_multiple_segments(ecat_module, cv_factory):
     assert "Seg 1 Ep" in fits
 
 
+def test_fit_peak_potential_ehalf_fit_uses_point_color(ecat_module, cv_factory):
+    cvs = [
+        cv_factory(name="50mVs_sample_CO2_MeCN_10mM_Fc_run01"),
+        cv_factory(name="100mVs_sample_CO2_MeCN_10mM_Fc_run02"),
+        cv_factory(name="200mVs_sample_CO2_MeCN_10mM_Fc_run03"),
+    ]
+
+    ecat_module.fit_peak_potential(
+        cvs,
+        {
+            "plot": True,
+            "print": False,
+            "segments": [1, 2],
+            "exact potential": 0.2,
+            "follow e1/2": True,
+        },
+    )
+    ax = plt.gca()
+
+    point_colors = [
+        ecat_module.mpl.colors.to_hex(collection.get_facecolors()[0])
+        for collection in ax.collections
+        if len(collection.get_facecolors())
+    ]
+    fit_colors = [
+        ecat_module.mpl.colors.to_hex(line.get_color())
+        for line in ax.lines
+    ]
+
+    assert fit_colors == point_colors
+
+
 def test_fit_peak_potential_plot_all_legend_defaults_to_raw_multiplot_only(
     ecat_module,
     cv_factory,
@@ -1620,6 +2107,86 @@ def test_fit_peak_potential_per_cv_guesses_seed_running_guess(
     assert observed[3] == (cvs[1].name, 2, pytest.approx(-0.21))
     assert observed[4] == (cvs[2].name, 1, pytest.approx(-0.33))
     assert observed[5] == (cvs[2].name, 2, pytest.approx(-0.32))
+
+
+def test_fit_peak_potential_scalar_guess_tracks_across_cvs(
+    ecat_module,
+    cv_factory,
+    monkeypatch,
+):
+    cvs = [
+        cv_factory(name="50mVs_sample_CO2_MeCN_10mM_Fc_run01"),
+        cv_factory(name="100mVs_sample_CO2_MeCN_10mM_Fc_run02"),
+        cv_factory(name="200mVs_sample_CO2_MeCN_10mM_Fc_run03"),
+    ]
+    observed = []
+    returned_eps = iter([-0.11, -0.22, -0.33])
+
+    def fake_peak_potential(self, options=None):
+        opts = dict(options or {})
+        observed.append((self.name, opts.get("guess potential"), opts.get("peak kind")))
+        return {
+            "Ep": next(returned_eps),
+            "index": 0,
+            "current": 0.0,
+            "extremum kind": "max",
+        }
+
+    monkeypatch.setattr(ecat_module.cv, "peak_potential", fake_peak_potential)
+
+    ecat_module.fit_peak_potential(
+        cvs,
+        {
+            "plot": False,
+            "print": False,
+            "segment": 1,
+            "guess potentials": -0.10,
+        },
+    )
+
+    assert observed == [
+        (cvs[0].name, pytest.approx(-0.10), None),
+        (cvs[1].name, pytest.approx(-0.11), "max"),
+        (cvs[2].name, pytest.approx(-0.22), "max"),
+    ]
+
+
+def test_fit_peak_potential_forwards_infer_peak_kind(
+    ecat_module,
+    cv_factory,
+    monkeypatch,
+):
+    cvs = [
+        cv_factory(name="50mVs_sample_CO2_MeCN_10mM_Fc_run01"),
+        cv_factory(name="100mVs_sample_CO2_MeCN_10mM_Fc_run02"),
+    ]
+    observed = []
+    returned_eps = iter([-0.11, -0.22])
+
+    def fake_peak_potential(self, options=None):
+        opts = dict(options or {})
+        observed.append(opts.get("peak kind"))
+        return {
+            "Ep": next(returned_eps),
+            "index": 0,
+            "current": 0.0,
+            "extremum kind": "max",
+        }
+
+    monkeypatch.setattr(ecat_module.cv, "peak_potential", fake_peak_potential)
+
+    ecat_module.fit_peak_potential(
+        cvs,
+        {
+            "plot": False,
+            "print": False,
+            "segment": 1,
+            "guess potentials": -0.10,
+            "peak kind": "inferred",
+        },
+    )
+
+    assert observed == ["infer", "infer"]
 
 
 def test_fit_peak_current_formats_concentration_transform_symbolically(
@@ -2749,7 +3316,7 @@ def test_trumpet_analysis_supports_nested_per_cv_paired_guesses(ecat_module):
             "plot": False,
             "print": False,
             "segment": 1,
-            "guess potential": [[-0.1, 0.1], [-0.2, 0.2]],
+            "guess potentials": [[-0.1, 0.1], [-0.2, 0.2]],
         },
     )
 
@@ -2998,7 +3565,7 @@ def test_trumpet_analysis_reports_untrusted_alpha_beta_region(ecat_module):
     assert "may not be reliable" in warning_row.iloc[0]["Value"]
 
 
-def test_trumpet_accepts_plural_fit_colors(ecat_module):
+def test_trumpet_accepts_fit_color_list(ecat_module):
     class FakeCV:
         def __init__(self, scan_rate, ep1, ep2):
             self.scan_rate = scan_rate
@@ -3022,7 +3589,7 @@ def test_trumpet_accepts_plural_fit_colors(ecat_module):
 
     ecat_module.trumpet_analysis(
         cvs,
-        {"print": False, "segment": 1, "fit colors": ["black", "tab:orange"]},
+        {"print": False, "segment": 1, "fit color": ["black", "tab:orange"]},
     )
     ax = plt.gca()
 
@@ -3216,7 +3783,7 @@ def test_tafel_uses_shared_multiplot_style_helpers(ecat_module, monkeypatch):
             "subtitle fontsize": 10,
             "color spec": {
                 "line colors": ["tab:blue", "tab:orange"],
-                "plot labels": ["a", "b"],
+                "labels": ["a", "b"],
                 "gradient groups": [],
                 "discrete indices": [0, 1],
             },
@@ -3564,7 +4131,7 @@ def test_fit_rate_accepts_sig_fig_alias_for_fit_label(ecat_module):
     assert any("y = 3.14x + 2.72" in label for label in labels)
 
 
-def test_fit_rate_named_fit_ranges_produce_multiple_loglog_fits(ecat_module):
+def test_fit_rate_named_fit_indices_produce_multiple_loglog_fits(ecat_module):
     df = pd.DataFrame(
         {
             "Scan Rate": np.arange(1, 13, dtype=float),
@@ -3578,10 +4145,9 @@ def test_fit_rate_named_fit_ranges_produce_multiple_loglog_fits(ecat_module):
             "plot": False,
             "print": False,
             "transform mode": "log-log",
-            "fit indices": [0, 3],
-            "fit ranges": {
-                "early": [0, 0.7],
-                "tail split": [[0.78, 0.96], [1.0, None]],
+            "fit indices": {
+                "early": [0, 5],
+                "tail split": [[6, 9], [9, None]],
             },
         },
     )
@@ -3619,7 +4185,7 @@ def test_fit_rate_named_fit_indices_produce_multiple_fits_with_open_ended_window
     assert result.fit_table.drop_duplicates("series")["Fit Points"].tolist() == [3, 4]
 
 
-def test_fit_rate_named_fit_ranges_support_model_fits_and_plot_lines(ecat_module):
+def test_fit_rate_named_fit_indices_support_model_fits_and_plot_lines(ecat_module):
     df = pd.DataFrame(
         {
             "Scan Rate": np.arange(1, 9, dtype=float),
@@ -3633,7 +4199,7 @@ def test_fit_rate_named_fit_ranges_support_model_fits_and_plot_lines(ecat_module
             "plot": True,
             "print": False,
             "fit model": "power",
-            "fit ranges": {
+            "fit indices": {
                 "early": [0, 4],
                 "late": [4, None],
             },
@@ -3648,7 +4214,7 @@ def test_fit_rate_named_fit_ranges_support_model_fits_and_plot_lines(ecat_module
     assert len(ax.lines) == 2
 
 
-def test_fit_rate_fit_ranges_accept_fit_color_list(ecat_module):
+def test_fit_rate_named_fit_indices_accept_fit_color_list(ecat_module):
     df = pd.DataFrame(
         {
             "Scan Rate": np.arange(1, 9, dtype=float),
@@ -3662,7 +4228,7 @@ def test_fit_rate_fit_ranges_accept_fit_color_list(ecat_module):
             "plot": True,
             "print": False,
             "fit model": "power",
-            "fit ranges": {
+            "fit indices": {
                 "early": [0, 4],
                 "late": [4, None],
             },
@@ -3678,7 +4244,7 @@ def test_fit_rate_fit_ranges_accept_fit_color_list(ecat_module):
     plt.close(ax.figure)
 
 
-def test_fit_rate_unnamed_fit_ranges_get_generated_labels_and_plot_lines(ecat_module):
+def test_fit_rate_unnamed_fit_indices_get_generated_labels_and_plot_lines(ecat_module):
     df = pd.DataFrame(
         {
             "Scan Rate": np.arange(1, 7, dtype=float),
@@ -3691,7 +4257,7 @@ def test_fit_rate_unnamed_fit_ranges_get_generated_labels_and_plot_lines(ecat_mo
         {
             "plot": True,
             "print": False,
-            "fit ranges": [[0, 3], [3, None]],
+            "fit indices": [[0, 3], [3, None]],
         },
     )
 
@@ -3711,7 +4277,7 @@ def test_fit_rate_displays_fit_statistics_dataframe(
     displayed = {}
 
     def capture_display(table):
-        displayed["table"] = table.copy()
+        displayed["object"] = table
 
     monkeypatch.setattr(ecat_module, "display", capture_display)
 
@@ -3729,11 +4295,14 @@ def test_fit_rate_displays_fit_statistics_dataframe(
 
     printed = capsys.readouterr().out
 
-    assert "Fit Model:" in printed
+    displayed_table = getattr(displayed["object"], "data", displayed["object"])
+
+    assert "Fit Model:" not in printed
     assert "Fit Statistics:" not in printed
-    assert list(displayed["table"].columns) == ["Field", "Value"]
-    assert displayed["table"].set_index("Field").loc["Model", "Value"] == "linear"
-    assert "R²" in displayed["table"]["Field"].tolist()
+    assert getattr(displayed["object"], "caption", None) == "Fit Model"
+    assert list(displayed_table.columns) == ["Field", "Value"]
+    assert displayed_table.set_index("Field").loc["Model", "Value"] == "linear"
+    assert "R²" in displayed_table["Field"].tolist()
     assert "R2" in result.fit_table.columns
 
 
@@ -4108,6 +4677,55 @@ def test_multi_scatterplot_reuses_fits_from_scatter_result(ecat_module):
     assert result.fit_table.loc[0, "slope"] == pytest.approx(2.0)
 
 
+def test_multi_scatterplot_fit_line_range_extends_overlay(ecat_module):
+    df = pd.DataFrame({"Scan Rate": [1.0, 2.0, 3.0], "kobs": [2.0, 4.0, 6.0]})
+    rate_result = ecat_module.fit_rate(
+        df,
+        {"plot": False, "print": False, "metric": "kobs"},
+    )
+
+    result = ecat_module.multi_scatterplot(
+        {"rate": rate_result},
+        {"legend": False, "title": False, "fit line range": [0.0, 5.0]},
+    )
+
+    line = result.axes.lines[0]
+    np.testing.assert_allclose([line.get_xdata()[0], line.get_xdata()[-1]], [0.0, 5.0])
+    np.testing.assert_allclose([line.get_ydata()[0], line.get_ydata()[-1]], [0.0, 10.0], atol=1e-12)
+    assert result.fit_table.loc[0, "fit x min"] == pytest.approx(1.0)
+    assert result.fit_table.loc[0, "fit x max"] == pytest.approx(3.0)
+
+
+def test_multi_scatterplot_result_input_confidence_band(ecat_module):
+    df = pd.DataFrame(
+        {
+            "Scan Rate": [1.0, 2.0, 3.0, 4.0, 5.0],
+            "kobs": [2.2, 3.8, 6.1, 8.3, 9.7],
+        }
+    )
+    rate_result = ecat_module.fit_rate(
+        df,
+        {"plot": False, "print": False, "metric": "kobs"},
+    )
+
+    result = ecat_module.multi_scatterplot(
+        {"rate": rate_result},
+        {
+            "legend": False,
+            "title": False,
+            "fit band": "confidence",
+            "fit line range": [0.0, 6.0],
+        },
+    )
+
+    bands = _fit_band_collections(result.axes)
+    assert len(bands) == 1
+    vertices = bands[0].get_paths()[0].vertices
+    assert np.nanmin(vertices[:, 0]) == pytest.approx(0.0)
+    assert np.nanmax(vertices[:, 0]) == pytest.approx(6.0)
+    assert _band_width_near_x(bands[0], 3.0) > 0
+
+
 def test_multi_scatterplot_uses_multiplot_colors_for_points_and_fits(ecat_module):
     first = ecat_module.fit_rate(
         pd.DataFrame({"Scan Rate": [1.0, 2.0, 3.0], "kobs": [2.0, 4.0, 6.0]}),
@@ -4123,10 +4741,7 @@ def test_multi_scatterplot_uses_multiplot_colors_for_points_and_fits(ecat_module
         {"legend": False, "title": False},
     )
 
-    expected = [
-        ecat_module.mpl.colors.to_hex(color)
-        for color in ecat_module.MultiplotOptions.from_options({}).to_legacy_dict()["default colors"][:2]
-    ]
+    expected = [ecat_module.mpl.colors.to_hex(color) for color in ["black", "tab:blue"]]
     point_colors = [
         ecat_module.mpl.colors.to_hex(collection.get_facecolors()[0])
         for collection in result.axes.collections
@@ -4149,7 +4764,7 @@ def test_multi_scatterplot_print_true_displays_reused_fit_table(
     displayed = {}
 
     def capture_display(table):
-        displayed["table"] = table.copy()
+        displayed["object"] = table
 
     monkeypatch.setattr(ecat_module, "display", capture_display)
 
@@ -4166,9 +4781,12 @@ def test_multi_scatterplot_print_true_displays_reused_fit_table(
 
     printed = capsys.readouterr().out
 
-    assert "Multi Scatterplot Fit Statistics:" in printed
-    assert displayed["table"].equals(result.fit_table)
-    assert displayed["table"].loc[0, "slope"] == pytest.approx(2.0)
+    displayed_table = getattr(displayed["object"], "data", displayed["object"])
+
+    assert "Multi Scatterplot Fit Statistics:" not in printed
+    assert getattr(displayed["object"], "caption", None) == "Multi Scatterplot Fit Statistics"
+    assert displayed_table.equals(result.fit_table)
+    assert displayed_table.loc[0, "slope"] == pytest.approx(2.0)
 
 
 def test_multi_scatterplot_fits_from_scatter_result_use_plotted_points(ecat_module):

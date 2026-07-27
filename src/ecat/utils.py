@@ -305,11 +305,14 @@ def _resolve_savgol_params(npts, options, deriv=0):
       - noise window: int or "auto"
       - noise polyorder: int or "auto"
     """
-    if npts < max(deriv + 3, 5):
-        return None, None
-
     window = options.get("noise window", "auto")
     polyorder = options.get("noise polyorder", "auto")
+
+    if window is None:
+        return None, None
+
+    if npts < max(deriv + 3, 5):
+        return None, None
 
     # ---- auto window ----
     if window in (None, "auto"):
@@ -480,15 +483,7 @@ def extract_prefix_and_base(unit_str: str) -> tuple[str, str]:
     # Fall-back: nothing matched
     return "", unit_str
 
-def _estimate_peak_prominence(signal, options):
-    """
-    Shared auto prominence estimate.
-    Uses user override if provided, otherwise estimates from point-to-point noise.
-    """
-    prominence = options.get("peak prominence")
-    if prominence is not None:
-        return prominence
-
+def _auto_peak_prominence_from_signal(signal):
     signal = np.asarray(signal, dtype=float)
     if len(signal) < 3:
         return 0.0
@@ -496,6 +491,72 @@ def _estimate_peak_prominence(signal, options):
     diffs = np.diff(signal)
     noise_std = np.std(diffs) / np.sqrt(2) if len(diffs) > 0 else 0.0
     return 5 * noise_std
+
+
+def _estimate_peak_prominence_with_meta(signal, options, x=None):
+    """
+    Shared auto prominence estimate.
+    Uses user override if provided, otherwise estimates from point-to-point noise.
+    """
+    prominence = options.get("peak prominence")
+    if prominence is not None:
+        return prominence, {
+            "prominence mode": "manual",
+            "prominence window": None,
+            "prominence window fraction": None,
+        }
+
+    signal = np.asarray(signal, dtype=float)
+    global_prominence = _auto_peak_prominence_from_signal(signal)
+
+    guess = options.get("guess potential")
+    if guess is not None and x is not None:
+        try:
+            guess = float(guess)
+        except (TypeError, ValueError):
+            guess = None
+
+    if guess is not None and x is not None:
+        x = np.asarray(x, dtype=float)
+        finite = np.isfinite(x) & np.isfinite(signal)
+        if len(x) == len(signal) and np.count_nonzero(finite) >= 3:
+            x_finite = x[finite]
+            signal_finite = signal[finite]
+            x_min = float(np.nanmin(x_finite))
+            x_max = float(np.nanmax(x_finite))
+            span = abs(x_max - x_min)
+            window_fraction = 0.2
+            if np.isfinite(span) and span > 0 and window_fraction > 0:
+                half_width = 0.5 * window_fraction * span
+                lo = guess - half_width
+                hi = guess + half_width
+                local_mask = (x_finite >= lo) & (x_finite <= hi)
+                if np.count_nonzero(local_mask) >= 3:
+                    local_prominence = _auto_peak_prominence_from_signal(signal_finite[local_mask])
+                    if np.isfinite(local_prominence) and local_prominence > 0:
+                        return local_prominence, {
+                            "prominence mode": "guess local",
+                            "prominence window": [lo, hi],
+                            "prominence window fraction": window_fraction,
+                            "prominence fallback": None,
+                        }
+
+                return global_prominence, {
+                    "prominence mode": "global",
+                    "prominence window": [lo, hi],
+                    "prominence window fraction": window_fraction,
+                    "prominence fallback": "guess local window too small or flat",
+                }
+
+    return global_prominence, {
+        "prominence mode": "global",
+        "prominence window": None,
+        "prominence window fraction": None,
+    }
+
+
+def _estimate_peak_prominence(signal, options):
+    return _estimate_peak_prominence_with_meta(signal, options)[0]
 
 def _filter_extrema_by_curvature(extrema, a, options):
     """
@@ -577,7 +638,7 @@ def _classify_extremum_kind(y_smooth, idx, window=3):
 
     return None
 
-def _find_extrema_indices(y, options):
+def _find_extrema_indices(y, options, x=None):
     """
     Return all local extrema (maxima + minima) in the smoothed signal,
     sorted by index, along with smoothed_y and a prominence map.
@@ -585,7 +646,11 @@ def _find_extrema_indices(y, options):
     y = np.asarray(y, dtype=float)
     smoothed_y, meta = _savgol_apply(y, options, deriv=0)
 
-    prominence = _estimate_peak_prominence(smoothed_y, options)
+    prominence, prominence_meta = _estimate_peak_prominence_with_meta(
+        smoothed_y,
+        options,
+        x=x,
+    )
 
     maxima, max_props = find_peaks(smoothed_y, prominence=prominence)
     minima, min_props = find_peaks(-smoothed_y, prominence=prominence)
@@ -608,6 +673,7 @@ def _find_extrema_indices(y, options):
 
     return extrema, smoothed_y, prom_map, {
         "prominence": prominence,
+        **prominence_meta,
         "sg window": meta["window"],
         "sg polyorder": meta["polyorder"],
         "maxima": maxima,
@@ -926,14 +992,22 @@ def scale_axis(y_base, current_unit, selected_unit='auto', candidates=('m', 'μ'
     if selected_unit == 'auto':
         abs_max = max(abs(np.nanmin(y_in_base)), abs(np.nanmax(y_in_base)))
         for p in (candidates or SI_PREFIXES):
-            f = get_conversion_factor(p + base)
+            target_unit = p + base
+            f = get_conversion_factor(target_unit)
             if abs_max / f >= 1:
-                return 1 / f, p + base
-        return 1.0, base
+                return factor_base / f, target_unit
+        return factor_base, base
+    elif selected_unit is None:
+        return 1.0, source_unit
     else:
-        # explicit
-        f = get_conversion_factor(selected_unit)
-        return 1 / f, selected_unit
+        selected_prefix, selected_base = extract_prefix_and_base(selected_unit)
+        if not _units_are_compatible(base, selected_base):
+            raise ValueError(
+                f"Cannot convert {current_unit} to {selected_unit} (incompatible units)"
+            )
+        target_unit = _full_unit(selected_prefix, selected_base)
+        f = get_conversion_factor(target_unit)
+        return factor_base / f, target_unit
 
 def scale_time_axis(x, base_unit, selected_unit='auto'):
     """
@@ -971,7 +1045,7 @@ def scale_time_axis(x, base_unit, selected_unit='auto'):
         # unknown explicit → no scaling
         return 1.0, base_unit
 
-def _legacy_normalize_option_keys(options):
+def _normalize_option_mapping(options):
     return {
         normalize_key(key).replace("_", " "): value
         for key, value in (options or {}).items()
@@ -1038,9 +1112,7 @@ def _scatterfit_legend_fontsize(*args, **kwargs):
 
 
 def _fit_color_value(options, index=0, fallback="tab:red"):
-    value = (options or {}).get("fit colors")
-    if value is None:
-        value = (options or {}).get("fit color")
+    value = (options or {}).get("fit color")
     if value is None:
         return fallback
     if not isinstance(value, str):
@@ -1059,11 +1131,65 @@ def _fit_color_value(options, index=0, fallback="tab:red"):
     return value
 
 
+def _fit_line_range_value(options, label="", index=0):
+    options = {} if options is None else dict(options)
+    value = options.get("fit line range")
+    if isinstance(value, dict):
+        candidates = [label, str(label), str(index), index, "default", "all"]
+        for candidate in candidates:
+            if candidate in value:
+                return value[candidate]
+        return None
+    if (
+        isinstance(value, (list, tuple))
+        and value
+        and not _is_fit_line_range_pair(value)
+        and all(_is_fit_line_range_pair(item) for item in value)
+    ):
+        return value[index] if index < len(value) else value[-1]
+    return value
+
+
+def _is_fit_line_range_pair(value):
+    if not isinstance(value, (list, tuple, np.ndarray, pd.Series)) or len(value) != 2:
+        return False
+    lower, upper = list(value)
+    return all(
+        item is None
+        or (
+            isinstance(item, (int, float, np.integer, np.floating))
+            and not isinstance(item, (bool, np.bool_))
+        )
+        for item in (lower, upper)
+    )
+
+
+def _polyfit_line_x_values(x_fit, options, *, label="", index=0):
+    x_fit = np.asarray(x_fit, dtype=float)
+    finite_x = x_fit[np.isfinite(x_fit)]
+    if len(finite_x) == 0:
+        return x_fit
+    default_min = float(np.nanmin(finite_x))
+    default_max = float(np.nanmax(finite_x))
+    range_spec = _fit_line_range_value(options, label=label, index=index)
+    if range_spec is None:
+        lower, upper = default_min, default_max
+    else:
+        if not _is_fit_line_range_pair(range_spec):
+            raise ValueError("'fit line range' must be [x_min, x_max].")
+        lower, upper = list(range_spec)
+        lower = default_min if lower is None else float(lower)
+        upper = default_max if upper is None else float(upper)
+    if upper <= lower:
+        raise ValueError("'fit line range' upper bound must be greater than the lower bound.")
+    return np.linspace(lower, upper, max(len(x_fit), 2))
+
+
 def fit(x, y, label="", degree=1, plot_fit=True, options=None):
     if options is None:
         options = {}
     else:
-        options = _legacy_normalize_option_keys(options)
+        options = _normalize_option_mapping(options)
 
     x = np.asarray(x, dtype=float)
     y = np.asarray(y, dtype=float)
@@ -1116,6 +1242,12 @@ def fit(x, y, label="", degree=1, plot_fit=True, options=None):
 
     if plot_fit:
         fit_label_opt = options.get("fit label", False)
+        if _fit_line_range_value(options, label=label, index=0) is None:
+            x_line = x_fit
+            y_line = y_hat
+        else:
+            x_line = _polyfit_line_x_values(x_fit, options, label=label, index=0)
+            y_line = np.poly1d(coeffs)(x_line)
         plot_kwargs = {
             "color": _fit_color_value(options, index=0, fallback="tab:red"),
             "linestyle": options.get("fit linestyle", "--"),
@@ -1131,7 +1263,7 @@ def fit(x, y, label="", degree=1, plot_fit=True, options=None):
                 text = label + "\n" + text
             plot_kwargs["label"] = text
 
-        plt.plot(x_fit, y_hat, **plot_kwargs)
+        plt.plot(x_line, y_line, **plot_kwargs)
         if "label" in plot_kwargs and options.get("legend", True):
             plt.legend(fontsize=_scatterfit_legend_fontsize(options))
 
@@ -1254,7 +1386,7 @@ __all__ = [
     '_scale_current_density_axis',
     'scale_axis',
     'scale_time_axis',
-    '_legacy_normalize_option_keys',
+    '_normalize_option_mapping',
     '_cv_trim_window_mode',
     '_cv_trim_window_info',
     '_select_fit_indices',

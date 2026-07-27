@@ -1,11 +1,12 @@
 import shutil
+import warnings
 from datetime import datetime
 from pathlib import Path
 
 import pytest
 
 
-def _write_ch_cv(path, rows, timestamp="Aug. 27, 2023   16:05:21"):
+def _write_ch_cv(path, rows, timestamp="Aug. 27, 2023   16:05:21", scan_rate=0.05):
     lines = [
         timestamp,
         "Cyclic Voltammetry",
@@ -13,7 +14,7 @@ def _write_ch_cv(path, rows, timestamp="Aug. 27, 2023   16:05:21"):
         "Init E = -0.30",
         "High E = 0.30",
         "Low E = -0.30",
-        "Scan Rate = 0.05",
+        f"Scan Rate = {scan_rate}",
         "Segment = 2",
         "Sample Interval = 0.05",
         "Sensitivity = 1e-6",
@@ -63,7 +64,7 @@ FAILED_SELF_REFERENCE_ROWS = [
 def test_potential_shift_exposes_virtual_reference_axis(cv_factory):
     obj = cv_factory()
 
-    obj.potential_shift({"shift guess": 0.12, "shift label": "Fc/Fc+"})
+    obj.potential_shift({"reference offset": 0.12, "reference label": "Fc/Fc+"})
 
     shifted_x = obj.x()
     raw_x = obj.x({"x axis": "Potential"})
@@ -124,6 +125,78 @@ def test_get_data_reference_keyword_requires_reference_keyword(ecat_module, tmp_
         )
 
 
+def test_get_data_reference_file_missing_uses_formatted_relative_path(ecat_module, tmp_path):
+    nested = tmp_path / "nested"
+    nested.mkdir()
+    _write_ch_cv(nested / "sample.txt", SAMPLE_ROWS)
+
+    with pytest.raises(ValueError) as exc_info:
+        ecat_module.get_data(
+            {
+                "folder path": str(tmp_path),
+                "recursive search": True,
+                "print": False,
+                "reference mode": "file",
+                "reference file": "nested/missing_reference.txt",
+            }
+        )
+
+    message = str(exc_info.value)
+    assert "Reference file does not exist:" in message
+    assert "`nested/missing_reference.txt`" in message
+    assert str(tmp_path) not in message
+
+
+def test_get_data_prints_unique_import_warnings_without_python_warning_context(
+    ecat_module,
+    tmp_path,
+    capsys,
+):
+    nested = tmp_path / "nested"
+    nested.mkdir()
+    _write_ch_cv(
+        nested / "MeCN_Ar_Fc_500mVs.txt",
+        REFERENCE_ROWS,
+        scan_rate=0.2,
+    )
+
+    with warnings.catch_warnings(record=True) as captured:
+        warnings.simplefilter("always")
+        objects = ecat_module.get_data(
+            {
+                "folder path": str(tmp_path),
+                "recursive search": True,
+                "print": True,
+                "reference mode": "keyword",
+                "reference keyword": "Fc",
+                "reference guess": 0.0,
+                "peak prominence": 1e-6,
+                "reference smooth": False,
+                "troubleshoot": True,
+            }
+        )
+
+    output = capsys.readouterr().out
+    mismatch_warnings = [
+        warning for warning in captured
+        if "Scan rate mismatch" in str(warning.message)
+    ]
+
+    assert len(objects) == 1
+    assert not mismatch_warnings
+    assert output.count("Scan rate mismatch") == 1
+    assert "Scan rate mismatch for `nested/MeCN_Ar_Fc_500mVs.txt`" in output
+    assert "Scan rate mismatch for `MeCN_Ar_Fc_500mVs.txt`" not in output
+    assert "Getting data from `nested/MeCN_Ar_Fc_500mVs.txt`" in output
+    assert "UserWarning" not in output
+    assert "objects.py:" not in output
+    assert "parsers.py:" not in output
+    assert any(
+        "Scan rate mismatch for `nested/MeCN_Ar_Fc_500mVs.txt`" in warning
+        for warning in objects[0].parse_result.warnings
+    )
+
+
 def test_get_data_reference_mode_rejects_empty_reference_keyword(ecat_module, tmp_path):
     _write_ch_cv(tmp_path / "sample.txt", SAMPLE_ROWS)
 
@@ -152,7 +225,7 @@ def test_get_data_reference_accepts_numeric_reference_keyword(ecat_module, tmp_p
             "reference keyword": 1,
             "reference guess": 0.0,
             "peak prominence": 1e-6,
-            "shift smooth": False,
+            "reference smooth": False,
         }
     )
 
@@ -237,7 +310,7 @@ def test_get_data_keyword_reference_suppresses_internal_reference_show(
             "reference keyword": "Fc",
             "reference guess": 0.0,
             "peak prominence": 1e-6,
-            "shift smooth": False,
+            "reference smooth": False,
         }
     )
 
@@ -305,6 +378,49 @@ def test_get_data_defaults_to_instrument_timestamp_order(ecat_module, tmp_path):
     assert [Path(obj.filepath).name for obj in objects] == [
         "z_early.txt",
         "a_late.txt",
+    ]
+
+
+def test_get_data_defaults_to_subfolder_then_timestamp_order(ecat_module, tmp_path):
+    folder1 = tmp_path / "folder1"
+    folder2 = tmp_path / "folder2"
+    folder1.mkdir()
+    folder2.mkdir()
+
+    _write_ch_cv(
+        folder1 / "z_time3.txt",
+        SAMPLE_ROWS,
+        timestamp="Aug. 27, 2023   16:03:21",
+    )
+    _write_ch_cv(
+        folder1 / "a_time2.txt",
+        SAMPLE_ROWS,
+        timestamp="Aug. 27, 2023   16:02:21",
+    )
+    _write_ch_cv(
+        folder2 / "z_time1.txt",
+        SAMPLE_ROWS,
+        timestamp="Aug. 27, 2023   16:01:21",
+    )
+    _write_ch_cv(
+        folder2 / "a_time4.txt",
+        SAMPLE_ROWS,
+        timestamp="Aug. 27, 2023   16:04:21",
+    )
+
+    objects = ecat_module.get_data(
+        {
+            "folder path": str(tmp_path),
+            "print": False,
+            "reference mode": "none",
+        }
+    )
+
+    assert [Path(obj.filepath).relative_to(tmp_path).as_posix() for obj in objects] == [
+        "folder1/a_time2.txt",
+        "folder1/z_time3.txt",
+        "folder2/z_time1.txt",
+        "folder2/a_time4.txt",
     ]
 
 
@@ -387,9 +503,9 @@ def test_get_data_uses_nearest_ancestor_reference_source(ecat_module, tmp_path):
             "reference mode": "keyword",
             "reference keyword": "Fc",
             "reference guess": 0.0,
-            "shift window": 0.3,
+            "reference window": 0.3,
             "peak prominence": 1e-6,
-            "shift smooth": False,
+            "reference smooth": False,
         }
     )
 
@@ -417,9 +533,9 @@ def test_get_data_prints_structured_reference_correction_summary(ecat_module, tm
             "reference mode": "keyword",
             "reference keyword": "Fc",
             "reference guess": 0.0,
-            "shift window": 0.3,
+            "reference window": 0.3,
             "peak prominence": 1e-6,
-            "shift smooth": False,
+            "reference smooth": False,
             "allow self reference": False,
         }
     )
@@ -430,7 +546,7 @@ def test_get_data_prints_structured_reference_correction_summary(ecat_module, tm
     assert "  Mode: keyword\n" in output
     assert "  Keyword: Fc\n" in output
     assert "  Guess: 0 V\n" in output
-    assert "  Folder reference: Fc_reference.txt = 0 V\n" in output
+    assert "  Folder reference: `Fc_reference.txt` = 0 V\n" in output
     assert "  Usage:\n    folder/ancestor reference: 2\n" in output
     assert "\n\n[Conditions]" in output
     assert "Finding reference couple" not in output
@@ -454,9 +570,9 @@ def test_get_data_prefers_local_folder_reference_over_parent(ecat_module, tmp_pa
             "reference mode": "keyword",
             "reference keyword": "Fc",
             "reference guess": 0.0,
-            "shift window": 0.3,
+            "reference window": 0.3,
             "peak prominence": 1e-6,
-            "shift smooth": False,
+            "reference smooth": False,
         }
     )
 
@@ -465,6 +581,47 @@ def test_get_data_prefers_local_folder_reference_over_parent(ecat_module, tmp_pa
     assert sample.reference_mode == "folder"
     assert sample.reference_source_file.endswith("Fc_local.txt")
     assert sample.reference_shift == pytest.approx(0.0, abs=1e-12)
+
+
+def test_get_data_labels_designated_reference_file_as_self_when_allowed(
+    ecat_module,
+    tmp_path,
+    capsys,
+):
+    _write_ch_cv(tmp_path / "Fc_reference.txt", REFERENCE_ROWS)
+    _write_ch_cv(
+        tmp_path / "sample_cv.txt",
+        SAMPLE_ROWS,
+        timestamp="Aug. 27, 2023   16:10:21",
+    )
+
+    objects = ecat_module.get_data(
+        {
+            "folder path": str(tmp_path),
+            "recursive search": False,
+            "print": True,
+            "reference mode": "keyword",
+            "reference keyword": "Fc",
+            "reference guess": 0.0,
+            "reference window": 0.3,
+            "peak prominence": 1e-6,
+            "reference smooth": False,
+        }
+    )
+
+    reference = next(obj for obj in objects if obj.filepath.endswith("Fc_reference.txt"))
+    sample = next(obj for obj in objects if obj.filepath.endswith("sample_cv.txt"))
+
+    assert reference.reference_mode == "self"
+    assert reference.reference_source_file == reference.filepath
+    assert reference.reference_shift == pytest.approx(0.0, abs=1e-12)
+    assert sample.reference_mode == "folder"
+    assert sample.reference_source_file == reference.filepath
+    assert sample.reference_shift == pytest.approx(0.0, abs=1e-12)
+
+    output = capsys.readouterr().out
+    assert "    folder/ancestor reference: 1\n" in output
+    assert "    self-referenced successfully: 1\n" in output
 
 
 def test_get_data_tries_multiple_reference_candidates_in_timestamp_order(
@@ -593,9 +750,9 @@ def test_get_data_falls_back_to_parent_reference_when_local_reference_fails(ecat
             "reference mode": "keyword",
             "reference keyword": "Fc",
             "reference guess": 0.0,
-            "shift window": 0.3,
+            "reference window": 0.3,
             "peak prominence": 1e-6,
-            "shift smooth": False,
+            "reference smooth": False,
         }
     )
 
@@ -625,9 +782,9 @@ def test_reference_like_sample_falls_back_to_folder_reference_when_self_referenc
             "reference mode": "keyword",
             "reference keyword": "Fc",
             "reference guess": 0.0,
-            "shift window": 0.3,
+            "reference window": 0.3,
             "peak prominence": 1e-6,
-            "shift smooth": False,
+            "reference smooth": False,
         }
     )
 
@@ -637,3 +794,4 @@ def test_reference_like_sample_falls_back_to_folder_reference_when_self_referenc
     assert sample.reference_source_file.endswith("Fc_reference.txt")
     assert sample.reference_shift == pytest.approx(0.0, abs=1e-12)
     assert "Failed to identify a reference couple" in sample.reference_failure_message
+    assert "File: `sample_Fc_cv.txt`" in sample.reference_failure_message

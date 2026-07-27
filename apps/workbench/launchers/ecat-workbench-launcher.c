@@ -37,23 +37,44 @@ static int executable_dir(char *out, size_t out_size) {
 
 int main(void) {
     char macos_dir[PATH_MAX];
-    char script_path[PATH_MAX];
+    char source_script_path[PATH_MAX];
+    char bundled_script_path[PATH_MAX];
+    const char *script_path = NULL;
 
     if (executable_dir(macos_dir, sizeof(macos_dir)) != 0) {
         fprintf(stderr, "Could not resolve eCAT app bundle executable path.\n");
         return 1;
     }
     if (snprintf(
-            script_path,
-            sizeof(script_path),
+            source_script_path,
+            sizeof(source_script_path),
             "%s/../../../ecat-workbench-launcher.sh",
             macos_dir
-        ) >= (int)sizeof(script_path)) {
-        fprintf(stderr, "Resolved eCAT launcher path is too long.\n");
+        ) >= (int)sizeof(source_script_path)) {
+        fprintf(stderr, "Resolved eCAT source launcher path is too long.\n");
+        return 1;
+    }
+    if (snprintf(
+            bundled_script_path,
+            sizeof(bundled_script_path),
+            "%s/../Resources/ecat-workbench-launcher.sh",
+            macos_dir
+        ) >= (int)sizeof(bundled_script_path)) {
+        fprintf(stderr, "Resolved eCAT bundled launcher path is too long.\n");
         return 1;
     }
 
-    setenv("ECAT_LAUNCHER_ENTRY", "eCAT app bundle executable started.", 1);
+    if (access(source_script_path, X_OK) == 0) {
+        script_path = source_script_path;
+        setenv("ECAT_LAUNCHER_ENTRY", "eCAT app bundle executable started from source checkout.", 1);
+    } else if (access(bundled_script_path, X_OK) == 0) {
+        script_path = bundled_script_path;
+        setenv("ECAT_LAUNCHER_ENTRY", "eCAT app bundle executable started from bundled fallback.", 1);
+    } else {
+        fprintf(stderr, "Could not find an executable eCAT launcher script.\n");
+        return 1;
+    }
+
     execl("/bin/zsh", "zsh", script_path, (char *)NULL);
     perror("Could not execute eCAT launcher script");
     return 1;

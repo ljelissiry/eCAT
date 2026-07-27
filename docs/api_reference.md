@@ -67,20 +67,33 @@ Public function names, argument names, and return shapes should match the top-le
 | `echem.from_file(path, options=None)` | Load one file and promote it to the detected object type when supported. | `describe_options("get_data")` |
 | `parse_file(path, options=None)` | Load one file and return the standardized parser contract (`ParseResult`) without returning the eCAT object. | `describe_options("get_data")` |
 | `get_data(options=None)` | Load supported electrochemistry files from a folder. | `describe_options("get_data")` |
-| `get_CVs(options=None)` | Load CV-like text files from a folder using flexible text-table detection. | `describe_options("get_data")` |
 | `get_data_from_excel(file_path, options=None)` | Create eCAT objects from an eCAT Excel workbook, or fall back to curated Excel CV header parsing when no `manifest` sheet is present. | `describe_options("get_data")` |
 
-Folder loaders return an empty list (`[]`) when no supported files are found or no files can be converted, so notebook loops and filters can safely consume the result without a separate `None` check.
+Folder loaders return an empty list (`[]`) when no supported files are found or no files can be converted, so notebook loops and filters can safely consume the result without a separate `None` check. By default, folder imports keep subfolders together and order objects within each subfolder by acquisition timestamp using `sort keys = ["subfolder", "timestamp"]`; pass explicit `sort keys` to override that ordering.
 
 `get_data()` and `echem.from_file()` now support a `custom parser` hook for filename-derived metadata and a `parser settings` dictionary for parser behavior. Use `custom parser mode="merge"` to fill only missing filename metadata, or `custom parser mode="override"` to replace the built-in filename parser result. File-derived metadata still wins by default; set `parser settings={"prefer file metadata": False}` only when you explicitly want the custom parser to replace file metadata such as scan rate. Parser settings also accept canonical `gases` and `solvents` lists plus `compound stopwords`.
 
-Every loaded object exposes `obj.parse_result`, a `ParseResult` with a consistent parser contract: `.data`, `.units`, `.technique`, `.software`, `.metadata`, `.raw_metadata`, `.warnings`, `.source`, and `.parser`. Use `parse_file(...)` when you want that contract directly for parser debugging or importer tests. Normal analysis workflows should still use `echem.from_file(...)`, `get_data(...)`, or `get_CVs(...)`.
+Every loaded object exposes `obj.parse_result`, a `ParseResult` with a consistent parser contract: `.data`, `.units`, `.technique`, `.software`, `.metadata`, `.raw_metadata`, `.warnings`, `.source`, and `.parser`. Use `parse_file(...)` when you want that contract directly for parser debugging or importer tests. Normal analysis workflows should use `echem.from_file(...)` or `get_data(...)`.
+
+Text importers use the parser contract before object promotion for tested CH, BASI, EC-Lab-style, limited NOVA ASCII, and generic numeric/header text paths. These importers preserve raw header/column metadata and nonfatal warnings on `obj.parse_result`. Generic files with only potential/current columns can promote as CV-like fallbacks; ambiguous generic files containing time, potential, and current columns remain generic `echem` objects unless a vendor or user-supplied technique marker resolves the technique. IviumSoft text and DPV text beyond existing CH/private-fixture coverage still need representative files before they are treated as beta-supported workflows.
 
 ## eCAT App
 
 | Name | Purpose |
 |---|---|
 | `open_app(host="127.0.0.1", port=0, browser=False, inline=False)` | Start the local eCAT app from Python or a notebook and return the local URL. |
+
+The app uses optional dependencies. Install them with:
+
+```bash
+python -m pip install "ecat[app]"
+```
+
+For a local source checkout, use:
+
+```bash
+python -m pip install -e ".[app]"
+```
 
 Terminal users can also run:
 
@@ -147,6 +160,7 @@ Important parser rules:
 - bare lowercase `m` is not treated as molar because it is too ambiguous
 - gas-fraction tokens such as `0.1CO2` are converted to `%`-style metadata
 - mole-fraction tokens such as `0.8xD2O` are supported
+- zero-concentration species such as `0mM HCO3` are treated as absent from normal `compounds` / `concentrations`; eCAT retains them separately as zero-concentration metadata for provenance, but concentration colorbars start at the first positive added concentration
 - if the built-in parser is not enough, use `compounds`, `custom parser`, and `parser settings`
 
 ## Inspecting Objects
@@ -168,13 +182,14 @@ These methods are available on eCAT objects unless a technique-specific object d
 | `show_objects(objects, options=None)` | Display a compact table of loaded objects. |
 | `show_groups(groups, options=None)` | Display already-created groups from `group()` or `sort_and_group()`. |
 
-Display helpers return `None` by default to avoid duplicate notebook output. `show(group)` delegates to `show_objects(group)` for one group, while `show(groups)` delegates to `show_groups(groups)` for nested grouped lists. Pass `{"return": True}` to return the displayed table when you need it for further work. Numeric object-display values honor `sig figs`; recognized unit suffixes such as `(A)`, `(V)`, and `(s)` are displayed in the Value column. Use `show_objects(objects, {"columns": "available"})` to return the available column keys, `{"columns": "all"}` to show every non-internal column, or pass labels such as `"Scan Rate"` and aliases such as `"scan_rate"` in the column list.
+Display helpers return `None` by default to avoid duplicate notebook output. `show(group)` delegates to `show_objects(group)` for one group, while `show(groups)` delegates to `show_groups(groups)` for nested grouped lists. Pass `{"return": True}` to return the displayed table when you need it for further work. Rich notebook output uses table captions for titled tables, while terminal/plain output keeps readable heading lines before the table. Numeric object-display values honor `sig figs`; recognized unit suffixes such as `(A)`, `(V)`, and `(s)` are displayed in the Value column. Use `show_objects(objects, {"columns": "available"})` to return the available column keys, `{"columns": "all"}` to show every non-internal column, or pass labels such as `"Scan Rate"` and aliases such as `"scan_rate"` in the column list.
 
 ## Plotting
 
 | Name | Purpose | Options |
 |---|---|---|
 | `obj.plot(options=None)` | Plot one eCAT object. | `describe_options("plot")` |
+| `cv_obj.plot_program(options=None)` | Plot a CV potential program as potential versus time; if no time column is stored, eCAT reconstructs time from scan rate and can prepend quiet time as a negative-time hold. | `describe_options("cv.plot_program")` |
 | `multiplot(objects, options=None)` | Overlay multiple objects on one axes. | `describe_options("multiplot")` |
 | `multimultiplot(groups, options=None)` | Plot multiple groups as separate multiplots. | `describe_options("multimultiplot")` |
 | `multi_scatterplot(data, options=None)` | Plot one or more result-table metrics. | `describe_options("multi_scatterplot")` |
@@ -186,7 +201,7 @@ Axis labels can use descriptive text or electrochemistry symbols through the plo
 
 The package default plot convention is `IUPAC`. For CVs, pass `{"plot convention": "US"}` for the left-to-right axis orientation instead.
 
-`multiplot()` auto-generates labels from differing object metadata for CV, DPV, CA, and CP overlays. Pass `{"labels": [...]}` when you want explicit trace labels instead. The legacy alias `plot labels` is accepted, but do not supply both spellings.
+`multiplot()` auto-generates labels from differing object metadata for CV, DPV, CA, and CP overlays. Pass `{"labels": [...]}` when you want explicit trace labels instead.
 
 Scale bars are available through plot options rather than as a standalone top-level helper:
 
@@ -197,7 +212,7 @@ e.multiplot(cvs, {"scale bar": {"loc": (-0.5, 0.0), "length": 5e-6}})
 
 The scale-bar `length` is in the displayed y-axis unit. A tuple `loc=(x, y)` uses displayed data coordinates after unit conversion and scaling. Scale bars remove y ticks by default.
 
-For gradient-colored multiplots, `gradient ...` options control how trace metadata maps to colors, while `colorbar ...` options control the displayed colorbar legend. Use `colorbar tick labels` (`endpoints`, `all`, or `none`) and `colorbar trace ticks` to control tick text and per-trace tick marks. `gradient reverse` reverses trace color assignment; `colorbar reverse` flips only the displayed colorbar direction.
+For gradient-colored multiplots, `gradient ...` options control how trace metadata maps to colors, while `colorbar ...` options control the displayed colorbar legend. Use `colorbar tick labels` (`endpoints`, `all`, or `none`) and `colorbar trace ticks` to control tick text and per-trace tick marks. With `gradient scale = "auto"`, scan-rate and positive concentration gradients use log spacing. Zero-concentration entries such as `0mM HCO3` are treated as absent/background traces rather than `+0` colorbar endpoints. Percent and equivalent concentration series follow the same concentration-gradient default. `gradient reverse` reverses trace color assignment; `colorbar reverse` flips only the displayed colorbar direction.
 
 `multi_scatterplot()` works on analysis result tables and supports direct column control:
 
@@ -207,7 +222,7 @@ For gradient-colored multiplots, `gradient ...` options control how trace metada
   - `auto` prefers transformed and metric columns (`"kobs"`, `"TOFmax"`, `"ip"`, `"Ep"`).
 - `y columns`: optional list of y columns to plot at once.
 - `metric`: preferred metric name used by auto-resolution when `y column = "auto"`.
-- `labels`: optional explicit trace labels (useful for concentration or scan-rate series; `plot labels` is accepted as a legacy alias).
+- `labels`: optional explicit trace labels, useful for concentration or scan-rate series.
 
 Important compatibility detail: for fit-table inputs, `auto` can use transformed values when available (`x transformed`, `y transformed`), but this is data-internal and does not change the result of upstream fitting options (for example, `transform mode` is still controlled by the source fit call).
 
@@ -263,26 +278,70 @@ result.save("cv.gif")
 | `group_summary(objects, options=None)` | Summarize grouped object metadata. | `describe_options("group_summary")` |
 | `get_available_filter_values(objects, keys=None)` | Inspect possible values before filtering. | none |
 
+Filter `logic` combines different filter keys. For example, `{"logic": "AND"}`
+requires each top-level key such as `gas`, `species`, and `replicate` to match.
+Within membership-style keys, eCAT now uses concentration-series-friendly
+defaults:
+
+- `compounds`, `concentrations`, and `species` lists require all listed values
+  by default.
+- Scalar metadata keys such as `gas`, `solvent`, `type`, and `scan rate` keep
+  list-as-any behavior.
+- Use `{"any": [...]}` or `{"all": [...]}` inside one key when the per-key
+  logic should be explicit.
+
+Examples:
+
+```python
+# Must contain all listed compound identities.
+baseline = e.filter(cvs, {"compounds": ["[Co]", "Fc", "Zn(cyclen)", "H2O"]})
+
+# Concentration-aware species matching; all listed species must be present.
+series = e.filter(cvs, {
+    "species": ["1mM[Co]", "3mMFc", "1mMZn(cyclen)", "2.8MH2O"],
+    "replicate": -1,
+})
+
+# Match any one of several possible added species.
+with_additive = e.filter(cvs, {"species": {"any": ["PhOH", "H2O"]}})
+
+# Scalar metadata lists remain any-of.
+gas_subset = e.filter(cvs, {"gas": ["Ar", "CO2"]})
+```
+
 ## CV Analysis
 
 | Name | Purpose | Options |
 |---|---|---|
-| `cv_obj.peak_potential(options=None)` | Locate a selected peak potential. | `describe_options("cv.peak_potential")` |
-| `cv_obj.peak_current(options=None)` | Measure peak current with baseline/tangent handling. | `describe_options("cv.peak_current")` |
-| `cv_obj.half_peak_potential(options=None)` | Estimate half-peak potential. | `describe_options("cv.half_peak_potential")` |
-| `cv_obj.half_wave_potential(options=None)` | Estimate half-wave potential from paired peaks. | `describe_options("cv.half_wave_potential")` |
+| `cv_obj.peak_potential(guess_or_options=None, options=None)` | Locate a selected peak potential. A numeric first argument is shorthand for `guess potential`. | `describe_options("cv.peak_potential")` |
+| `cv_obj.peak_current(guess_or_options=None, options=None)` | Measure peak current with baseline/tangent handling. A numeric first argument is shorthand for `guess potential`. | `describe_options("cv.peak_current")` |
+| `cv_obj.half_peak_potential(guess_or_options=None, options=None)` | Estimate half-peak potential. A numeric first argument is shorthand for `guess potential`. | `describe_options("cv.half_peak_potential")` |
+| `cv_obj.half_wave_potential(guess_or_options=None, options=None)` | Estimate half-wave potential from paired peaks. A numeric first argument is shorthand for `guess potential`. | `describe_options("cv.half_wave_potential")` |
 | `cv_obj.current_at_potential(potential, options=None)` | Extract current at a requested potential. | `describe_options("cv.current_at_potential")` |
 | `cv_obj.plateau_current(options=None)` | Analyze plateau current for one CV. | `describe_options("cv.plateau_current")` |
+| `cv_obj.trim(window_or_options=None, options=None)` | Return one trimmed CV copy. A two-value first argument is shorthand for `potential window`. | `describe_options("trim")` |
+| `trim(cvs, window_or_options=None, options=None)` | Return trimmed CV copy/copies while preserving list or grouped-list shape. | `describe_options("trim")` |
 | `normalize(cvs, options=None)` | Return normalized CV copy/copies. CV-only. | `describe_options("normalize")` |
 | `cv_obj.normalize(options=None)` | Normalize one CV in place and return itself. | `describe_options("cv.normalize")` |
 | `normalize_current(cvs, options=None)` | Return CV copy/copies with `i/ip0` current normalization. | `describe_options("normalize_current")` |
 | `scale_current(cvs, options=None)` | Scale currents against reference currents or manual values. | `describe_options("scale_current")` |
+| `cv_obj.filter(options=None)` | Return a filtered CV copy using a recorded SciPy-backed filter. | `describe_options("cv.filter")` |
 
 Single-CV analysis helpers such as `peak_potential`, `peak_current`, `half_peak_potential`, `half_wave_potential`, `wave_info`, and `current_at_potential` return `CVAnalysisResult`, an `AnalysisResult` child that remains dictionary-compatible. Existing notebook access such as `result["ip"]` or `result["Ep"]` is preserved. New code can also use `result.primary` for the main base-unit scalar, `result.table` for a tidy display table with columns such as `Metric` and `Value`, and `result.show()` for pretty or plain printing. The table scales values to readable display units, while `result.primary` remains in base units.
 
-Peak and wave defaults are intended for exploratory use. Single-feature helpers such as `peak_potential()`, `peak_current()`, `half_peak_potential()`, and `peak_info()` choose the largest detected feature when `segment` and `guess potential` are omitted. Paired-wave helpers such as `half_wave_potential()` and `wave_info()` default to segment `1` paired with segment `2` when `segments` is omitted. For final analysis, specify `segment`, `segments`, `guess potential`, or `exact potential` so the notebook records the intended feature.
+Peak and wave defaults are intended for exploratory use. Single-feature helpers such as `peak_potential()`, `peak_current()`, `half_peak_potential()`, and `peak_info()` choose the largest detected feature when `segment` and `guess potential` are omitted. Paired-wave helpers such as `half_wave_potential()` and `wave_info()` default to segment `1` paired with segment `2` when `segments` is omitted. For final analysis, specify `segment`, `segments`, `guess potential`, or `exact potential` so the notebook records the intended feature. The default `peak kind = "both"` considers maxima and minima because current sign conventions determine which extrema are cathodic or anodic; set `peak kind = "infer"` to map increasing selected current to maxima and decreasing selected current to minima, or set `peak kind = "max"` / `"min"` to force one kind. CV and DPV peak/wave helpers accept a numeric first argument as shorthand for `guess potential`, so `cv.peak_current(-1.5, {"segment": 1})` is equivalent to `cv.peak_current({"guess potential": -1.5, "segment": 1})`.
 
-Complex CV analyses accept per-CV potential lists through plural aliases. `describe_options` shows these as one row with `(s)`, such as `guess potential(s)`, `tangent potential(s)`, `non-catalytic cv(s)`, and `scan rate(s)`. Use `guess potentials`, `exact potentials`, `tangent potentials`, `peak potentials`, `non-catalytic guess potentials`, or FOWA `redox potentials` when each CV needs its own value. Scalar `guess potential` keeps the existing running-guess behavior within multi-segment analyses. For paired-peak analyses such as `trumpet_analysis` and `nicholson_analysis`, a flat two-value `guess potential` is treated as a shared paired guess when there are more than two CVs; with exactly two CVs, use nested pairs like `[[g1a, g1b], [g2a, g2b]]` when each CV needs a paired guess. If both singular and plural spellings are supplied for the same option, eCAT raises an option error.
+Automatic peak prominence uses a conservative global estimate when no `guess potential` is provided. With a guess, eCAT estimates the automatic prominence from a local potential window centered on the guess, using 20% of the selected potential span by default; explicit `peak prominence` values still override this behavior. Set `noise window = None` to disable Savitzky-Golay smoothing for peak detection.
+
+`trim(...)` follows the same options-dict pattern with a small shorthand for the common case. `cv.trim([-1.5, 0])` trims one CV, while `e.trim(cvs, [-1.5, 0])` trims a list or grouped list of CVs. The default `mode="expand"` preserves connected CV waveforms; use `mode="pointwise"` for a hard pointwise crop or `mode="strict"` to raise when a requested window would disconnect the scan.
+
+`cv.filter(...)` is copy-first and never runs automatically. The default is Savitzky-Golay filtering; supported methods are `savgol`, `gaussian`, `median`, `butterworth`, and `moving average`. The returned CV records the resolved filter settings in `filter_metadata` and `processing_history`, single-object `show()` reports the active filter, and eCAT Excel workbooks preserve the processing history across import. `inplace=True` is available when mutation is intentional. Filtering can shift peak positions, alter peak currents and derivatives, and bias FOWA or kinetic fits, so keep the raw CV and report the filter settings whenever filtered data are analyzed.
+
+Imported numeric data are stored in canonical units whenever eCAT knows the source units: potential in `V`, current in `A`, time in `s`, and charge in `C`. This applies to vendor text parsers, generic/header text parsing, and eCAT Excel manifest workbooks with edited unit rows; the source units are retained in parser metadata when available. Display scaling belongs in plotting and printed tables, not import. For example, use `cv.plot({"y unit": "uA"})` or `e.multiplot(cvs, {"y unit": "uA"})` for microamp axes. Current density is also derived at display/analysis time: keep `electrode area` on the object, then request `{"y axis": "current density"}`. Import-time `"convert current"` and `"current density"` options are intentionally not supported.
+
+Complex CV analyses accept per-CV potential lists through plural aliases. `describe_options` shows these as one row with `(s)`, such as `guess potential(s)`, `tangent potential(s)`, `non-catalytic cv(s)`, and `scan rate(s)`. Use `guess potentials`, `exact potentials`, `tangent potentials`, `peak potentials`, `non-catalytic guess potentials`, or FOWA `redox potentials` when each CV needs its own value. FOWA also accepts `wave ranges` as one `[min, max]` raw-potential window per catalytic CV; singular `wave range` remains the shared-window form. Scalar values under either singular or plural spelling are broadcast. For `fit_peak_potential`, a scalar `guess potential` or scalar `guess potentials` seed follows the ordered CV series, while a list must contain one scalar value per CV. For paired-peak analyses such as `trumpet_analysis` and `nicholson_analysis`, a flat two-value `guess potential` is treated as a shared paired guess when there are more than two CVs; with exactly two CVs, use nested pairs like `[[g1a, g1b], [g2a, g2b]]` when each CV needs a paired guess. If both singular and plural spellings are supplied for the same option, eCAT raises an option error.
+
+FOWA uses `fit=True` by default. Each transformed trace is fitted independently; if a trace has fewer than five usable fit points or its regression fails, eCAT warns, marks that row as `fit skipped`, leaves its kinetic values unavailable, and continues with the remaining CVs. Set `fit=False` to return and plot transformed FOWA traces without performing any regressions.
 
 When overlaying analysis diagnostics on an existing CV plot or `multiplot`, use `{"plot": True, "plot CV": False, "new plot": False}`. This adds markers, tangent lines, and current-distance diagnostics to the active axes without redrawing the underlying CV trace.
 
@@ -296,17 +355,23 @@ normalized = e.normalize(cv, {"E0": -1.0, "D": 1e-5, "species": "[Co]"})
 
 Species matching is exact; use the same spelling, case, and brackets shown in `cv.compounds`. Explicit `C` and `C unit` override `species`.
 
-Normalized CVs store plain data columns named `Dimensionless Potential` and `Dimensionless Current`. Default plot labels use compact symbols: `θ` for dimensionless potential, `Φ` for homogeneous dimensionless current, and `χ` for heterogeneous dimensionless current. The full equations are shown by `normalize(..., {"print": True})`.
+Normalized CVs store plain data columns named `Dimensionless Potential` and `Dimensionless Current`. Default axis labels use compact symbols: `θ` for dimensionless potential, `Φ` for homogeneous dimensionless current, and `χ` for heterogeneous dimensionless current. The full equations are shown by `normalize(..., {"print": True})`.
 
-`normalize_current(...)` is separate from physical dimensionless normalization. It creates `i/ip0` from the raw `Current` column; it does not compute `Φ/Φp0`.
+`normalize_current(...)` is separate from physical dimensionless normalization. It creates `i/ip0` from the raw `Current` column; it does not compute `Φ/Φp0`. With `{"plot all": True}`, eCAT plots the normalized `i/ip0` overlay. Add `{"plot reference diagnostic": True}` to first plot the reference-CV peak-current diagnostic used to determine `ip0` when `ip0` is extracted from reference CVs. Multiple distinct reference CVs are shown together on one reference diagnostic plot. Manual `ip0` values skip the reference diagnostic.
+
+For CA current/charge overlays, `ca.plot({"plot charge": True})` keeps current on the primary axis and cumulative charge on a styled secondary axis. A scalar `y unit`, such as `"uA"`, controls current while charge remains automatically scaled; use `{"y unit": ["uA", "mC"]}` to set both axes explicitly. `invert y axis` inverts both axes. The optional `invert current axis` and `invert charge axis` settings override that shared choice independently; their default `None` means inherit the shared setting.
 
 ## Other Technique Methods
 
 | Name | Purpose | Options |
 |---|---|---|
-| `dpv_obj.peak_potential(options=None)` | Locate a DPV peak potential. | `describe_options("dpv.peak_potential")` |
+| `dpv_obj.peak_potential(guess_or_options=None, options=None)` | Locate a DPV peak potential. A numeric first argument is shorthand for `guess potential`. | `describe_options("dpv.peak_potential")` |
 | `ca_obj.charge(options=None)` | Integrate CA current to cumulative charge and optionally plot target-charge diagnostics. | `describe_options("ca.charge")` |
 | `ca_obj.time_at_charge(charge=None, options=None)` | Find when a CA trace reaches a target charge. | `describe_options("ca.time_at_charge")` |
+| `ca_obj.current_at_time(time=None, options=None)` | Interpolate CA current at a requested time, with optional corrected-current handling and a printed metric table. | `describe_options("ca.current_at_time")` |
+| `ca_obj.average_current(time_range=None, options=None)` | Compute the time-weighted average CA current over a window. | `describe_options("ca.average_current")` |
+| `ca_obj.rate_at_time(time=None, options=None)` | Convert CA current at a time to electron flow and, when stoichiometry/catalyst amount are provided, molecular rate and TOF. | `describe_options("ca.rate_at_time")` |
+| `ca_obj.average_rate(time_range=None, options=None)` | Convert average CA current over a window to electron flow and optional molecular rate/TOF. | `describe_options("ca.average_rate")` |
 | `cp_obj.get_cycles(options=None)` | Split CP data into charge/discharge cycles. | `describe_options("cp.get_cycles")` |
 | `cp_obj.cycle_info(options=None)` | Summarize CP cycle capacity, efficiency, and potential metrics. | `describe_options("cp.cycle_info")` |
 | `cp_obj.plot_cycles(options=None)` | Plot selected CP cycles. | `describe_options("cp.plot_cycles")` |
@@ -332,21 +397,25 @@ auto plot subtitles put autoscaled units in the values, such as `10 mV` or
 | `fit_peak_potential(cvs, options=None)` | Fit peak-potential trends. | `describe_options("fit_peak_potential")` |
 | `fit_peak_current(cvs, options=None)` | Fit peak-current trends. | `describe_options("fit_peak_current")` |
 
-`fowa(..., {"print": True})` prints a vertical `Field`/`Value` summary table for shared settings and reference information, the symbolic FOWA `kobs` equation with definitions, and the FOWA result table. It does not print a second equation with the `n` values substituted. `{"pretty print": False}` uses the same vertical summary shape as plain text.
+`plateau_current()` accepts one CV, a flat list of CVs, or nested lists of CVs. With the default `{"group mode": "auto"}`, a flat list is grouped with `e.group(..., "species")`, so concentration/composition series produce one plateau row per condition while scan-rate series within a condition are used for plateau validation. Use `{"group mode": "as given"}` to force one flat list to be treated as a single validation group, `{"group mode": "each"}` to analyze each CV independently, or pass nested lists when you want explicit validation groups. Printed output follows the FOWA pattern: a vertical summary, the plateau `kobs` equation, and a compact result table built from object-summary differences plus plateau-analysis columns. FOWA and plateau-current equations use literature-style display notation, with `n` for the catalyst redox-wave electron count and `n′` for the turnover electron count; the definitions immediately below each equation map those symbols to the code-facing options `n_cat` / `"catalyst electrons"` and `n_turn` / `"turnover electrons"`. Peak-current extraction details are retained in `result.diagnostics` rather than printed as separate peak-potential/current tables. In `plot all` diagnostics, CV overlays default to a single combined `i/ip0` plot for the catalytic CVs and available non-catalytic reference CVs when `ip0` can be resolved; otherwise eCAT falls back to current and records the fallback in `result.warnings`. Peak-current guide marks are redrawn on the normalized overlay using the same diagnostic style as FOWA. Plateau validation plots are emitted once per condition with enough scan-rate points and still use current versus `sqrt(scan rate)` because that diagnostic tests scan-rate independence of the limiting current. Multi-condition `plateau_current()` display tables keep a hidden numeric `attrs["full_results_df"]` table with `kobs` and concentration columns, so the result can be passed directly to `fit_rate(...)` even when context columns are not visible.
 
-Advanced analysis helpers return `AnalysisResult`-style objects. Use `.table` for the primary table, `.summary` for workflow metadata, `.fits` / `.fit_table` where fitting applies, `.axes` for plots, `.units` for result units, and `.warnings` / `.diagnostics` for extra detail. FOWA and plateau-current results no longer pretend to be DataFrames; use `result.table.columns`, `result.table.loc[...]`, `result.table.attrs`, or `result.table["kobs"]`. For export, `result.to_csv(...)` writes the primary table using pandas CSV semantics, while `result.to_excel(...)` writes a workbook with the primary `table` sheet plus available metadata sheets such as `summary`, `fit_table`, `fits`, `warnings`, `units`, and `diagnostics`.
+`fowa(..., {"print": True})` prints a vertical `Field`/`Value` summary table for shared settings and reference information, the symbolic FOWA `kobs` equation with definitions, and the FOWA result table. It does not print a second equation with the `n` values substituted. The transformed FOWA plot labels the x-axis with the actual redox-reference convention used for the calculation: `E1/2` for `"redox mode": "half wave"`, `Ep/2` for `"half peak"`, `Eredox` for `"manual"`, and a generic `Eref` only when modes are mixed. The x-axis uses literature-style `n` in the exponent, and the printed equation defines `n = n_cat = catalyst redox-wave electron count`; `n′ = n_turn` appears in the slope-to-`kobs` equation rather than in the x-axis transform. `{"pretty print": False}` uses the same vertical summary shape as plain text.
+
+Advanced analysis helpers return `AnalysisResult`-style objects. Use `.table` for the primary table, `.summary` for workflow metadata, `.fits` / `.fit_table` where fitting applies, `.axes` for plots, `.units` for result units, and `.warnings` / `.diagnostics` for extra detail. FOWA and plateau-current results no longer pretend to be DataFrames; use `result.table.columns`, `result.table.loc[...]`, `result.table.attrs`, or `result.summary["kobs"]` for scalar plateau values. For export, `result.to_csv(...)` writes the primary table using pandas CSV semantics, while `result.to_excel(...)` writes a workbook with the primary `table` sheet plus available metadata sheets such as `summary`, `fit_table`, `fits`, `warnings`, `units`, and `diagnostics`.
 
 `nicholson_analysis()` returns an `AnalysisResult` with `result["data"]` and `result.table` for the Nicholson point table and `result["summary"]` / `result.summary` for equation metadata, fit statistics, and kinetic values. With `{"print": True}`, it prints the Nicholson equation, a summary table, and the input/result table. With `{"plot all": True}`, it produces one CV diagnostic plot and one Nicholson fit plot.
 
-`fit_rate`, `fit_peak_current`, and `fit_peak_potential` use the same direct model fitter as `fit_model`. Use `fit model` to choose the model and `fit init`, `fit bounds`, `fit residual`, `fit max evals`, `fit range`, `fit ranges`, and `fit indices` to control the fit. Standalone `fit_model` also accepts bare aliases such as `model`, `init`, `bounds`, `residual`, `range`, `ranges`, and `indices` because the function context is already fitting.
+`fit_rate`, `fit_peak_current`, and `fit_peak_potential` use the same direct model fitter as `fit_model`. Use `fit model` to choose the model and `fit init`, `fit bounds`, `fit residual`, `fit max evals`, and `fit indices` to control the fit. Use `fit line range` only to extend or shorten the plotted fit line after fitting; it does not change selected points, fitted parameters, residuals, R2, RMSE, or fit-table `fit x min` / `fit x max` values. Standalone `fit_model` also accepts concise context-specific names such as `model`, `init`, `bounds`, `residual`, `band`, and `indices`.
 
 Scatter-fit helpers return `ScatterFitResult`, an `AnalysisResult` child, rather than tuples. Use `.table` for plotted/result data, `.fits` for fit parameters, `.fit_table` for the human fit-statistics table, and `.summary` for workflow metadata. Tuple unpacking such as `data, fits = e.fit_rate(...)` is not part of the beta API.
 
-Scatter-fit plots use matching point and fit-line colors by default. This applies to `fit_model`, `fit_rate`, `fit_peak_current`, `fit_peak_potential`, `sevcik_analysis`, `trumpet_analysis`, and `multi_scatterplot`. Pass `fit color` to override the fit line explicitly. For functions that draw multiple fits, `fit color` may be a list; `fit colors` is accepted as the plural alias, and `describe_options` displays this as `fit color(s)`. Colors are consumed in plotted fit order, and the last color repeats if the list is shorter than the number of fits. If both spellings are supplied, eCAT raises an option error.
+Scatter-fit plots use matching point and fit-line colors by default. This applies to `fit_model`, `fit_rate`, `fit_peak_current`, `fit_peak_potential`, `sevcik_analysis`, `trumpet_analysis`, and `multi_scatterplot`. Pass `fit color` to override the fit line explicitly; it may be a scalar or a list consumed in plotted-fit order. `fit line range` accepts one `[x_min, x_max]` pair, a list consumed in fit order, or a dict keyed by fit label; `None` leaves a side open. Use `fit band` to add shaded uncertainty around fitted model lines: `None` / `"none"` disables bands, `"confidence"` draws the uncertainty in the fitted mean curve, `"prediction"` includes residual scatter for a future observation, and `"both"` draws both. `fit band level` defaults to `0.95` for 95% bands. Bands use the same x-domain as the plotted fit line.
 
-When `fit_model(..., {"print": True})` is used, the default pretty output is adaptive. Simple fits print a concise `Field`/`Value` table with model settings, fit statistics, and fitted parameter values with standard errors inline when available. More constrained or complex fits print separate `Fit Model Details` and `Fit Model Parameters` tables, including initial values, bounds, final values, and standard errors. Auto switches to details for explicit `fit init`, explicit `fit bounds`, custom formula/callable models, constrained models such as power offset/logistic/Michaelis-Menten, three or more parameters, or parameters at a bound. Use `{"print fit": "summary"}` or `{"print fit": "details"}` to force the style. Printed equations are the general model equations so parameter meanings remain visible; plot labels use the fitted equation with numeric values, formatted by `sig figs`. `fit_rate(..., {"print": True})` uses the same human table. Transforms such as `{"transform mode": "log-log"}` only change the coordinates being fit; they do not change or relabel the selected fit model. Use `{"fit model": "power"}` when you want a direct power-law model. Use `{"pretty print": False}` for a compact dictionary-style summary.
+When `fit_model(..., {"print": True})` is used, the default pretty output is adaptive. Simple fits print a concise `Field`/`Value` table with model settings, fit statistics, fitted parameter names/count, and fitted values with standard errors inline when available. More constrained or complex fits print separate `Fit Model Details` and `Fit Model Parameters` tables, including initial values, bounds, final values, and standard errors. Auto switches to details for explicit `fit init`, explicit `fit bounds`, custom formula/callable models, constrained models such as power offset/logistic/Michaelis-Menten, three or more parameters, or parameters at a bound. Use `{"print fit": "summary"}` or `{"print fit": "details"}` to force the style. Printed equations are the general model equations so parameter meanings remain visible; plot labels use the fitted equation with numeric values, formatted by `sig figs`. `fit_rate(..., {"print": True})` uses the same human table. Transforms such as `{"transform mode": "log-log"}` only change the coordinates being fit; they do not change or relabel the selected fit model. Use `{"fit model": "power"}` when you want a direct power-law model. Use `{"pretty print": False}` for a compact dictionary-style summary. eCAT warns when fit points equal the fitted-parameter count and gives a stronger underdetermined warning when fewer points than parameters are supplied.
 
-Fitting helpers keep row/index selection and x-value-window selection separate. Use `fit indices` for row/position-based selection; index windows use Python-style stops, so `[start, stop]` includes `start` and excludes `stop`, and `None` leaves either side open-ended. Use `fit range` for one x-value window on the resolved/transformed x axis. Use `fit ranges` when you want multiple named or generated x-value-window fits; nested windows let one fit use disconnected x regions. Dictionaries create named fits, for example `{"early": [0, 3], "tail": [4, None]}`. The selected points determine the fitted parameters, while result tables still report predictions and residuals for the original input rows where applicable.
+Fitting helpers keep row selection and fit-line drawing separate. `fit indices` is row/position based; `[start, stop]` follows Python slicing, so it includes `start`, excludes `stop`, and accepts `None` on either side. A nested list such as `[[0, 3], [6, 9]]` performs one fit across disconnected row windows. A dictionary creates separate named fits, and each value may itself contain disconnected windows, for example `{"early": [0, 3], "tail": [[6, 9], [9, None]]}`. The selected rows determine fitted parameters, while result tables still report predictions and residuals for the original rows where applicable. `fit line range` changes only the displayed x-domain.
+
+SciPy optimizer controls remain explicit. `fit method` accepts `auto`, `lm`, `trf`, or `dogbox`; common controls include `fit sigma`, `fit absolute sigma`, `fit check finite`, `fit nan policy`, and `fit jac`. Advanced `scipy.optimize.curve_fit` keywords can be supplied in `curve fit options`. eCAT retains ownership of `p0`, `bounds`, and `full_output`, which are controlled through `fit init`, `fit bounds`, and the result object.
 
 `fit_model` also accepts custom models. Pass a callable with signature `f(x, param1, param2, ...)`, or pass a restricted formula string using `x` and fitted parameter names:
 
@@ -417,7 +486,7 @@ Simulation and fitting helpers live under the namespace:
 e.simulation
 ```
 
-These helpers are intentionally not exported as top-level names during the beta pass. Treat simulation workflows as preview or experimental unless a notebook or guide section says otherwise.
+These helpers are intentionally namespaced rather than exported as top-level names. The documented CV simulation and fitting workflows are supported when the optional ElectroKitty dependency is installed.
 
 Simulation uses ElectroKitty as an optional backend. Importing `ecat` and `ecat.simulation` works without ElectroKitty installed, but `simulate_cv()` and fitting calls that need a backend raise a friendly install message:
 
@@ -433,18 +502,48 @@ e.describe_options("simulation.simulate_cv")
 e.describe_options("simulation.fit_cv")
 ```
 
+The bare names `cv_data`, `simulate_cv`, and `fit_cv` are accepted as short
+aliases for those simulation option tables.
+
+`simulation.cv_data()` can subtract measured-current background before fitting
+with `{"background correction": "start current"}` or
+`{"background correction": "tangent", "tangent potential": ...}`. The
+`"start current"` name matches the FOWA option and subtracts the first selected
+current point after segment/window trimming and before stride. Tangent mode uses
+the existing tangent controls that are meaningful in this path
+(`tangent potential`, `tangent range`, and `percent threshold`) and records the
+applied correction in the returned `SimulatedCVInput.metadata`.
+
 Mechanism presets accepted by `e.simulation.compile_mechanism()` and simulation calls include `E`, `EE`/`E,E`, `EC`, `ECE`, `EC'`/`Ecat`, and `Square`. The square-scheme preset compiles to `E(1):a=b`, `C:a=c`, `E(1):c=d`, and `C:b=d`; use `Square*` for the surface-confined shorthand.
 
-CV simulations use `e.simulation.SimulatedCVInput` for potential/time programs and `e.simulation.SimulatedCV` for backend results. Quiet time is stored as input metadata and is materialized only when preparing backend simulation input; it is not inserted into stored `E`/`t` arrays. `SimulatedCVInput.plot()` plots the input waveform, using time vs potential by default; pass `{"plot quiet time": True}` to draw the metadata quiet hold at negative time, or pass `{"x axis": "potential", "y axis": "current"}` for fit-ready inputs with measured current. Simulated CVs expose the normal CV data-access surface (`x()`, `y()`, `xy()`, `analysis_segment_data()`) and can be overlaid with `e.multiplot`. `SimulatedCV.data` contains simulated current only; measured-vs-simulated overlays belong to `SimulationFitResult.plot()` and `SimulationGroupFitResult.plot()` as fit diagnostics. To rerun the same simulated waveform at a new scan rate without modifying the original object, use `with_scan_rate()`:
+Custom mechanisms use eCAT mechanism strings, which are a compatible superset
+of ElectroKitty mechanism syntax. Write one `E:` or `C:` step per line. eCAT
+accepts either conventional positive-integer coefficients or repeated species:
+
+```python
+mechanism = "C:A+2B=C"      # conventional eCAT form
+equivalent = "C:A+B+B=C"   # ElectroKitty-compatible repeated form
+```
+
+Both forms produce the same eCAT stoichiometry, reaction-key matching,
+activity quotient, and conservation equations. eCAT preserves the entered
+equation for `.show()` and reports, then privately compiles coefficients to
+repeated terms before calling ElectroKitty. Backend concentration and diffusion
+arrays follow the species order returned by the installed ElectroKitty parser.
+A leading positive integer is therefore always a coefficient in eCAT; literal
+species names beginning with digits are not supported.
+
+CV simulations use `e.simulation.SimulatedCVInput` for potential/time programs and `e.simulation.SimulatedCV` for backend results. `incubation_time` and quiet time are stored as input metadata and are not inserted into stored `E`/`t` arrays. Incubation evolves bulk homogeneous chemical reactions before the electrochemical program; surface and mixed-phase steps remain backend-only. Quiet time is materialized later as a backend hold at the starting potential. `SimulatedCVInput.plot()` plots the input waveform, using time vs potential by default; pass `{"plot quiet time": True}` to draw the metadata quiet hold at negative time, or pass `{"x axis": "potential", "y axis": "current"}` for fit-ready inputs with measured current. Simulated CVs expose the normal CV data-access surface (`x()`, `y()`, `xy()`, `analysis_segment_data()`) and can be overlaid with `e.multiplot`. `SimulatedCV.data` contains simulated current only; measured-vs-simulated overlays belong to `SimulationFitResult.plot()` and `SimulationGroupFitResult.plot()` as fit diagnostics. To return changed copies without modifying the original objects:
 
 ```python
 program_fast = program.with_scan_rate(0.5)
+aged_program = program.with_incubation_time(30.0)
 result_fast = result.with_scan_rate(0.5)
 faster_rxn = result.with_param("reactions.0.kf", 10.0)
 more_substrate = result.with_params({"concentrations": {"bulk": {"Substrate": 2800}}})
 ```
 
-`SimulatedCV.with_params(...)`, `with_param(path, value)`, `with_input(...)`, and `with_mechanism(...)` all rerun the simulation and return a new `SimulatedCV`; the original object is not modified. Dict parameter updates are deep-merged, while lists and scalar values replace the existing value.
+`SimulatedCV.with_incubation_time(...)`, `with_params(...)`, `with_param(path, value)`, `with_input(...)`, and `with_mechanism(...)` all rerun the simulation and return a new `SimulatedCV`; the original object is not modified. Dict parameter updates are deep-merged, while lists and scalar values replace the existing value. Reruns use `SimulatedCV.input_params`, the normalized entered parameters, rather than reusing equilibrated or incubated backend concentrations.
 
 Simulation objects use `.show()` for notebook-friendly setup and result display:
 
@@ -452,6 +551,7 @@ Simulation objects use `.show()` for notebook-friendly setup and result display:
 program.show()
 program.plot()
 result.show({"print setup": True, "print params": True})
+result.show({"print setup": False, "print states": True})
 result.show({"print setup": False, "print checks": True})
 fit_result.show({"print stats": True, "print corrections": True, "print params": True})
 ```
@@ -463,6 +563,10 @@ Simulation fitting functions display the fitting setup, a live progress bar, and
 For `fit_cvs()`, shared parameters are printed under `Fitting Params:` and dataset-specific paths from `per_cv` are printed under `Per-CV Fitting Params:`. The group setup table includes source and mapped concentration summaries when available; repeated scan rates are suppressed there so concentration-series fits emphasize the varying compound/concentration. Concentrations inferred from source CV metadata or `options["concentration mapping"]` appear in that per-CV table and in `result.best_params_by_cv`. In fitting parameter tables, fixed rows leave `Final Value` blank because the fixed initial value is the operative value; fitted rows show the optimizer result. Group-fit residual corrections are per-CV and print under `Group Fitting Corrections:`.
 
 Parameter checks are available without a separate validation function. Use `simulate_cv(..., options={"check params": True})` to print checks during simulation, or `result.show({"print checks": True})` to inspect an existing simulated CV. Checks are diagnostic tables for likely interpretation issues such as missing diffusion for mobile bulk species, diffusion entries with no matching bulk concentration, parameter fallbacks, and preset mechanism species order.
+
+Use `{"print states": True}` with `simulate_cv()` or `SimulatedCV.show()` to
+display one table containing entered, equilibrated, and post-incubation amounts
+for species whose concentration changed.
 
 `fit_cv()` accepts a real eCAT `cv`, a fit-ready `SimulatedCVInput` with measured current, or a `SimulatedCV`. `fit_cvs()` fits one shared mechanism across multiple CV datasets and accepts a mixed list of those same input forms. The existing `fit` spec still controls which parameters are fixed or varied; `per_cv` only marks which parameter paths are dataset-specific:
 
@@ -489,11 +593,113 @@ params = {
 }
 ```
 
+Simulation parameter values use SI-derived units unless a documented string
+alias or unit-bearing string is supplied:
+
+| Path or quantity | eCAT public unit | Notes |
+| --- | --- | --- |
+| `SimulatedCVInput.E`, potential limits, `kinetics.*.E0` | `V` | Potentials are stored in volts. |
+| `SimulatedCVInput.t`, `incubation_time`, quiet time | `s` | Incubation is chemical-only; quiet time is a backend hold at the starting potential. |
+| simulated or measured current | `A` | Plotting may scale display units, but stored currents are amps. |
+| `scan_rate` | `V/s` | Programmatic and CV-derived inputs use volts per second. |
+| `cell.T` | `K` | `"auto"` pulls source CV metadata when available. |
+| `cell.Ru` | `Ω` | Uncompensated resistance. |
+| `cell.Cdl` | `F` | Total double-layer capacitance. `cv_data(..., {"estimate Cdl": "auto"})` estimates total farads from current separation. |
+| `cell.A` | `m²` | Electrode area. Backend adapters that need areal capacitance compute `cell.Cdl / cell.A` internally. |
+| `concentrations.bulk.*` | `mol/m³` | Use `1000 mol/m³` for `1 M`; entered values are pre-equilibration amounts. |
+| `concentrations.surface.*` | `mol/m²` | Surface amounts are coverages. |
+| `diffusion.*` | `m²/s` | Applies to mobile bulk species. |
+| `kinetics.*.k0` | `m/s` | String presets such as `"fast"`, `"quasi"`, and `"slow"` resolve to SI values. |
+| `kinetics.*.alpha` | dimensionless | Charge-transfer coefficient. |
+| `spatial.dx_fraction` | dimensionless | Spatial mesh fraction. |
+| `spatial.nx` | count | Spatial mesh size setting. |
+| `spatial.viscosity` | `m²/s` | Kinematic viscosity; solvent aliases resolve to approximate room-temperature values. |
+| `spatial.rotation` | `Hz` | Rotating-disk frequency when used. |
+| `activity.standard_concentration` | `mol/m³` | Defaults to `1000 mol/m³`, i.e. `1 M`. |
+| `activity.standard_coverage` | `mol/m²` | Surface-activity standard; defaults to `1 mol/m²`. |
+| `activity.gamma.*` | dimensionless | Activity coefficients; omitted values behave as `1`. |
+| `reactions.*.K` | dimensionless by default | Dimensionless `K` is activity-based. Unit-bearing strings such as `"2 M^-1"` or `"1e-3 m^3/mol"` are converted using the activity standard concentration and gammas. |
+| `reactions.*.k`, `kf`, `kb` | reaction-order dependent | First-order rates are `s⁻¹`; second-order rates are `m³ mol⁻¹ s⁻¹`; third-order rates are `m⁶ mol⁻² s⁻¹`, using the concentration units above. |
+| `reactions.*.k_exchange`, `koff` | `s⁻¹` | Exchange or reverse rate scales used with `K` before compiling backend `kf`/`kb`. |
+
+`kinetics` and `reactions` are user-facing mechanism parameter sections. They
+may be lists, integer-keyed dictionaries, or dictionaries keyed by mechanism
+reaction strings. `kinetics` entries describe electrochemical `E:` steps with
+`E0`, `k0`, and `alpha`. `reactions` entries describe chemical `C:` steps and
+may use irreversible `k`, reversible `kf`/`kb`, or equilibrium-derived
+`K` plus `k_exchange` or `koff`. A string `K` may include
+units, such as `"2 M^-1"` or `"1e-3 m^3/mol"`. eCAT compiles these physical
+inputs into private backend-ready rates under `params["_compiled"]`. Fitting
+can still vary physical paths such as `reactions.0.K` and
+`reactions.0.k_exchange`; for each trial simulation, eCAT converts the current
+physical values into the `kf`/`kb` rates required by the backend.
+Reaction-string dictionary keys may use either coefficient or repeated-species
+notation; for example, a `"A+A=B"` key matches a `C:2A=B` mechanism step.
+For a reaction with total reactant order `n_r`, product order `n_p`, and the
+phase-appropriate activity standard `X°`, eCAT defines the pool-free
+standard-state exchange scale as:
+
+```text
+k_exchange = kf * X°**(n_r - 1) + kb * X°**(n_p - 1)
+```
+
+`X°` is `activity.standard_concentration` for bulk reactions and
+`activity.standard_coverage` for surface reactions. For first-order equilibria
+this reduces to `kf + kb`; for bulk `A + B = C` it is `kf C° + kb`. The
+activity-derived `kf/kb` ratio and this equation uniquely
+determine the backend rates. Those intrinsic rates do not change across a
+concentration series, while the actual mass-action rate still changes with the
+current concentrations. `reference_concentration` or `reference_coverage` may
+replace the corresponding phase standard for this rate-scale definition; the
+reference must be positive and finite.
+
+Every species in an explicit-`K` reaction must have an entered concentration;
+use zero for an initially absent species. By default eCAT solves the complete
+pre-equilibrium from the reaction stoichiometric matrix, dimensionless activity
+quotients, and conservation laws inferred from that matrix. No pool declaration
+is required. A reversible reaction with `equilibrate=False` is excluded from
+the algebraic starting-state solve but still participates in finite incubation
+and backend dynamics. Consistent dependent equilibrium cycles are accepted;
+inconsistent cycles raise a residual-based error.
+
+The preparation order is:
+
+1. Normalize entered concentrations and physical reaction parameters.
+2. Solve explicit-`K` reactions unless `equilibrate=False`.
+3. Integrate bulk homogeneous chemical reactions for `incubation_time` when it is greater than zero. Surface and mixed-phase steps remain backend-only.
+4. Apply quiet time as an ElectroKitty hold at the starting potential.
+5. Run the CV waveform.
+
+`concentrations.pools`, top-level `pools`, and top-level `equilibria` are not
+supported. Put `K` directly in the matching `reactions` entry. Pre-equilibrium
+currently requires every participating reaction to remain within one phase;
+mixed bulk/surface equilibria raise an error because eCAT has no volume-to-area
+capacity convention for a shared conservation equation.
+
+eCAT reports numerical reaction rank, inferred conservation rank, dependent
+reaction count, and equilibrium residuals. It does not claim elemental or
+charge balance from species labels because names such as `Substrate` or
+coordination-complex abbreviations are not reliable molecular formulas.
+
+Activity coefficients are `activity["gamma"]` values, default to `1`, and are
+displayed inside the species table only when at least one gamma differs from
+`1`:
+
+```python
+params["concentrations"] = {"bulk": {"A": 10.0, "B": 0.0}}
+params["reactions"] = {"A=B": {"K": 4.0, "k_exchange": 10.0}}
+params["activity"] = {"gamma": {"bulk": {"A": 0.9}}}
+```
+
 For cell constants, use an explicit mapping when teaching or auditing values,
 or use `"cell": "auto"` once the workflow is established. The shorthand expands
 to `{"Cdl": "auto"}` and then fills `T`, `Ru`, and `A` from the source CV when
 available, falling back to `298.15 K`, `0 Ω`, and `1e-5 m²`. `Cdl` requires
 measured current or a prior `cv_data(..., {"estimate Cdl": "auto"})` estimate.
+In eCAT's public params, `cell.Cdl` is total double-layer capacitance in `F`.
+The ElectroKitty adapter converts that total value to the backend's
+area-normalized capacitance internally using `cell.Cdl / cell.A`; users should
+not divide by area themselves or pass `F/m²` as `cell.Cdl`.
 
 As input sugar, `species` may be supplied as a mapping of species names to `type`/`C`/`D` fields; eCAT normalizes it immediately into `concentrations` and `diffusion`, and prepared simulation results do not retain `species`. Use `{"print params": "compact"}` for compact species and mechanism parameter tables; fitting comparison tables remain path-rich.
 

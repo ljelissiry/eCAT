@@ -3,9 +3,17 @@
 This module exposes the object classes used by the public eCAT API.
 """
 
+import math
+import warnings
+
 from .utils import *  # noqa: F401,F403
 from .options import *  # noqa: F401,F403
-from .parsers import ParseResult, exp_type_short as _exp_type_short
+from .parsers import (
+    ParseResult,
+    exp_type_short as _exp_type_short,
+    _format_file_for_warning,
+    parse_text_file_to_result as _parse_text_file_to_result,
+)
 from ._plot_style import _active_plot_style_value
 from .results import AnalysisResult
 
@@ -18,9 +26,7 @@ def _integrate_trapezoid(y, x):
 
 
 def _first_fit_color(options, fallback="tab:red"):
-    value = (options or {}).get("fit colors")
-    if value is None:
-        value = (options or {}).get("fit color")
+    value = (options or {}).get("fit color")
     if value is None:
         return fallback
     if not isinstance(value, str):
@@ -41,6 +47,119 @@ def _symbol_labels_enabled(value):
     if value is False or value is None:
         return False
     return str(value).strip().lower() == "auto" and bool(_active_plot_style_value("symbol labels"))
+
+
+def _is_potential_guess_shorthand(value):
+    if isinstance(value, (str, bytes, dict)):
+        return False
+    if isinstance(value, (int, float, np.number)):
+        return True
+    if isinstance(value, (list, tuple, np.ndarray, pd.Series)):
+        return all(_is_potential_guess_shorthand(item) for item in list(value))
+    return False
+
+
+def _options_mapping_from_value(value):
+    if value is None:
+        return {}
+    if hasattr(value, "to_options_dict"):
+        return value.to_options_dict()
+    if isinstance(value, dict):
+        return dict(value)
+    return None
+
+
+def _reject_removed_plot_time_normalize(options):
+    mapping = _options_mapping_from_value(options)
+    if not mapping:
+        return
+    for key, value in mapping.items():
+        if normalize_key(key) == "normalize" and value is not False and value is not None:
+            raise OptionError(
+                "'normalize' is not a plot-time option. Use e.normalize(...) "
+                "or cv.normalize(...) first, then plot the normalized CV."
+            )
+
+
+def _resolve_ca_y_units(value):
+    if isinstance(value, (list, tuple)):
+        if len(value) != 2:
+            raise OptionError(
+                "CA 'y unit' lists must contain exactly two entries: "
+                "[current unit, charge unit]."
+            )
+        return value[0], value[1]
+    return value, "auto"
+
+
+def _resolve_axis_inversion(shared, override):
+    return bool(shared) if override is None else bool(override)
+
+
+def _set_axis_inversion(ax, inverted):
+    if ax.yaxis_inverted() != bool(inverted):
+        ax.invert_yaxis()
+
+
+def _include_zero_preserving_axis_direction(ax):
+    y0, y1 = ax.get_ylim()
+    inverted = y0 > y1
+    lower = min(y0, y1, 0.0)
+    upper = max(y0, y1, 0.0)
+    ax.set_ylim((upper, lower) if inverted else (lower, upper))
+
+
+def _coerce_guess_potential_call_options(guess_or_options=None, options=None, kwargs=None):
+    first_options = _options_mapping_from_value(guess_or_options)
+    if first_options is None:
+        if _is_potential_guess_shorthand(guess_or_options):
+            first_options = {"guess potential": guess_or_options}
+        else:
+            raise TypeError(
+                "Expected an options dictionary, option dataclass, or numeric guess potential."
+            )
+
+    second_options = _options_mapping_from_value(options)
+    if second_options is None:
+        raise TypeError("options must be a dictionary or option dataclass.")
+
+    merged = dict(first_options)
+    merged.update(second_options)
+    merged.update(kwargs or {})
+    return merged
+
+
+def _normalize_peak_kind(value):
+    if value is None:
+        return None
+    token = str(value).strip().lower().replace("_", " ").replace("-", " ")
+    if token in {"both", "any", "all", "none"}:
+        return None
+    if token in {"infer", "inferred"}:
+        return "infer"
+    if token in {"max", "maximum"}:
+        return "max"
+    if token in {"min", "minimum"}:
+        return "min"
+    raise OptionError("'peak kind' must be 'both', 'infer', 'max', or 'min'.")
+
+
+def _infer_peak_kind_from_current_change(y):
+    values = np.asarray(y, dtype=float)
+    values = values[np.isfinite(values)]
+    if len(values) < 2:
+        return None
+
+    edge_n = max(1, min(5, int(np.ceil(len(values) * 0.05))))
+    start_current = float(np.median(values[:edge_n]))
+    end_current = float(np.median(values[-edge_n:]))
+    delta_current = end_current - start_current
+    current_range = float(np.nanmax(values) - np.nanmin(values))
+    tolerance = max(current_range, abs(start_current), abs(end_current), 1e-30) * 1e-9
+
+    if abs(delta_current) <= tolerance:
+        return None
+    return "max" if delta_current > 0 else "min"
 
 
 def _axis_label_symbol(axis_name):
@@ -114,9 +233,6 @@ _PARSER_TOKEN_CANONICAL = {
 _DEFAULT_COMPOUND_STOPWORDS = {
     "post",
     "we",
-    "gcwe",
-    "ptce",
-    "ssmeshlfpre",
     "integration",
     "sensitivity",
     "polished",
@@ -127,16 +243,29 @@ _PHRASE_STOPWORDS = {
     "ca",
     "cp",
     "cpe",
-    "gcpl",
     "integration",
     "sensitivity",
-    "cart",
     "post",
     "we",
-    "gcwe",
-    "ptce",
-    "ssmeshlfpre",
     "run",
+}
+
+_ELECTRODE_LABELS = {
+    "we": "working_electrode",
+    "ce": "counter_electrode",
+    "re": "reference_electrode",
+}
+
+_ELECTRODE_DISPLAY_ALIASES = {
+    "gc": "GC",
+    "glassycarbon": "GC",
+    "glassy-carbon": "GC",
+    "pt": "Pt",
+    "platinum": "Pt",
+    "agagbf4": "AgAgBF4",
+    "ag/agbf4": "Ag/AgBF4",
+    "agagno3": "AgAgNO3",
+    "ag/agno3": "Ag/AgNO3",
 }
 
 
@@ -159,6 +288,98 @@ def _parse_scan_rate_from_name_text(name):
         "n": 1e-9,
     }.get(prefix, 1.0)
     return value * factor
+
+
+def _format_scan_rate_for_warning(scan_rate):
+    value = abs(float(scan_rate))
+    if value < 1:
+        return f"{value * 1000:g} mV/s"
+    return f"{value:g} V/s"
+
+
+def _warn_if_scan_rate_mismatch(filepath, header_scan_rate, filename_scan_rate, display_root=None):
+    if header_scan_rate is None or filename_scan_rate is None:
+        return None
+    try:
+        header_value = float(header_scan_rate)
+        filename_value = float(filename_scan_rate)
+    except (TypeError, ValueError):
+        return None
+    if not (math.isfinite(header_value) and math.isfinite(filename_value)):
+        return None
+    if math.isclose(header_value, filename_value, rel_tol=1e-9, abs_tol=1e-12):
+        return None
+
+    display_name = _format_file_for_warning(filepath, display_root)
+    message = (
+        f"Scan rate mismatch for {display_name}: header reports "
+        f"{_format_scan_rate_for_warning(header_value)}, but filename suggests "
+        f"{_format_scan_rate_for_warning(filename_value)}; using header value."
+    )
+    warnings.warn(message, UserWarning, stacklevel=3)
+    return message
+
+
+_STANDARD_AXIS_UNITS = {
+    "Potential": "V",
+    "Current": "A",
+    "Time": "s",
+    "Charge": "C",
+}
+
+_CANONICAL_UNIT_FACTORS = {
+    "": 1.0,
+    "V": 1.0,
+    "mV": 1e-3,
+    "uV": 1e-6,
+    "μV": 1e-6,
+    "nV": 1e-9,
+    "A": 1.0,
+    "mA": 1e-3,
+    "uA": 1e-6,
+    "μA": 1e-6,
+    "nA": 1e-9,
+    "pA": 1e-12,
+    "s": 1.0,
+    "sec": 1.0,
+    "secs": 1.0,
+    "second": 1.0,
+    "seconds": 1.0,
+    "ms": 1e-3,
+    "min": 60.0,
+    "mins": 60.0,
+    "h": 3600.0,
+    "hr": 3600.0,
+    "C": 1.0,
+    "mC": 1e-3,
+    "uC": 1e-6,
+    "μC": 1e-6,
+}
+
+
+def _canonical_unit_factor(unit, target):
+    unit = "" if unit is None else str(unit).strip().replace("µ", "μ")
+    if unit == target:
+        return 1.0
+    if unit in _CANONICAL_UNIT_FACTORS and target in {"V", "A", "s", "C"}:
+        return _CANONICAL_UNIT_FACTORS[unit]
+    return get_conversion_factor(unit, target)
+
+
+def _canonicalize_standard_data_units(data, units):
+    for column, target_unit in _STANDARD_AXIS_UNITS.items():
+        if column not in data.columns:
+            continue
+        source_unit = units.get(column, target_unit)
+        try:
+            factor = _canonical_unit_factor(source_unit, target_unit)
+        except Exception:
+            continue
+        data[column] = data[column] * factor
+        units[column] = target_unit
+    if hasattr(data, "attrs"):
+        data.attrs["units"] = dict(units)
+    return data
 
 
 def _normalize_parser_settings(parser_settings=None):
@@ -300,13 +521,36 @@ def _clean_phrase_tokens(tokens, stopwords):
     return cleaned
 
 
-def _parse_space_delimited_compounds_and_concentrations(name, parser_settings=None):
-    settings = _normalize_parser_settings(parser_settings)
-    stopwords = set(_PHRASE_STOPWORDS) | set(settings["compound stopwords"])
-    text = str(name).replace("_", " ")
-    if " - " in text:
-        text = text.split(" - ", 1)[0]
-    tokens = [token for token in re.split(r"\s+", text.strip()) if token]
+def _compound_phrase_for_direction(tokens, idx, next_idx, stopwords, direction):
+    if direction == "prefix":
+        phrase_tokens = []
+        cursor = next_idx
+        while cursor < len(tokens):
+            if _looks_like_concentration_boundary(tokens, cursor):
+                break
+            if _is_phrase_stop(tokens, cursor, stopwords):
+                break
+            phrase_tokens.append(tokens[cursor])
+            cursor += 1
+        return _clean_phrase_tokens(phrase_tokens, stopwords) if phrase_tokens else []
+
+    phrase_tokens = []
+    cursor = idx - 1
+    while cursor >= 0:
+        if cursor > 0:
+            prev_parsed = _extract_concentration_tokens(tokens, cursor - 1)
+            if prev_parsed is not None and prev_parsed[2] == cursor + 1:
+                break
+        if _looks_like_concentration_boundary(tokens, cursor):
+            break
+        if _is_phrase_stop(tokens, cursor, stopwords):
+            break
+        phrase_tokens.append(tokens[cursor])
+        cursor -= 1
+    return _clean_phrase_tokens(list(reversed(phrase_tokens)), stopwords)
+
+
+def _parse_space_delimited_direction(tokens, stopwords, settings, direction):
     results = []
     idx = 0
     while idx < len(tokens):
@@ -315,45 +559,90 @@ def _parse_space_delimited_compounds_and_concentrations(name, parser_settings=No
             idx += 1
             continue
         value, unit, next_idx = parsed
-        forward_tokens = []
-        cursor = next_idx
-        forward_hit_boundary = False
-        while cursor < len(tokens):
-            if _looks_like_concentration_boundary(tokens, cursor):
-                forward_hit_boundary = True
-                break
-            if _is_phrase_stop(tokens, cursor, stopwords):
-                break
-            forward_tokens.append(tokens[cursor])
-            cursor += 1
-
-        backward_tokens = []
-        cursor = idx - 1
-        while cursor >= 0:
-            if cursor > 0:
-                prev_parsed = _extract_concentration_tokens(tokens, cursor - 1)
-                if prev_parsed is not None and prev_parsed[2] == cursor + 1:
-                    break
-            if _looks_like_concentration_boundary(tokens, cursor):
-                break
-            if _is_phrase_stop(tokens, cursor, stopwords):
-                break
-            backward_tokens.append(tokens[cursor])
-            cursor -= 1
-        backward_compound_tokens = _clean_phrase_tokens(list(reversed(backward_tokens)), stopwords)
-        forward_compound_tokens = _clean_phrase_tokens(forward_tokens, stopwords) if forward_tokens else []
-        if backward_compound_tokens and forward_hit_boundary:
-            compound_tokens = backward_compound_tokens
-        elif forward_compound_tokens:
-            compound_tokens = forward_compound_tokens
-        else:
-            compound_tokens = backward_compound_tokens
-
+        compound_tokens = _compound_phrase_for_direction(
+            tokens, idx, next_idx, stopwords, direction
+        )
         compound = " ".join(compound_tokens).strip()
         if compound and compound.lower() not in settings["compound stopwords"]:
             results.append((compound, f"{value} {unit}"))
         idx = next_idx
     return results
+
+
+def _parse_space_delimited_compounds_and_concentrations(name, parser_settings=None):
+    settings = _normalize_parser_settings(parser_settings)
+    stopwords = set(_PHRASE_STOPWORDS) | set(settings["compound stopwords"])
+    text = str(name).replace("_", " ")
+    if " - " in text:
+        text = text.split(" - ", 1)[0]
+    tokens = [token for token in re.split(r"\s+", text.strip()) if token]
+    prefix_results = _parse_space_delimited_direction(tokens, stopwords, settings, "prefix")
+    suffix_results = _parse_space_delimited_direction(tokens, stopwords, settings, "suffix")
+    if len(prefix_results) > len(suffix_results):
+        return prefix_results
+    if len(suffix_results) > len(prefix_results):
+        return suffix_results
+    return prefix_results or suffix_results
+
+
+def _is_zero_concentration(concentration):
+    if concentration in (None, ""):
+        return False
+    try:
+        return abs(float(concentration_to_float(str(concentration)))) <= 1e-15
+    except Exception:
+        return False
+
+
+def _split_zero_concentration_species(compounds, concentrations):
+    compounds = list(compounds or [])
+    concentrations = list(concentrations or [])
+    padded_concentrations = concentrations + [""] * max(0, len(compounds) - len(concentrations))
+
+    present_compounds = []
+    present_concentrations = []
+    zero_compounds = []
+    zero_concentrations = []
+
+    for compound, concentration in zip(compounds, padded_concentrations):
+        if _is_zero_concentration(concentration):
+            zero_compounds.append(compound)
+            zero_concentrations.append(concentration)
+        else:
+            present_compounds.append(compound)
+            if concentration not in (None, ""):
+                present_concentrations.append(concentration)
+
+    return present_compounds, present_concentrations, zero_compounds, zero_concentrations
+
+
+def _canonical_electrode_material(value):
+    material = str(value).strip(" ,;:_-()[]{}")
+    if not material:
+        return ""
+    compact = re.sub(r"[\s_(){}\[\]]+", "", material).lower()
+    return _ELECTRODE_DISPLAY_ALIASES.get(compact, material)
+
+
+def _parse_electrodes_from_name(name):
+    text = str(name).replace("_", " ")
+    tokens = [token.strip(" ,;:") for token in re.split(r"\s+", text) if token.strip(" ,;:")]
+    electrodes = {}
+    for token in tokens:
+        match = re.fullmatch(r"(?i)(WE|CE|RE)[\[{(]?(.+?)[\]})]?", token)
+        if match is None:
+            match = re.fullmatch(r"(?i)(.+?)[\[{(]?(WE|CE|RE)[\]})]?", token)
+            if match is not None:
+                material, kind = match.group(1), match.group(2)
+            else:
+                continue
+        else:
+            kind, material = match.group(1), match.group(2)
+        attr = _ELECTRODE_LABELS.get(kind.lower())
+        material = _canonical_electrode_material(material)
+        if attr and material and attr not in electrodes:
+            electrodes[attr] = material
+    return electrodes
 
 
 def _normalize_custom_parser_result(result):
@@ -395,8 +684,8 @@ def _custom_parser_scan_rate(name, path, options):
 class ChronoAnalysisResult(AnalysisResult):
     """Dictionary-compatible container for CA/CP analysis outputs."""
 
-    def __init__(self, values=None, *, axes=None):
-        super().__init__(values, axes=axes)
+    def __init__(self, values=None, *, table=None, summary=None, axes=None):
+        super().__init__(values, table=table, summary=summary, axes=axes)
 
 
 class CVAnalysisResult(AnalysisResult):
@@ -438,6 +727,16 @@ class CVAnalysisResult(AnalysisResult):
                 .format(escape=None)
                 .set_properties(**{"text-align": "left"})
                 .set_table_styles([
+                    {
+                        "selector": "caption",
+                        "props": [
+                            ("caption-side", "top"),
+                            ("text-align", "left"),
+                            ("font-weight", "600"),
+                            ("color", "inherit"),
+                            ("margin-bottom", "0.35em"),
+                        ],
+                    },
                     {"selector": "th", "props": [("text-align", "left")]},
                     {"selector": "td", "props": [("text-align", "left")]},
                 ])
@@ -763,32 +1062,138 @@ class echem:
         >>> obj = e.echem.from_file(path, {"software": "CH"})
         """
         options = {} if options is None else options
+        resolved_options = resolve_import_options(options)
+        display_options = options if isinstance(options, dict) else resolved_options
 
         # If called from a subclass, just construct that subclass directly.
         if cls is not echem:
-            obj = cls(filepath, options)
-            if options.get("print", False):
+            obj = cls(filepath, resolved_options)
+            if resolved_options.get("print", False):
                 from . import plotting
-                plotting.show(obj, options)
+                plotting.show(obj, display_options)
             return obj
 
-        exp_type = cls.detect_experiment_type(filepath, options)
+        parsed = cls.parse_file_to_result(filepath, resolved_options)
+        exp_type = parsed.metadata.get("type") or cls.detect_experiment_type(filepath, resolved_options)
 
         subclass_map = {
             "Cyclic Voltammetry": cv,
+            "Cyclic Voltammetry Advanced": cv,
             "Chronopotentiometry": cp,
             "Galvanostatic Cycling with Potential Limitation": cp,
+            "Chronoamperometry": ca,
             "Amperometric i-t Curve": ca,
             "Differential Pulse Voltammetry": dpv,
             # Add more as needed
         }
 
         promoted_cls = subclass_map.get(exp_type, echem)
-        obj = promoted_cls(filepath, options)
-        if options.get("print", False):
+        constructor_options = resolved_options.copy()
+        constructor_options["_preparsed_result"] = parsed
+        obj = promoted_cls(filepath, constructor_options)
+        if resolved_options.get("print", False):
             from . import plotting
-            plotting.show(obj, options)
+            plotting.show(obj, display_options)
         return obj
+
+    @classmethod
+    def parse_file_to_result(cls, filepath, options=None):
+        """Parse one file into the standardized parser contract before promotion."""
+        public_options = cls._public_import_options(options)
+        parser_options = cls._parser_stage_options(public_options)
+        if callable((parser_options or {}).get("custom reader")):
+            obj = echem(filepath, parser_options)
+            if getattr(obj, "parse_result", None) is None:
+                obj._refresh_parse_result()
+            obj._validate_parse_result(obj.parse_result)
+            return obj.parse_result
+
+        parsed = _parse_text_file_to_result(filepath, parser_options)
+        cls._validate_parse_result(parsed)
+        return parsed
+
+    @staticmethod
+    def _public_import_options(options=None):
+        if not isinstance(options, dict):
+            return options
+        return {
+            key: value
+            for key, value in options.items()
+            if key != "_preparsed_result"
+        }
+
+    @staticmethod
+    def _parser_stage_options(options=None):
+        parser_options = resolve_import_options(options)
+        parser_options["invert current"] = False
+        parser_options["reference mode"] = "none"
+        return parser_options
+
+    @staticmethod
+    def _preparsed_result_from_options(options=None):
+        if isinstance(options, dict) and isinstance(options.get("_preparsed_result"), ParseResult):
+            return options["_preparsed_result"]
+        return None
+
+    def _apply_parse_result_metadata(self, parsed):
+        self.data = parsed.data.copy()
+        self.units.update(dict(parsed.units))
+        self.data.attrs["units"] = dict(self.units)
+        self.software = parsed.software
+        self.type = parsed.metadata.get("type", self.type)
+
+        field_map = {
+            "acquisition_start": "timestamp",
+            "timestamp": "timestamp",
+            "scan_rate": "scan_rate",
+            "segments": "segments",
+            "quiet_time": "quiet_time",
+            "delta_x": "delta_x",
+            "sample_interval": "sample_interval",
+            "sample_int": "sample_int",
+            "init_E": "init_E",
+            "final_E": "final_E",
+            "min_E": "min_E",
+            "max_E": "max_E",
+            "run_time": "run_time",
+            "sensitivity": "sensitivity",
+            "incr_E": "incr_E",
+            "amplitude": "amplitude",
+            "pulse_width": "pulse_width",
+            "sample_width": "sample_width",
+            "pulse_period": "pulse_period",
+            "comp_R": "comp_R",
+            "cathodic_current": "cathodic_current",
+            "anodic_current": "anodic_current",
+            "init_PN": "init_PN",
+            "high_E_limit": "high_E_limit",
+            "low_E_limit": "low_E_limit",
+            "cathodic_time": "cathodic_time",
+            "anodic_time": "anodic_time",
+            "reference_electrode": "reference_electrode",
+            "working_electrode": "working_electrode",
+            "counter_electrode": "counter_electrode",
+            "ir_comp_resistance": "ir_comp_resistance",
+            "ir_uncomp_resistance": "ir_uncomp_resistance",
+            "ir_comp_percent": "ir_comp_percent",
+            "reference_shift": "reference_shift",
+            "reference_label": "reference_label",
+            "reference_mode": "reference_mode",
+            "reference_source_file": "reference_source_file",
+        }
+        for metadata_key, attr in field_map.items():
+            if metadata_key in parsed.metadata:
+                value = parsed.metadata[metadata_key]
+                if value is not None or not hasattr(self, attr):
+                    setattr(self, attr, value)
+
+        self.parse_result = parsed
+        self._record_parser_details(
+            parser=parsed.parser,
+            warnings=parsed.warnings,
+            raw_metadata=parsed.raw_metadata,
+        )
+        return parsed
 
     def __new__(cls, filepath=None, options=None):
         """
@@ -798,7 +1203,12 @@ class echem:
 
     def __init__(self, filepath=None, options=None):
         self.filepath = filepath
-        self.options = import_options_to_legacy_dict(options)
+        internal_options = options if isinstance(options, dict) else {}
+        preparsed_result = internal_options.get("_preparsed_result")
+        public_options = self._public_import_options(options)
+        if isinstance(options, dict) and "_electrode area provided" in options:
+            public_options["_electrode area provided"] = options["_electrode area provided"]
+        self.options = resolve_import_options(public_options)
         
         # Timing
         self.timestamp = getattr(self, "timestamp", None)
@@ -824,6 +1234,9 @@ class echem:
         self.ir_comp_resistance = getattr(self, "ir_comp_resistance", None)
         self.ir_uncomp_resistance = getattr(self, "ir_uncomp_resistance", None)
         self.ir_comp_percent = getattr(self, "ir_comp_percent", None)
+        self.working_electrode = getattr(self, "working_electrode", None)
+        self.counter_electrode = getattr(self, "counter_electrode", None)
+        self.reference_electrode = getattr(self, "reference_electrode", None)
 
         # Reference / potential-shift metadata
         self.reference_shift = getattr(self, "reference_shift", None)
@@ -832,11 +1245,20 @@ class echem:
         self.reference_source_file = getattr(self, "reference_source_file", None)
         self.reference_failure_message = getattr(self, "reference_failure_message", None)
         self.parse_result = getattr(self, "parse_result", None)
+        self._parser_details = getattr(self, "_parser_details", {})
+
+        if preparsed_result is not None:
+            self._apply_parse_result_metadata(preparsed_result)
 
         # Load data only if a filepath was provided
         if filepath is not None:
 
-            self.data = self.read_file_data(filepath, self.options)
+            if preparsed_result is None:
+                if callable(self.options.get("custom reader")):
+                    self._load_custom_reader_data(filepath, self.options)
+                else:
+                    parsed = echem.parse_file_to_result(filepath, self.options)
+                    self._apply_parse_result_metadata(parsed)
 
             self.name = os.path.basename(filepath[:filepath.rindex(".")])
             self.name = apply_text_alterations(
@@ -848,15 +1270,75 @@ class echem:
             self.modify_by_options(self.options)
             self._refresh_parse_result()
 
+    def _load_custom_reader_data(self, filepath, options):
+        data = options["custom reader"](self, filepath, options)
+        if data is not None:
+            self.data = data
+        self._refresh_parse_result(parser="custom reader")
+        return self.data
+
+    def _record_parser_details(self, parser=None, warnings=None, raw_metadata=None):
+        details = dict(getattr(self, "_parser_details", {}) or {})
+        if parser is not None:
+            details["parser"] = parser
+        if warnings is not None:
+            details["warnings"] = list(warnings)
+        if raw_metadata is not None:
+            details["raw_metadata"] = dict(raw_metadata)
+        self._parser_details = details
+        return details
+
     def _refresh_parse_result(self, parser=None, warnings=None, raw_metadata=None):
         """Attach the standardized parser contract for this object."""
+        existing = getattr(self, "parse_result", None)
+        details = getattr(self, "_parser_details", {}) or {}
+        if parser is None:
+            parser = details.get("parser", getattr(existing, "parser", None))
+        if warnings is None:
+            warnings = details.get("warnings", getattr(existing, "warnings", None))
+        if raw_metadata is None:
+            raw_metadata = details.get("raw_metadata", getattr(existing, "raw_metadata", None))
         self.parse_result = ParseResult.from_object(
             self,
             parser=parser,
             warnings=warnings,
             raw_metadata=raw_metadata,
         )
+        if isinstance(existing, ParseResult):
+            refreshed = self.parse_result
+            existing.data = refreshed.data
+            existing.units = refreshed.units
+            existing.technique = refreshed.technique
+            existing.software = refreshed.software
+            existing.metadata = refreshed.metadata
+            existing.warnings = refreshed.warnings
+            existing.raw_metadata = refreshed.raw_metadata
+            existing.source = refreshed.source
+            existing.parser = refreshed.parser
+            self.parse_result = existing
+        self._validate_parse_result(self.parse_result)
         return self.parse_result
+
+    @staticmethod
+    def _validate_parse_result(parsed):
+        required_columns = {
+            "CV": {"Potential", "Current"},
+            "DPV": {"Potential", "Current"},
+            "CA": {"Time", "Current"},
+            "CP": {"Time", "Potential"},
+        }
+        required = required_columns.get(parsed.technique)
+        if not required:
+            return parsed
+        missing = sorted(required.difference(parsed.data.columns))
+        if missing:
+            message = (
+                f"Parsed {parsed.technique} data missing canonical column(s): "
+                + ", ".join(missing)
+            )
+            if message not in parsed.warnings:
+                parsed.warnings.append(message)
+        return parsed
 
     def animate(self, options=None):
         """Animate this electrochemistry object.
@@ -891,6 +1373,9 @@ class echem:
         if found_solvents:
             self.solvent = found_solvents[-1]
 
+        for attr, value in _parse_electrodes_from_name(self.name).items():
+            setattr(self, attr, value)
+
     def _parse_ir_compensation_from_lines(self, lines):
         def get_resistance(label):
             pattern = rf'{label}\s*\(ohm\)\s*=\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)'
@@ -913,326 +1398,6 @@ class echem:
             total_r = comp_r + uncomp_r
             if total_r != 0:
                 self.ir_comp_percent = 100 * comp_r / total_r
-
-    def read_file_data(self, filepath, options=None):
-        """
-        Reads electrochemical data from the specified file.
-
-        Parameters:
-            filepath (str): The path to the file containing the electrochemical data.
-            options (dict): A dictionary of options for data processing.
-
-        Returns:
-            pd.DataFrame: A DataFrame containing the electrochemical data.
-        """
-        if filepath is None:
-            return pd.DataFrame()
-
-        options = import_options_to_legacy_dict(options)
-
-        self.software = options.get('software')
-        if self.software is None:
-            self.software = self.detect_software(filepath, options)
-
-        # Custom reader override
-        if 'custom reader' in options and callable(options['custom reader']):
-            return options['custom reader'](self, filepath, options)
-
-        # Dispatch dictionary
-        software_readers = {
-            "EC-Lab": self.read_eclab_txt,
-            "BASI": self.read_basi_txt,
-            "CH": self.read_ch_txt,
-        }
-
-        if self.software in software_readers:
-            return software_readers[self.software](filepath, options)
-
-        # Fallback generic parser if no match
-        return self.read_generic_txt(filepath, options)
-
-    def infer_delimiter(self, sample_line):
-        """
-        Infers the delimiter used in a sample line of data.
-        """
-        if '\t' in sample_line:
-            return '\t'
-        elif ',' in sample_line:
-            return ','
-        else:
-            return r'\s+' # NOTE: check if works
-
-    def read_basi_txt(self, filepath, options):
-        """
-        Reads data from a BASI-format .txt file with flexible column and delimiter handling.
-        """
-        with open(filepath, 'r', encoding='ISO-8859-1') as f:
-            lines = [line.strip() for line in f.readlines()]
-
-        # Try to find the header/data split
-        data_start_idx = next(
-            (i for i, line in enumerate(lines) if line.startswith('Potential') or line.startswith('[Begin Data]')),
-            None)
-        if data_start_idx is None:
-            raise ValueError("Could not find start of data in BASI file.")
-
-        # Try to parse experiment type
-        for line in lines[:data_start_idx]:
-            if 'Experiment Type' in line:
-                self.type = line.split(':', 1)[1].strip()
-                break
-        else:
-            self.type = 'Unknown'
-
-        # Infer delimiter from the first data line after the header
-        data_sample_line = lines[data_start_idx + 1]
-        delimiter = self.infer_delimiter(data_sample_line)
-
-        df = pd.read_csv(filepath, sep=delimiter, skiprows=data_start_idx + 1, engine='python', header=None)
-        df = df.dropna(how='all', axis=1).dropna(how='any').reset_index(drop=True)
-
-        # Use first row as header
-        df.columns = df.iloc[0]
-        df = df.iloc[1:].reset_index(drop=True)
-
-        # Convert columns to numeric and strip units
-        updated_columns = {}
-        for col in df.columns:
-            col_str = str(col)
-            if '/' in col_str:
-                name, unit = map(str.strip, col_str.split('/', 1))
-                self.units[name] = unit
-                updated_columns[col] = name
-            else:
-                updated_columns[col] = col_str.strip()
-            df[col] = pd.to_numeric(df[col], errors='coerce')
-
-        df.rename(columns=updated_columns, inplace=True)
-        df = df.dropna(subset=[df.columns[0]]).reset_index(drop=True)
-        self.delta_x = round_sigfigs(abs(df.iloc[1, 0] - df.iloc[0, 0]), 3)
-
-        return df
-
-    def read_ch_txt(self, filepath, options):
-        """
-        Reads CH Instruments .txt data file with auto-detected delimiter and column count.
-        """
-        with open(filepath, 'r', encoding='ISO-8859-1') as f:
-            lines = [line.strip() for line in f.readlines()]
-        self._parse_ir_compensation_from_lines(lines)
-
-        # Extract and convert time
-        if len(lines) >= 1:
-            time_str = lines[0]  # e.g. "Aug. 27, 2023   16:05:21"
-            self.timestamp = _parse_ch_timestamp(time_str)
-
-        # Assign software type from second line
-        if len(lines) >= 2:
-            self.type = lines[1]
-        else:
-            self.type = 'Unknown'
-
-        data_start_idx = next(
-            (i for i, line in enumerate(lines) if line.startswith('Potential') or line.startswith('Time')), None)
-        if data_start_idx is None:
-            raise ValueError("Could not find start of data in CH Instruments file.")
-
-        # Infer delimiter
-        data_sample_line = lines[data_start_idx]
-        #print("|"+data_sample_line+"|")
-        delimiter = self.infer_delimiter(data_sample_line)
-
-        df = pd.read_csv(filepath, sep=delimiter, skiprows=data_start_idx, engine='python', header=None)
-        df = df.dropna(how='all', axis=1)
-
-        # Some CH exports use a comma-delimited header followed by tab-delimited
-        # numeric rows. Retry with a mixed delimiter before giving up.
-        has_tabbed_data = any('\t' in line for line in lines[data_start_idx + 1:])
-        parsed_numeric_rows = df.iloc[1:] if len(df) > 1 else df.iloc[0:0]
-        numeric_rows_need_retry = (
-            df.shape[1] <= 1
-            or (
-                not parsed_numeric_rows.empty
-                and df.shape[1] > 1
-                and parsed_numeric_rows.iloc[:, 1:].isna().all().all()
-            )
-        )
-        if has_tabbed_data and numeric_rows_need_retry:
-            df = pd.read_csv(
-                filepath,
-                sep=r'[,\t]+',
-                skiprows=data_start_idx,
-                engine='python',
-                header=None,
-            )
-            df = df.dropna(how='all', axis=1)
-
-        df = df.dropna().reset_index(drop=True)
-
-        # Use first row as header
-        df.columns = df.iloc[0]
-        df = df.iloc[1:].reset_index(drop=True)
-
-        # Convert to numeric and strip units
-        updated_columns = {}
-        for col in df.columns:
-            if '/' in col:
-                name, unit = map(str.strip, col.split('/', 1))
-                self.units[name] = unit
-                updated_columns[col] = name
-            else:
-                updated_columns[col] = col.strip()
-            df[col] = pd.to_numeric(df[col], errors='coerce')
-
-        df.rename(columns=updated_columns, inplace=True)
-        df = df.dropna(subset=[df.columns[0]]).reset_index(drop=True)
-        self.delta_x = round_sigfigs(abs(df.iloc[1, 0] - df.iloc[0, 0]), 3)
-
-        return df
-
-    def read_eclab_txt(self, file_path, options):
-        import pandas as pd
-
-        # Read header lines
-        with open(file_path, 'r', encoding='ISO-8859-1') as f:
-            lines = f.readlines()
-
-        # Extract experiment type from line 4
-        if len(lines) >= 4:
-            self.type = lines[3].strip()
-        else:
-            self.type = "Unknown"
-
-        # Find number of header lines
-        skiprows = None
-        for line in lines:
-            if "Nb header lines" in line:
-                try:
-                    skiprows = int(line.split(":")[1].strip().split()[0])
-                    break
-                except Exception:
-                    raise ValueError("Could not parse number of header lines in EC-Lab file.")
-
-        if skiprows is None:
-            raise ValueError("Header line count not found in EC-Lab file.")
-
-        # Load the data
-        df = pd.read_csv(file_path, sep='\t', skiprows=skiprows - 1, encoding='latin1')
-
-        # Normalize column names to lowercase for matching
-        normalized_cols = {col.strip().lower(): col for col in df.columns}
-
-        voltage_col_key = next((key for key in normalized_cols if "ewe" in key and "/" in key), None)
-        current_col_key = next((key for key in normalized_cols if "<i>" in key and "/" in key), None)
-
-        if voltage_col_key is None or current_col_key is None:
-            raise ValueError(
-                f"Could not find expected voltage/current columns.\nAvailable columns: {list(df.columns)}"
-            )
-
-        voltage_col = normalized_cols[voltage_col_key]
-        current_col = normalized_cols[current_col_key]
-
-        # Extract and rename relevant columns using original names
-        df = df[[voltage_col, current_col]]
-
-        # Determine imported units
-        voltage_unit = voltage_col.split("/")[-1].strip()
-        current_unit = current_col.split("/")[-1].strip()
-
-        # Apply conversion factors to standard units (V and A)
-        current_conversion = get_conversion_factor(current_unit)
-        voltage_conversion = get_conversion_factor(voltage_unit)
-
-        df[current_col] = df[current_col] * current_conversion
-        df[voltage_col] = df[voltage_col] * voltage_conversion
-
-        # Update column names to include standard format
-        df = df.rename(columns={
-            voltage_col: "Potential",
-            current_col: "Current"
-        })
-
-        self.units["Potential"] = "V"
-        self.units["Current"] = "A"
-
-        # Calculate delta_x (average voltage step)
-        voltages = df["Potential"]
-        if len(voltages) > 1:
-            self.delta_x = abs(voltages.iloc[1] - voltages.iloc[0])
-
-        return df
-
-    def read_generic_txt(self, filepath, options):
-        """
-        Fallback reader for general .txt files with minimal assumptions.
-        """
-        def is_numeric(value):
-            try:
-                float(value)
-                return True
-            except (TypeError, ValueError):
-                return False
-
-        with open(filepath, 'r', encoding='ISO-8859-1') as f:
-            lines = [line.strip() for line in f.readlines() if line.strip()]
-
-        # Infer header and delimiter
-        data_start_idx = 0
-        while not any(char.isdigit() for char in lines[data_start_idx]):
-            data_start_idx += 1
-
-        data_sample_line = lines[data_start_idx]
-        delimiter = self.infer_delimiter(data_sample_line)
-        read_start_idx = data_start_idx
-
-        if data_start_idx > 0:
-            previous_line = lines[data_start_idx - 1]
-            prev_has_alpha = any(char.isalpha() for char in previous_line)
-
-            if delimiter == r'\s+':
-                prev_tokens = previous_line.split()
-                data_tokens = data_sample_line.split()
-                looks_like_header = (
-                    prev_has_alpha
-                    and len(prev_tokens) == len(data_tokens)
-                    and any("/" in token for token in prev_tokens)
-                )
-            else:
-                looks_like_header = (
-                    prev_has_alpha
-                    and delimiter in previous_line
-                )
-
-            if looks_like_header:
-                read_start_idx = data_start_idx - 1
-
-        df = pd.read_csv(filepath, sep=delimiter, skiprows=read_start_idx, engine='python', header=None)
-        df = df.dropna(how='all', axis=1).dropna().reset_index(drop=True)
-
-        # Use first row as header if it contains any non-numeric data
-        if not all(is_numeric(x) for x in df.iloc[0]):
-            df.columns = df.iloc[0]
-            df = df.iloc[1:].reset_index(drop=True)
-
-        # Clean and convert
-        updated_columns = {}
-        for col in df.columns:
-            col_str = str(col)
-            if '/' in col_str:
-                name, unit = map(str.strip, col_str.split('/', 1))
-                self.units[name] = unit
-                updated_columns[col] = name
-            else:
-                updated_columns[col] = col_str.strip()
-            df[col] = pd.to_numeric(df[col], errors='coerce')
-
-        df.rename(columns=updated_columns, inplace=True)
-        df = df.dropna(subset=[df.columns[0]]).reset_index(drop=True)
-        self.delta_x = round_sigfigs(abs(df.iloc[1, 0] - df.iloc[0, 0]), 3)
-        self.type = "Unknown"
-
-        return df
 
     def extract_compounds_and_concentrations(self, extra_compounds=None, parser_settings=None):
         """
@@ -1335,7 +1500,7 @@ class echem:
         return updated
 
     def _apply_custom_parser_scan_rate(self, options):
-        options = import_options_to_legacy_dict(options)
+        options = resolve_import_options(options)
         parser_settings = options.get("parser settings")
         custom_scan_rate = _custom_parser_scan_rate(self.name, self.filepath, options)
         prefer_file_metadata = _normalize_parser_settings(parser_settings)["prefer file metadata"]
@@ -1345,7 +1510,7 @@ class echem:
     def modify_by_options(self,options):
 
         # setup options
-        options = import_options_to_legacy_dict(options)
+        options = resolve_import_options(options)
 
         parser_settings = options.get("parser settings")
 
@@ -1361,27 +1526,47 @@ class echem:
             "concentrations": concentrations,
             "scan rate": getattr(self, "scan_rate", None),
         }
+        metadata.update(_parse_electrodes_from_name(self.name))
         metadata = self._apply_custom_parser_metadata(metadata, options)
+
+        (
+            present_compounds,
+            present_concentrations,
+            zero_compounds,
+            zero_concentrations,
+        ) = _split_zero_concentration_species(
+            metadata.get("compounds", []),
+            metadata.get("concentrations", []),
+        )
+        metadata["compounds"] = present_compounds
+        metadata["concentrations"] = present_concentrations
+        metadata["zero_concentration_compounds"] = zero_compounds
+        metadata["zero_concentrations"] = zero_concentrations
 
         self.gas = metadata.get("gas", self.gas)
         self.solvent = metadata.get("solvent", self.solvent)
         self.compounds = metadata.get("compounds", [])
         self.concentrations = metadata.get("concentrations", [])
+        self.zero_concentration_compounds = metadata.get("zero_concentration_compounds", [])
+        self.zero_concentrations = metadata.get("zero_concentrations", [])
+        self.working_electrode = metadata.get("working_electrode", getattr(self, "working_electrode", None))
+        self.counter_electrode = metadata.get("counter_electrode", getattr(self, "counter_electrode", None))
+        self.reference_electrode = metadata.get("reference_electrode", getattr(self, "reference_electrode", None))
 
         prefer_file_metadata = _normalize_parser_settings(parser_settings)["prefer file metadata"]
         custom_scan_rate = metadata.get("scan rate", None)
         if custom_scan_rate is not None and (getattr(self, "scan_rate", None) is None or not prefer_file_metadata):
             self.scan_rate = float(custom_scan_rate)
+        if getattr(self, "scan_rate", None) is None and options.get("scan rate") is not None:
+            self.scan_rate = float(options["scan rate"])
 
         options["electrode area"] = resolve_electrode_area_option(options)
         
         self.set_temperature(options['temperature'])
         self.set_electrode_area(options['electrode area'])
-        if options['convert current'] != False:
-            self.current_to(options['convert current'])
         if options.get('invert current', False):
             self.invert_current()
-        if options['shift potential']:
+        if options.get("reference mode") == "manual":
             self.potential_shift(options)
         self._sync_data_unit_attrs()
 
@@ -1397,20 +1582,59 @@ class echem:
         self.temperature = temp
         
     def current_to(self,unit):
-        if "Current/A" in self.data.columns[-1]:
-            if unit == "mA":
-                self.data.rename(columns = {self.data.columns[-1]:"Current/mA"}, inplace = True)
-                self.data["Current/mA"] *= 1000
-            if unit == "uA" or unit == "μA":
-                self.data.rename(columns = {self.data.columns[-1]:"Current/μA"}, inplace = True)
-                self.data["Current/μA"] *= 1000000
+        if unit in (None, False, ""):
+            return self
+
+        target_unit = str(unit).strip().replace("µ", "μ")
+        if target_unit == "uA":
+            target_unit = "μA"
+
+        for col in list(self.data.columns):
+            col_text = str(col)
+            if not col_text.lower().startswith("current"):
+                continue
+            if col_text.lower().startswith("current density"):
+                continue
+
+            source_unit = self.units.get(col)
+            if source_unit is None and col == "Current":
+                source_unit = self.units.get("Current", "A")
+            if source_unit is None and "/" in col_text:
+                source_unit = col_text.rsplit("/", 1)[-1].strip()
+            source_unit = "A" if source_unit in (None, "") else str(source_unit).replace("µ", "μ")
+
+            factor = get_conversion_factor(source_unit, target_unit)
+            self.data[col] = self.data[col] * factor
+            self.units[col] = target_unit
+            if col == "Current":
+                self.units["Current"] = target_unit
+        self._sync_data_unit_attrs()
+        return self
             
     def to_density(self):
-        if "Current" in self.data.columns[-1]:
-            unit = self.data.columns[-1].split('/')[1]
-            text = "Current Density/"+unit+"/cm$^2$"
-            self.data.rename(columns = {self.data.columns[-1]:text}, inplace = True)
-            self.data[text] /= self.electrode_area
+        if getattr(self, "electrode_area", 0) in (None, 0):
+            raise ValueError("Cannot calculate current density without a nonzero electrode area.")
+
+        current_col = None
+        for col in self.data.columns:
+            col_text = str(col).strip().lower()
+            if col_text == "current" or col_text.startswith("current/"):
+                current_col = col
+                break
+        if current_col is None:
+            return self
+
+        current_unit = self.units.get(current_col)
+        if current_unit is None and current_col == "Current":
+            current_unit = self.units.get("Current", "A")
+        if current_unit is None and "/" in str(current_col):
+            current_unit = str(current_col).rsplit("/", 1)[-1].strip()
+        current_unit = "A" if current_unit in (None, "") else str(current_unit).replace("µ", "μ")
+
+        self.data["Current Density"] = self.data[current_col] / self.electrode_area
+        self.units["Current Density"] = f"{current_unit}/cm$^2$"
+        self._sync_data_unit_attrs()
+        return self
             
     def to_min(self):
         if "Time/sec" in self.data.columns[0]:
@@ -1465,8 +1689,8 @@ class echem:
         """
         Store the reference shift as metadata rather than inserting a new column.
         """
-        shift = options.get("shift guess")
-        label = options.get("shift label", "Fc/Fc+")
+        shift = options.get("reference offset")
+        label = options.get("reference label", "Fc/Fc+")
 
         if "Potential" not in self.data.columns:
             return
@@ -1508,6 +1732,7 @@ class echem:
         --------
         >>> potential = cv_obj.x({"x axis": "potential"})
         """
+        _reject_removed_plot_time_normalize(options)
         options = {} if options is None else dict(options)
         """
         Access the x-data (e.g., time, potential) from the dataset.
@@ -1602,6 +1827,7 @@ class echem:
         --------
         >>> current = cv_obj.y({"y axis": "current"})
         """
+        _reject_removed_plot_time_normalize(options)
         options = {} if options is None else dict(options)
         """
         Access the y-data (e.g., current, charge) from the dataset.
@@ -1872,12 +2098,14 @@ class echem:
         plot_kwargs = options.get("plot options", {})
         plot_kwargs['color'] = options.get('color', 'k')
         plot_kwargs['label'] = options.get('label')
+        if options.get("linestyle") is not None:
+            plot_kwargs.setdefault("linestyle", options.get("linestyle"))
         plot_obj = plt.plot(x, y, **plot_kwargs)
 
         ax = plt.gca()
 
         # flip y-axis only if requested and currently not inverted
-        if options.get('y flip'):
+        if options.get('invert y axis'):
             y0, y1 = ax.get_ylim()
             # normal is y0 < y1; inverted if y0 > y1
             if y0 < y1:
@@ -1939,7 +2167,8 @@ class echem:
         --------
         >>> cv_obj.plot({"segment": 1})
         """
-        options = PlotOptions.from_options(options).to_legacy_dict()
+        _reject_removed_plot_time_normalize(options)
+        options = PlotOptions.from_options(options).to_options_dict()
         options.update(mpl_kwargs)
 
         # data
@@ -2015,6 +2244,15 @@ class echem:
         --------
         >>> cv_obj.info()
         """
+        electrode_parts = []
+        for label, attr in [
+            ("WE", "working_electrode"),
+            ("CE", "counter_electrode"),
+            ("RE", "reference_electrode"),
+        ]:
+            value = getattr(self, attr, None)
+            if value not in (None, ""):
+                electrode_parts.append(f"{label}: {value}")
         info = {
             'name': getattr(self, 'name', None),
             'folder path': getattr(self, 'folderpath', getattr(self, 'folder_path', None)),
@@ -2028,7 +2266,13 @@ class echem:
             'ir comp resistance': getattr(self, 'ir_comp_resistance', None),
             'ir uncomp resistance': getattr(self, 'ir_uncomp_resistance', None),
             'ir comp percent': getattr(self, 'ir_comp_percent', None),
+            'electrode': "; ".join(electrode_parts) if electrode_parts else None,
         }
+        filter_metadata = getattr(self, "filter_metadata", None)
+        if filter_metadata:
+            from .preprocessing import _filter_summary
+
+            info["filter"] = _filter_summary(filter_metadata)
         stats = self.stats()
         info.update(stats)
         return info
@@ -2082,10 +2326,32 @@ class cv(echem):
     """
     def __init__(self, filepath=None, options=None):
         super().__init__(filepath, options)
-        self.type = "Cyclic Voltammetry"
-        self.get_data_from_file(filepath, options)  # parse scan rate, potentials, etc.
-        self._apply_custom_parser_scan_rate(options)
-        self._refresh_parse_result()
+        self.type = getattr(self, "type", None) or "Cyclic Voltammetry"
+        if filepath is None:
+            self._refresh_parse_result()
+            return
+        if getattr(self, "parse_result", None) is not None:
+            if "Potential" in self.data:
+                x = self.data["Potential"].to_numpy(dtype=float)
+                self.init_E = getattr(self, "init_E", None)
+                if self.init_E is None:
+                    self.init_E = float(x[0]) if len(x) else None
+                self.final_E = getattr(self, "final_E", None)
+                if self.final_E is None:
+                    self.final_E = float(x[-1]) if len(x) else None
+                self.min_E = getattr(self, "min_E", None)
+                if self.min_E is None:
+                    self.min_E = float(np.min(x)) if len(x) else None
+                self.max_E = getattr(self, "max_E", None)
+                if self.max_E is None:
+                    self.max_E = float(np.max(x)) if len(x) else None
+                self.segments = getattr(self, "segments", None) or (count_segments(x) if len(x) else 0)
+                if getattr(self, "delta_x", None) is None:
+                    self.delta_x = float(abs(x[1] - x[0])) if len(x) > 1 else None
+            self._apply_custom_parser_scan_rate(options)
+            self._refresh_parse_result()
+            return
+        raise ValueError("CV file parsing did not produce a parser result.")
 
     def remove_parentheses_and_replace_last_space(self, input_string):
             # Remove all open and closing parentheses
@@ -2158,129 +2424,134 @@ class cv(echem):
         self.modify_by_options(options)
         self._refresh_parse_result(parser="manual")
 
-    def get_data_from_file(self, filepath, options):
-        software_parsers = {
-            "CH": self._parse_ch_file,
-            "BASI": self._parse_basi_file,
-            "EC-Lab": self._parse_eclab_file,
-        }
+    @staticmethod
+    def _axis_key(column):
+        text = str(column).strip().lower()
+        text = text.replace("_", " ").replace("-", " ")
+        text = text.split("/", 1)[0]
+        text = text.split("(", 1)[0]
+        return re.sub(r"\s+", " ", text).strip()
 
-        parser = software_parsers.get(self.software)
-        if parser is not None:
-            parser(filepath, options)
+    def _default_cv_axis_column(self, kind):
+        columns = list(getattr(self, "data", pd.DataFrame()).columns)
+        if kind == "x":
+            exact_names = ["Potential"]
+            prefixes = ["potential"]
         else:
-            raise ValueError(f"No parser implemented for software type: {self.software}")
+            exact_names = ["Current"]
+            prefixes = ["current"]
 
-    def _parse_ch_file(self, filepath, options):
-        """
-        Parses CH file metadata directly from lines without using pandas.
-        """
-        with open(filepath, 'r', encoding='ISO-8859-1') as f:
-            lines = f.readlines()
+        for name in exact_names:
+            found = _find_column_by_text(columns, name)
+            if found is not None:
+                return found
 
-        def get_value(key):
-            for line in lines:
-                if key in line:
-                    try:
-                        return float(line.split('=')[1].strip())
-                    except Exception:
-                        return None
-            return None
+        for column in columns:
+            key = self._axis_key(column)
+            if any(key == prefix or key.startswith(prefix + " ") for prefix in prefixes):
+                return column
 
-        self._parse_ir_compensation_from_lines(lines)
-        self.init_E = get_value('Init E')
-        self.max_E = get_value('High E')
-        self.min_E = get_value('Low E')
-        self.scan_rate = get_value('Scan Rate')
-        self.segments = int(get_value('Segment')) if get_value('Segment') is not None else None
-        self.quiet_time = _parse_quiet_time_from_lines(lines)
-        self.sample_int = get_value('Sample Interval')
-        self.sensitivity = get_value('Sensitivity')
+        return None
 
-    def _parse_basi_file(self, filepath, options):
-        """
-        Parses BASI file metadata directly from lines without using pandas.
-        """
-        with open(filepath, 'r', encoding='ISO-8859-1') as f:
-            lines = [line.strip() for line in f.readlines()]
+    def _cv_program_time_and_potential(self, options):
+        potential_options = dict(options)
+        potential_options.pop("x axis", None)
+        potential = np.asarray(self.x(potential_options), dtype=float)
+        if len(potential) == 0:
+            raise ValueError("plot_program requires potential data.")
 
-        initial_potential = switching_potential1 = switching_potential2 = final_potential = None
+        time_column = self._default_time_column()
+        if time_column is not None:
+            time = np.asarray(self.data[time_column], dtype=float)
+        else:
+            scan_rate = options.get("scan rate")
+            if scan_rate in (None, ""):
+                scan_rate = getattr(self, "scan_rate", None)
+            if scan_rate in (None, 0):
+                raise ValueError("plot_program requires a Time column or a nonzero scan_rate.")
+            scan_rate = abs(float(scan_rate))
+            dt = np.abs(np.diff(potential)) / scan_rate
+            time = np.concatenate(([0.0], np.cumsum(dt)))
 
-        end_params = next((i for i, line in enumerate(lines) if line == '[Begin Data]'), len(lines))
-        self.quiet_time = _parse_quiet_time_from_lines(lines[:end_params])
+        plot_quiet_time = options.get("plot quiet time", True)
+        quiet_time = getattr(self, "quiet_time", None)
+        if plot_quiet_time and quiet_time not in (None, "", 0):
+            quiet_time = float(quiet_time)
+            if quiet_time > 0:
+                time = np.concatenate(([float(time[0]) - quiet_time], time))
+                potential = np.concatenate(([potential[0]], potential))
 
-        for line in lines[:end_params]:
-            if m := re.search(r'Initial Potential\s*:\s*([\d.-]+) mV', line):
-                initial_potential = float(m.group(1)) / 1000
-            elif m := re.search(r'Switching Potential 1\s*:\s*([\d.-]+) mV', line):
-                switching_potential1 = float(m.group(1)) / 1000
-            elif m := re.search(r'Switching Potential 2\s*:\s*([\d.-]+) mV', line):
-                switching_potential2 = float(m.group(1)) / 1000
-            elif m := re.search(r'Final Potential\s*:\s*([\d.-]+) mV', line):
-                final_potential = float(m.group(1)) / 1000
-            elif m := re.search(r'Scan Rate\s*:\s*([\d.-]+) mV/s', line):
-                self.scan_rate = float(m.group(1)) / 1000
-            elif m := re.search(r'Number of segments\s*:\s*([\d.-]+)', line):
-                self.segments = int(m.group(1))
-            elif m := re.search(r'Sample Interval\s*:\s*([\d.-]+) mV', line):
-                self.sample_int = float(m.group(1)) / 1000
-            elif m := re.search(r'IR-Comp. Value\s*:\s*([\d.-]+) Ohm', line):
-                self.IR_comp = float(m.group(1))
+        return time, potential
 
-        potential_values = [v for v in [initial_potential, switching_potential1, switching_potential2, final_potential]
-                            if v is not None]
-        self.init_E = initial_potential
-        self.min_E = min(potential_values) if potential_values else None
-        self.max_E = max(potential_values) if potential_values else None
-        self.final_E = final_potential
-        self.sensitivity = "N/A"
+    def _default_time_column(self):
+        columns = list(getattr(self, "data", pd.DataFrame()).columns)
+        for name in ("Time", "Time/sec", "Time/s"):
+            found = _find_column_by_text(columns, name)
+            if found is not None:
+                return found
+        for column in columns:
+            key = self._axis_key(column)
+            if key == "time" or key.startswith("time "):
+                return column
+        return None
 
-    def _parse_eclab_file(self, filepath, options):
-        with open(filepath, 'r', encoding='ISO-8859-1') as f:
-            lines = f.readlines()
+    def plot_program(self, options=None):
+        """Plot a CV potential program as potential versus time."""
+        raw_options = {} if options is None else dict(options)
+        plot_quiet_time = raw_options.pop("plot quiet time", True)
 
-        if len(lines) >= 4:
-            self.type = lines[3].strip()
-        self.quiet_time = _parse_quiet_time_from_lines(lines[:60])
+        has_explicit_new_plot = any(
+            str(key).strip().lower().replace("_", " ") == "new plot"
+            for key in raw_options
+        )
+        options = PlotOptions.from_options(raw_options).to_options_dict()
+        options["plot quiet time"] = plot_quiet_time
+        if not has_explicit_new_plot:
+            options["new plot"] = True
 
-        # Track if the previous line was the dE/dt value
-        prev_line_was_scanrate = False
-        scanrate_value = None
+        time, potential = self._cv_program_time_and_potential(options)
 
-        for i, line in enumerate(lines[:60]):
-            line = line.strip()
+        if options.get("new plot"):
+            fig, ax = plt.subplots()
+        else:
+            ax = plt.gca()
+            fig = ax.figure
 
-            if line.startswith("Ei (V)"):
-                self.init_E = float(line.rpartition(" ")[-1].strip())
-            elif line.startswith("Ef (V)"):
-                self.final_E = float(line.rpartition(" ")[-1].strip())
-            elif line.startswith("E1 (V)"):
-                self.max_E = float(line.rpartition(" ")[-1].strip())
-            elif line.startswith("E2 (V)"):
-                self.min_E = float(line.rpartition(" ")[-1].strip())
-            elif line.startswith("N") and "Step percent" not in line:
-                try:
-                    self.segments = int(line.rpartition(" ")[-1].strip())
-                except Exception:
-                    pass
-            elif line.startswith("dE/dt") and "unit" not in line:
-                try:
-                    scanrate_value = float(line.rpartition(" ")[-1].strip())
-                    prev_line_was_scanrate = True
-                except Exception:
-                    pass
+        time_scale, time_unit = scale_time_axis(time, "s", options.get("x unit", "auto"))
+        potential_unit = self.units.get("Potential", "V")
+        potential_scale, potential_unit = self.scale_axis(
+            potential,
+            "Potential",
+            potential_unit,
+            options.get("y unit", "auto"),
+        )
+        label = options.get("label") or f"{self.name} Program"
+        label = format_chemical_formulas(apply_text_alterations(label, options.get("label alterations")))
+        plot_kwargs = dict(options.get("plot options", {}) or {})
+        plot_kwargs.setdefault("color", options.get("color", "black"))
+        plot_kwargs.setdefault("label", label)
+        ax.plot(time * time_scale, potential * potential_scale, **plot_kwargs)
+        ax.set_xlabel(options.get("xlabel") or self.format_axis_label("Time", time_unit, options.get("symbol labels", "auto")))
+        ax.set_ylabel(options.get("ylabel") or self.format_axis_label("Potential", potential_unit, options.get("symbol labels", "auto")))
 
-            # Capture scan rate unit (on the next line)
-            elif prev_line_was_scanrate:
-                prev_line_was_scanrate = False
-                unit = line.lower()
-                if "mv/s" in unit:
-                    self.scan_rate = scanrate_value / 1000  # convert to V/s
-                elif "v/s" in unit:
-                    self.scan_rate = scanrate_value
-                else:
-                    self.scan_rate = scanrate_value  # fallback
-
+        title_opt = options.get("title", True)
+        title, subtitle = _resolve_single_plot_title_subtitle(self, options)
+        if subtitle in (None, "auto"):
+            subtitle = "CV potential program"
+        title_fs = options.get("title fontsize")
+        if title_fs in (None, "auto"):
+            title_fs = _resolve_title_fontsize(title)
+        subtitle_fs = options.get("subtitle fontsize")
+        if subtitle_fs in (None, "auto"):
+            subtitle_fs = _resolve_subtitle_fontsize(subtitle)
+        if title_opt:
+            _apply_plot_titles(fig, ax, title, subtitle, title_fs, subtitle_fs)
+        if _plot_legend_requested(options, ax):
+            ax.legend(fontsize=options.get("legend fontsize") or _default_legend_fontsize())
+        plt.margins(x=0.05, y=0.05)
+        _apply_ecat_axis_style(ax, options)
+        _add_scale_bar(ax, options, unit=potential_unit)
+        return ax
 
     def x(self, options=None):
         """Return selected CV x-axis data, usually potential.
@@ -2300,11 +2571,6 @@ class cv(echem):
         >>> potential = cv_obj.x({"segment": 1})
         """
         options = {} if options is None else dict(options)
-        if options.get('normalize', False):
-            raise ValueError(
-                "Plot-time normalize=True has been removed. "
-                "Use normalize(...) first, then plot the returned CV(s)."
-            )
         requested_x_axis = options.get('x axis', None)
         x_col_name = requested_x_axis
         if x_col_name is None:
@@ -2313,13 +2579,15 @@ class cv(echem):
                 x_col_name = normalized_axis
             elif self.has_reference_shift():
                 x_col_name = self.reference_axis_name()
-            elif "potential" in [col.lower() for col in self.data.columns]:
-                x_col_name = "Potential"
             else:
+                x_col_name = self._default_cv_axis_column("x")
+            if x_col_name is None:
                 raise ValueError(
                     "No suitable x column found. "
                     f"Available dataframe columns: {list(self.data.columns)}"
                 )
+            else:
+                options['x axis'] = x_col_name
         if requested_x_axis is None and not options.get("one column", True):
             options.pop('x axis', None)
         else:
@@ -2334,7 +2602,7 @@ class cv(echem):
         Parameters
         ----------
         options : dict or PlotOptions, optional
-            Axis, segment, derivative, current-density, and normalization options. See ``e.describe_options("plot")``.
+            Axis, segment, derivative, current-density, and scaling options. See ``e.describe_options("plot")``.
         
         Returns
         -------
@@ -2346,14 +2614,9 @@ class cv(echem):
         >>> current = cv_obj.y({"y axis": "i/ip0", "ip0": 1e-5})
         """
         options = {} if options is None else dict(options)
-        if options.get('normalize', False):
-            raise ValueError(
-                "Plot-time normalize=True has been removed. "
-                "Use normalize(...) first, then plot the returned CV(s)."
-            )
         options['y axis'] = options.get(
             'y axis',
-            _default_normalized_axis(self, "y") or 'Current',
+            _default_normalized_axis(self, "y") or self._default_cv_axis_column("y") or 'Current',
         )
 
         requested_y_axis = str(options.get('y axis', '')).strip().lower()
@@ -2429,7 +2692,7 @@ class cv(echem):
         """
         trim_options = {}
         if isinstance(potential_window, TrimOptions) and options is None and not kwargs:
-            trim_options = potential_window.to_legacy_dict()
+            trim_options = potential_window.to_options_dict()
         elif isinstance(potential_window, dict) and options is None:
             trim_options.update(potential_window)
         else:
@@ -2439,7 +2702,7 @@ class cv(echem):
                 trim_options.update(options)
         trim_options.update(kwargs)
         typed_options = TrimOptions.from_options(trim_options)
-        trim_options = typed_options.to_legacy_dict()
+        trim_options = typed_options.to_options_dict()
 
         window = trim_options.get("potential window")
 
@@ -2497,6 +2760,7 @@ class cv(echem):
         --------
         >>> cv_obj.plot({"y axis": "i/ip0", "ip0": 1e-5})
         """
+        _reject_removed_plot_time_normalize(options)
         raw_options = {} if options is None else options
         has_explicit_new_plot = False
         if isinstance(raw_options, dict):
@@ -2507,7 +2771,7 @@ class cv(echem):
         elif hasattr(raw_options, "new_plot"):
             has_explicit_new_plot = True
 
-        options = PlotOptions.from_options(options).to_legacy_dict()
+        options = PlotOptions.from_options(options).to_options_dict()
         if not has_explicit_new_plot:
             options["new plot"] = True
 
@@ -2635,7 +2899,14 @@ class cv(echem):
 
     @staticmethod
     def _segment_discrete_colors(n_colors, options):
-        palette = options.get("gradient colors") or options.get("default colors") or ["black"]
+        palette = options.get("gradient colors") or [
+            "black",
+            "tab:blue",
+            "tab:red",
+            "tab:green",
+            "tab:orange",
+            "tab:purple",
+        ]
         return [palette[idx % len(palette)] for idx in range(n_colors)]
 
     @staticmethod
@@ -2670,7 +2941,7 @@ class cv(echem):
     @staticmethod
     def _segment_colorbar_spec(colors, labels, options, segment_color_mode=None):
         if not labels:
-            return {"plot labels": [], "gradient groups": [], "discrete indices": []}
+            return {"labels": [], "gradient groups": [], "discrete indices": []}
         colorbar_style = str(options.get("colorbar style", "auto")).strip().lower()
         colorbar_style = colorbar_style.replace("_", " ").replace("-", " ")
         if colorbar_style == "auto":
@@ -2695,7 +2966,7 @@ class cv(echem):
         endpoint_ticks = [ticks[0], ticks[-1]] if len(ticks) > 1 else list(ticks)
         endpoint_ticklabels = [numeric_labels[0], numeric_labels[-1]] if len(numeric_labels) > 1 else list(numeric_labels)
         return {
-            "plot labels": ["_nolegend_"] * len(labels),
+            "labels": ["_nolegend_"] * len(labels),
             "gradient groups": [{
                 "indices": list(range(len(labels))),
                 "values": np.arange(1, len(labels) + 1, dtype=float),
@@ -2780,7 +3051,7 @@ class cv(echem):
         return scaled
 
     def _finish_segment_colored_plot(self, fig, ax, options):
-        if options.get('y flip'):
+        if options.get('invert y axis'):
             y0, y1 = ax.get_ylim()
             if y0 < y1:
                 ax.invert_yaxis()
@@ -3100,7 +3371,7 @@ class cv(echem):
         >>> cv_obj.normalize({"E0": 0.0, "D": 1e-5, "C": 10, "C unit": "mM"})
         """
         typed_options = NormalizeOptions.from_options(options)
-        normalized = _normalize_single_cv(self, typed_options.to_legacy_dict())
+        normalized = _normalize_single_cv(self, typed_options.to_options_dict())
         self.__dict__.update(normalized.__dict__)
         return self
 
@@ -3150,7 +3421,7 @@ class cv(echem):
 
     # add unassigned CV-analysis options from dataclass defaults
     def _cv_analysis_options(self, options):
-        defaults = PeakCurrentOptions.from_options({}).to_legacy_dict()
+        defaults = PeakCurrentOptions.from_options({}).to_options_dict()
 
         # replace default options with added options
         normalized_options = {
@@ -3199,8 +3470,7 @@ class cv(echem):
         -----
         - Exactly one of *idx* or *potential* must be supplied.
         - Supply *x* if you already have it to avoid an extra self.x(...) call.
-        - *options* is forwarded to self.get_xy / self.x so you can respect
-          'normalize' or other axis-unit choices if you need them later.
+        - *options* is forwarded to ``self.x`` for axis selection.
         """
         if (idx is None) == (potential is None):
             raise ValueError("Provide **either** idx **or** potential.")
@@ -3210,8 +3480,7 @@ class cv(echem):
             if options is None:
                 x = self.x().values  # fastest path
             else:
-                x, _y = self.get_xy(options.get("normalize", False),
-                                    options.get("normalize params"))
+                x = self.x(options).values
         # Resolve idx from potential if necessary
         if idx is None:
             idx = int(np.argmin(np.abs(x - potential)))
@@ -3331,8 +3600,15 @@ class cv(echem):
 
         return xf, yf
 
-    def noise_filter(self, options=None):
-        cuttoff_Hz = options.get('noise cutoff',9)
+    def filter(self, options=None):
+        """Return a CV filtered with a reproducible SciPy-backed method.
+
+        Filtering is copy-first and disabled elsewhere by default. See
+        ``e.describe_options("cv.filter")`` for supported methods.
+        """
+        from .preprocessing import filter_cv
+
+        return filter_cv(self, options)
 
     def current_at_potential(self, potential, options=None):
         """
@@ -3344,8 +3620,6 @@ class cv(echem):
             options (dict): Dictionary of options. Can include:
                 - 'segment': int
                 - 'segments': list of int
-                - 'normalize': bool
-                - 'normalize params': dict
                 - 'plot': bool (default: True)
                 - 'print': bool (default: True)
 
@@ -3355,8 +3629,6 @@ class cv(echem):
             ``.primary`` convenience attributes.
         """
         options = self._cv_analysis_options(options)
-        norm = options.get("normalize", False)
-        norm_params = options.get("normalize params", {})
         do_plot = options.get("plot", True)
         do_print = options.get("print", True)
 
@@ -3429,7 +3701,7 @@ class cv(echem):
             result.show(options)
         return result
 
-    def peak_potential(self, options=None):
+    def peak_potential(self, guess_or_options=None, options=None, **kwargs):
         """Find the peak potential for a selected CV segment.
         
         Parameters
@@ -3447,8 +3719,9 @@ class cv(echem):
         >>> peak = cv_obj.peak_potential({"guess potential": -1.5, "segment": 1})
         >>> peak["Ep"]
         """
+        options = _coerce_guess_potential_call_options(guess_or_options, options, kwargs)
         typed_options = PeakPotentialOptions.from_options(options)
-        options = self._cv_analysis_options(typed_options.to_legacy_dict())
+        options = self._cv_analysis_options(typed_options.to_options_dict())
 
         temp_options = options.copy()
         temp_options["smooth"] = False
@@ -3466,15 +3739,6 @@ class cv(echem):
                 if not options.get("internal call") and options.get("plot cv", True):
                     self._plot_from_analysis_options(options)
 
-                x_scale, y_scale = self.xy_scale(options)
-
-                plt.scatter(
-                    x[peak_index] * x_scale,
-                    y[peak_index] * y_scale + options.get("offset", 0),
-                    color="tab:blue",
-                    zorder=3,
-                )
-
                 if options.get("troubleshoot"):
                     print("Using 'exact potential'; extrema detection was bypassed.")
 
@@ -3482,6 +3746,7 @@ class cv(echem):
                 "Ep": peak_potential,
                 "index": peak_index,
                 "current": y[peak_index],
+                "source": "exact potential",
             }
             result = _cv_analysis_result(
                 self,
@@ -3490,7 +3755,11 @@ class cv(echem):
                 [{"metric": "Ep", "value": peak_potential, "kind": "potential"}],
                 "Ep",
                 options,
-                diagnostics={"index": peak_index, "current": y[peak_index]},
+                diagnostics={
+                    "index": peak_index,
+                    "current": y[peak_index],
+                    "source": "exact potential",
+                },
             )
             if options["print"]:
                 result.show(options)
@@ -3499,6 +3768,7 @@ class cv(echem):
         extrema, smoothed_y, prom_map, ext_meta = _find_extrema_indices(
             y,
             options,
+            x=x,
         )
 
         if len(extrema) == 0:
@@ -3510,13 +3780,40 @@ class cv(echem):
                 "Check 'guess potential', 'peak prominence', or smoothing settings."
             )
 
+        peak_kind = _normalize_peak_kind(options.get("peak kind"))
+        if peak_kind == "infer":
+            peak_kind = _infer_peak_kind_from_current_change(y)
+        extrema_kind_map = ext_meta.get("extrema kind map", {})
+        candidate_extrema = extrema
+        if peak_kind is not None:
+            candidate_extrema = np.asarray(
+                [
+                    int(idx)
+                    for idx in extrema
+                    if extrema_kind_map.get(int(idx)) == peak_kind
+                ],
+                dtype=int,
+            )
+            if len(candidate_extrema) == 0:
+                selection = "CV trace"
+                if options.get("segments") or options.get("segment"):
+                    selection = "selected segment(s)"
+                label = "maxima" if peak_kind == "max" else "minima"
+                raise ValueError(
+                    f"peak_potential could not locate any {label} in the {selection}. "
+                    "Check 'peak kind', 'guess potential', 'peak prominence', or smoothing settings."
+                )
+
         if guess_potential is not None:
-            peak_index = int(extrema[np.argmin(np.abs(x[extrema] - guess_potential))])
+            peak_index = int(
+                candidate_extrema[np.argmin(np.abs(x[candidate_extrema] - guess_potential))]
+            )
         else:
             # Sign-agnostic: choose the most prominent extremum, not largest |current|.
-            peak_index = max(extrema, key=lambda idx: prom_map.get(int(idx), 0.0))
+            peak_index = max(candidate_extrema, key=lambda idx: prom_map.get(int(idx), 0.0))
 
         peak_potential = round_sigfigs(x[peak_index], options["sig figs"])
+        extremum_kind = extrema_kind_map.get(int(peak_index))
 
         if options["plot"]:
             if not options.get("internal call") and options.get("plot cv", True):
@@ -3542,13 +3839,16 @@ class cv(echem):
                 print(
                     f"SG window={ext_meta['sg window']}, "
                     f"polyorder={ext_meta['sg polyorder']}, "
-                    f"prominence={ext_meta['prominence']}"
+                    f"prominence={ext_meta['prominence']}, "
+                    f"prominence mode={ext_meta.get('prominence mode')}"
                 )
 
         values = {
             "Ep": peak_potential,
             "index": peak_index,
             "current": y[peak_index],
+            "extremum kind": extremum_kind,
+            "source": "peak",
         }
         result = _cv_analysis_result(
             self,
@@ -3557,7 +3857,12 @@ class cv(echem):
             [{"metric": "Ep", "value": peak_potential, "kind": "potential"}],
             "Ep",
             options,
-            diagnostics={"index": peak_index, "current": y[peak_index]},
+            diagnostics={
+                "index": peak_index,
+                "current": y[peak_index],
+                "extremum kind": extremum_kind,
+                "source": "peak",
+            },
         )
         if options["print"]:
             result.show(options)
@@ -4112,7 +4417,7 @@ class cv(echem):
             "segment_slice": seg_slice,
         }
 
-    def peak_current(self, options=None):
+    def peak_current(self, guess_or_options=None, options=None, **kwargs):
         """Measure peak current using a tangent-background correction.
         
         Parameters
@@ -4129,8 +4434,9 @@ class cv(echem):
         --------
         >>> ip, *_ = cv_obj.peak_current({"guess potential": -1.5, "segment": 1})
         """
+        options = _coerce_guess_potential_call_options(guess_or_options, options, kwargs)
         typed_options = PeakCurrentOptions.from_options(options)
-        options = self._cv_analysis_options(typed_options.to_legacy_dict())
+        options = self._cv_analysis_options(typed_options.to_options_dict())
 
         if options["plot"] and not options.get("internal call") and options.get("plot cv", True):
             self._plot_from_analysis_options(options)
@@ -4161,6 +4467,7 @@ class cv(echem):
             peak_result = self.peak_potential(internal_peak_options)
             E_peak = peak_result["Ep"]
             idx_E_peak = peak_result["index"]
+            peak_source = peak_result.get("source", "peak")
         except ValueError as exc:
             message = str(exc)
             if "could not locate any extrema" not in message and "could not locate any peaks" not in message:
@@ -4179,6 +4486,7 @@ class cv(echem):
                     ) from exc
                 fallback_peak_options = replace(
                     internal_peak_options,
+                    guess_potential=None,
                     exact_potential=guess_potential,
                 )
                 peak_result = self.peak_potential(fallback_peak_options)
@@ -4324,7 +4632,7 @@ class cv(echem):
         """
         return plateau_current(self, options)
 
-    def half_peak_potential(self, options=None):
+    def half_peak_potential(self, guess_or_options=None, options=None, **kwargs):
         """Estimate the half-peak potential for a selected CV wave.
         
         Parameters
@@ -4341,31 +4649,24 @@ class cv(echem):
         --------
         >>> E_half_peak = cv_obj.half_peak_potential({"guess potential": -1.5})
         """
+        options = _coerce_guess_potential_call_options(guess_or_options, options, kwargs)
         typed_options = PeakCurrentOptions.from_options(options)
-        options = self._cv_analysis_options(typed_options.to_legacy_dict())
+        options = self._cv_analysis_options(typed_options.to_options_dict())
 
         if options["plot"] and not options.get('internal call') and options.get("plot cv", True):
             self._plot_from_analysis_options(options)
             options["new plot"] = False
-        
-        # confirm peak potential and find peak current
-        internal_peak_options = typed_options.for_peak_potential()
-        internal_peak_options = replace(
-            internal_peak_options,
-            print=typed_options.print_all,
-            internal_call=True,
-            new_plot=False,
-        )
+
+        # Resolve the peak and tangent once; peak_current owns peak-potential routing.
         internal_current_options = replace(
             typed_options,
             print=typed_options.print_all,
             internal_call=True,
             new_plot=False,
         )
-        peak_result = self.peak_potential(internal_peak_options)
-        E_peak = peak_result["Ep"]
-        idx_E_peak = peak_result["index"]
         current_result = self.peak_current(internal_current_options)
+        E_peak = current_result["Ep"]
+        idx_E_peak = current_result["Ep index"]
         peak_current = current_result["ip"]
         m, b = current_result["tangent line"]
         tanline_start = current_result["tangent start"]
@@ -4420,45 +4721,43 @@ class cv(echem):
             ],
             "Ep/2",
             options,
-            diagnostics={"Ep index": idx_E_peak},
+            diagnostics={"Ep index": idx_E_peak, "peak current": current_result},
         )
         if options["print"]:
             result.show(options)
         return result
 
-    def peak_info(self, options=None): ### Change this to have a default plot and print option? Make consistent with wave_info
-        options = self._cv_analysis_options(options)
-        do_print = options.get('print', True)
+    def peak_info(self, guess_or_options=None, options=None, **kwargs):
+        """Summarize one CV peak and its tangent-corrected half-peak metrics.
 
-        if options.get('plot') and not options.get('internal call') and options.get("plot cv", True):
+        The CV trace is plotted once by the top-level call. ``plot all`` and
+        ``print all`` control detailed child diagnostics without redrawing it.
+        """
+        options = _coerce_guess_potential_call_options(guess_or_options, options, kwargs)
+        typed_options = PeakCurrentOptions.from_options(options)
+        options = self._cv_analysis_options(typed_options.to_options_dict())
+        do_print = options.get("print", True)
+        do_plot = options.get("plot", True)
+
+        if do_plot and not options.get("internal call") and options.get("plot cv", True):
             self._plot_from_analysis_options(options)
             options["new plot"] = False
 
-        # save print and plot options
-        internal_options = options.copy()
-        internal_options['print'] = options['print all']
-        internal_options['internal call'] = True
-        internal_options['new plot'] = False
-
-        # confirm peak potential and find peak current for half wave 1
-        x, y = self.analysis_segment_data(options)
-
-        peak_potential_options = {}
-        for field in fields(PeakPotentialOptions):
-            option_key = field.name.replace("_", " ")
-            if option_key in internal_options:
-                peak_potential_options[option_key] = internal_options[option_key]
-            elif field.name in internal_options:
-                peak_potential_options[field.name] = internal_options[field.name]
-        peak_result = self.peak_potential(PeakPotentialOptions.from_options(peak_potential_options))
-        E_peak = peak_result["Ep"]
-        idx_E_peak = peak_result["index"]
-        current_result = self.peak_current(internal_options)
+        child_options = replace(
+            typed_options,
+            print=typed_options.print_all,
+            internal_call=True,
+            new_plot=False,
+        )
+        half_peak_result = self.half_peak_potential(child_options)
+        current_result = half_peak_result.diagnostics["peak current"]
+        E_peak = current_result["Ep"]
+        idx_E_peak = current_result["Ep index"]
         peak_current = current_result["ip"]
         tanline = current_result["tangent line"]
-        half_peak_result = self.half_peak_potential(internal_options)
         E_half_peak = half_peak_result["Ep/2"]
         delta = half_peak_result["Δ(Ep - Ep/2)"]
+        _x, y = self.analysis_segment_data(options)
         y_E_peak = y[idx_E_peak]
 
         peak_info = {
@@ -4467,15 +4766,19 @@ class cv(echem):
             "Ep/2": E_half_peak,
             "Δ(Ep - Ep/2)":delta
         }
-        extra_info = {
+        diagnostics = {
             "Ep idx": idx_E_peak,
             "tanline": tanline,
-            "Ep y":y_E_peak
+            "Ep y": y_E_peak,
+            "peak current": current_result,
+            "half peak": half_peak_result,
         }
 
         values = {
             **peak_info,
-            **extra_info,
+            "Ep idx": idx_E_peak,
+            "tanline": tanline,
+            "Ep y": y_E_peak,
         }
         result = _cv_analysis_result(
             self,
@@ -4489,13 +4792,13 @@ class cv(echem):
             ],
             "Ep",
             options,
-            diagnostics=extra_info,
+            diagnostics=diagnostics,
         )
         if do_print:
             result.show(options)
         return result
 
-    def half_wave_potential(self, options=None):
+    def half_wave_potential(self, guess_or_options=None, options=None, **kwargs):
         """Estimate the half-wave potential for a selected CV wave.
         
         Parameters
@@ -4512,6 +4815,7 @@ class cv(echem):
         --------
         >>> E_half_wave = cv_obj.half_wave_potential({"guess potential": -1.5})
         """
+        options = _coerce_guess_potential_call_options(guess_or_options, options, kwargs)
         options = self._cv_analysis_options(options)
 
         # save print and plot options
@@ -4629,7 +4933,7 @@ class cv(echem):
             result.show(options)
         return result
 
-    def wave_info(self, options=None):
+    def wave_info(self, guess_or_options=None, options=None, **kwargs):
         """
         Summarize a reversible CV wave using both half-wave and peak analyses.
 
@@ -4647,6 +4951,7 @@ class cv(echem):
         CVAnalysisResult
             Dictionary-compatible result containing wave-level and peak-level metrics plus a tidy display table.
         """
+        options = _coerce_guess_potential_call_options(guess_or_options, options, kwargs)
         options = self._cv_analysis_options(options)
 
         do_print = options.get("print", True)
@@ -4762,37 +5067,6 @@ class cv(echem):
             result.show(options)
         return result
 
-    # def wave_infof(self, options=None):
-    #     options['normalize'] = False
-    #     options = self._cv_analysis_options(options)
-    #
-    #     # save print and plot options
-    #     print_opt = options["print"]
-    #     printall_opt = options["print all"]
-    #     plot_opt = options["plot"]
-    #     plotall_opt = options["plot all"]
-    #     options['plot'] = False
-    #     options['print'] = False
-    #     options["plot all"] = False
-    #
-    #     # find un-normalized half wave potential
-    #     E_half = self.half_wave_potential(options)[0]
-    #
-    #     # reset print and plot options
-    #     options["print"] = print_opt
-    #     options["plot"] = plot_opt
-    #     options["print all"] = printall_opt
-    #     options["plot all"] = plotall_opt
-    #
-    #     options['normalize'] = True
-    #     options['normalize params']["E"] = E_half
-    #     options["range"] = [x * 25 for x in options["range"]]
-    #
-    #     if options["plot"]:
-    #         self._plot_from_analysis_options(options)
-    #
-    #     return self.wave_info(0,options)
-
     def stats(self):
         """Return CV metadata and scan statistics.
         
@@ -4881,63 +5155,42 @@ class dpv(echem):
     """
     def __init__(self, filepath=None, options=None):
         super().__init__(filepath, options)
-        self.type = "Differential Pulse Voltammetry"
+        self.type = getattr(self, "type", None) or "Differential Pulse Voltammetry"
 
-        self.init_E = None
-        self.final_E = None
-        self.incr_E = None
-        self.amplitude = None
-        self.pulse_width = None
-        self.sample_width = None
-        self.pulse_period = None
-        self.quiet_time = None
-        self.sensitivity = None
-        self.comp_R = None
-        self.min_E = None
-        self.max_E = None
+        self.init_E = getattr(self, "init_E", None)
+        self.final_E = getattr(self, "final_E", None)
+        self.incr_E = getattr(self, "incr_E", None)
+        self.amplitude = getattr(self, "amplitude", None)
+        self.pulse_width = getattr(self, "pulse_width", None)
+        self.sample_width = getattr(self, "sample_width", None)
+        self.pulse_period = getattr(self, "pulse_period", None)
+        self.quiet_time = getattr(self, "quiet_time", None)
+        self.sensitivity = getattr(self, "sensitivity", None)
+        self.comp_R = getattr(self, "comp_R", None)
+        self.min_E = getattr(self, "min_E", None)
+        self.max_E = getattr(self, "max_E", None)
 
-        if filepath is not None:
-            self.get_data_from_file(filepath, options)
+        if filepath is None:
             self._refresh_parse_result()
-
-    def get_data_from_file(self, filepath, options):
-        if self.software == "CH":
-            self._parse_ch_dpv_file(filepath, options)
-        else:
-            raise ValueError(f"Unsupported software for DPV: {self.software}")
-
-    def _parse_ch_dpv_file(self, filepath, options):
-        with open(filepath, 'r', encoding='ISO-8859-1') as f:
-            lines = [line.strip() for line in f.readlines()]
-
-        def get_assignment_value(label):
-            pattern = rf"^{re.escape(label)}\s*=\s*([\d.eE+\-]+)"
-            for line in lines:
-                match = re.search(pattern, line)
-                if match:
-                    return float(match.group(1))
-            return None
-
-        self.init_E = get_assignment_value("Init E (V)")
-        self.final_E = get_assignment_value("Final E (V)")
-        self.incr_E = get_assignment_value("Incr E (V)")
-        self.amplitude = get_assignment_value("Amplitude (V)")
-        self.pulse_width = get_assignment_value("Pulse Width (sec)")
-        self.sample_width = get_assignment_value("Sample Width (sec)")
-        self.pulse_period = get_assignment_value("Pulse Period (sec)")
-        self.quiet_time = get_assignment_value("Quiet Time (sec)")
-        self.sensitivity = get_assignment_value("Sensitivity (A/V)")
-        self._parse_ir_compensation_from_lines(lines)
-        self.comp_R = get_assignment_value("Comp R (ohm)")
-
-        if "Potential" in self.data.columns and not self.data.empty:
-            self.min_E = self.data["Potential"].min()
-            self.max_E = self.data["Potential"].max()
-            if len(self.data) >= 2:
-                self.delta_x = round_sigfigs(
-                    abs(self.data["Potential"].iloc[1] - self.data["Potential"].iloc[0]),
-                    3,
-                )
+            return
+        if getattr(self, "parse_result", None) is not None:
+            if "Potential" in self.data.columns and not self.data.empty:
+                if self.min_E is None:
+                    self.min_E = self.data["Potential"].min()
+                if self.max_E is None:
+                    self.max_E = self.data["Potential"].max()
+                if self.init_E is None:
+                    self.init_E = self.data["Potential"].iloc[0]
+                if self.final_E is None:
+                    self.final_E = self.data["Potential"].iloc[-1]
+                if getattr(self, "delta_x", None) is None and len(self.data) >= 2:
+                    self.delta_x = round_sigfigs(
+                        abs(self.data["Potential"].iloc[1] - self.data["Potential"].iloc[0]),
+                        3,
+                    )
+            self._refresh_parse_result()
+            return
+        raise ValueError("DPV file parsing did not produce a parser result.")
 
     def stats(self):
         return {
@@ -5038,7 +5291,7 @@ class dpv(echem):
 
         return stats
 
-    def peak_potential(self, options=None):
+    def peak_potential(self, guess_or_options=None, options=None, **kwargs):
         """Find a DPV peak potential near a requested guess.
         
         Parameters
@@ -5055,8 +5308,9 @@ class dpv(echem):
         --------
         >>> E_peak, idx = dpv_obj.peak_potential({"guess potential": -1.5})
         """
+        options = _coerce_guess_potential_call_options(guess_or_options, options, kwargs)
         typed_options = PeakPotentialOptions.from_options(options)
-        options = typed_options.to_legacy_dict()
+        options = typed_options.to_options_dict()
 
         x = self.x(options).to_numpy(dtype=float)
         y = self.y(options).to_numpy(dtype=float)
@@ -5070,6 +5324,7 @@ class dpv(echem):
             extrema, smoothed_y, prom_map, ext_meta = _find_extrema_indices(
                 y,
                 options,
+                x=x,
             )
 
             if len(extrema) == 0:
@@ -5095,12 +5350,13 @@ class dpv(echem):
                 self.plot(_plot_options_from_mapping(options))
 
             x_scale, y_scale = self.xy_scale(options)
-            plt.scatter(
-                x[peak_index] * x_scale,
-                y[peak_index] * y_scale + options.get("offset", 0),
-                color="tab:blue",
-                zorder=3,
-            )
+            if exact_potential is None:
+                plt.scatter(
+                    x[peak_index] * x_scale,
+                    y[peak_index] * y_scale + options.get("offset", 0),
+                    color="tab:blue",
+                    zorder=3,
+                )
 
             if options.get("troubleshoot") and exact_potential is None:
                 plt.scatter(
@@ -5113,7 +5369,8 @@ class dpv(echem):
                 print(
                     f"SG window={ext_meta['sg window']}, "
                     f"polyorder={ext_meta['sg polyorder']}, "
-                    f"prominence={ext_meta['prominence']}"
+                    f"prominence={ext_meta['prominence']}, "
+                    f"prominence mode={ext_meta.get('prominence mode')}"
                 )
 
         return peak_potential, peak_index
@@ -5492,334 +5749,78 @@ class cp(echem):
     def __init__(self, filepath=None, options=None):
         super().__init__(filepath, options)
 
-        self.type = "Chronopotentiometry"
+        self.type = getattr(self, "type", None) or "Chronopotentiometry"
 
         # Initialize CP-specific variables
-        self.cathodic_current = None
-        self.anodic_current = None
-        self.init_PN = None
-        self.high_E_limit = None
-        self.low_E_limit = None
-        self.cathodic_time = None
-        self.anodic_time = None
-        self.segments = None
-        self.sample_int = None
-        self.quiet_time = None
+        self.cathodic_current = getattr(self, "cathodic_current", None)
+        self.anodic_current = getattr(self, "anodic_current", None)
+        self.init_PN = getattr(self, "init_PN", None)
+        self.high_E_limit = getattr(self, "high_E_limit", None)
+        self.low_E_limit = getattr(self, "low_E_limit", None)
+        self.cathodic_time = getattr(self, "cathodic_time", None)
+        self.anodic_time = getattr(self, "anodic_time", None)
+        self.segments = getattr(self, "segments", None)
+        self.sample_int = getattr(self, "sample_int", getattr(self, "sample_interval", None))
+        self.quiet_time = getattr(self, "quiet_time", None)
 
         # General electrochemical variables
-        self.init_E = None
-        self.final_E = None
-        self.min_E = None
-        self.max_E = None
+        self.init_E = getattr(self, "init_E", None)
+        self.final_E = getattr(self, "final_E", None)
+        self.min_E = getattr(self, "min_E", None)
+        self.max_E = getattr(self, "max_E", None)
 
-        # Parse data depending on software
-        self.get_data_from_file(filepath, options)
-        self._refresh_parse_result()
+        if filepath is None:
+            self._refresh_parse_result()
+            return
 
-    def get_data_from_file(self, filepath, options):
-        if self.software == "CH":
-            self._parse_ch_cp_file(filepath, options)
-        elif str(self.software).lower().replace("-", "") == "eclab":
-            self._parse_eclab_cp_file(filepath, options)
-        elif self.software == "BASI":
-            self._parse_basi_cp_file(filepath, options)
-        else:
-            raise ValueError(f"Unsupported software for CP: {self.software}")
-
-    def _parse_ch_cp_file(self, filepath, options):
-        with open(filepath, 'r', encoding='utf-8') as f:
-            lines = f.readlines()
-
-        header_lines = []
-        data_start = 0
-        for i, line in enumerate(lines):
-            if "Time" in line and "Potential" in line:
-                data_start = i
-                break
-            header_lines.append(line.strip())
-
-        for line in header_lines:
-            if m := re.search(r'Cathodic Current \(A\) = ([\d.eE+-]+)', line):
-                self.cathodic_current = float(m.group(1))
-            elif m := re.search(r'Anodic Current \(A\) = ([\d.eE+-]+)', line):
-                self.anodic_current = float(m.group(1))
-            elif m := re.search(r'Init P/N = (\w+)', line):
-                self.init_PN = m.group(1)
-            elif m := re.search(r'Data Storage Interval \(s\) = ([\d.eE+-]+)', line):
-                self.sample_int = float(m.group(1))
-            elif m := re.search(r'High E Limit \(V\) = ([\d.eE+-]+)', line):
-                self.high_E_limit = float(m.group(1))
-            elif m := re.search(r'Low E Limit \(V\) = ([\d.eE+-]+)', line):
-                self.low_E_limit = float(m.group(1))
-            elif m := re.search(r'Cathodic Time \(s\) = ([\d.eE+-]+)', line):
-                self.cathodic_time = float(m.group(1))
-            elif m := re.search(r'Anodic Time \(s\) = ([\d.eE+-]+)', line):
-                self.anodic_time = float(m.group(1))
-            elif m := re.search(r'Segment = ([\d]+)', line):
-                self.segments = int(m.group(1))
-        self.quiet_time = _parse_quiet_time_from_lines(header_lines)
-
-        # Load data into DataFrame
-        df = pd.read_csv(filepath, skiprows=data_start + 1, names=["Time", "Potential"])
-
-        # Patch any repeated time entries
-        times = df["Time"].values.copy()
-        for i in range(1, len(times)):
-            # if the stamp didn’t advance (or went backwards), nudge it forward
-            if times[i] <= times[i - 1]:
-                times[i] = times[i - 1] + self.sample_int
-        df["Time"] = times
-
-        # Store back and set units
-        self.data = df
-        self.units["Time"] = "s"
-        self.units["Potential"] = "V"
-
-        # Estimate init/final/min/max potentials and delta_x
-        self.init_E = self.data["Potential"].iloc[0]
-        self.final_E = self.data["Potential"].iloc[-1]
-        self.min_E = self.data["Potential"].min()
-        self.max_E = self.data["Potential"].max()
-        if len(self.data) >= 2:
-            self.delta_x = self.data["Time"].iloc[1] - self.data["Time"].iloc[0]
-
-    def _parse_eclab_cp_file(self, filepath, options):
-        with open(filepath, "r", encoding="ISO-8859-1") as f:
-            lines = f.readlines()
-
-        self.type = "Chronopotentiometry"
-
-        skiprows = None
-        for line in lines:
-            if "Nb header lines" in line:
+        if getattr(self, "parse_result", None) is not None:
+            if "Potential" in self.data:
+                y = self.data["Potential"].to_numpy(dtype=float)
+                if self.init_E is None:
+                    self.init_E = float(y[0]) if len(y) else None
+                if self.final_E is None:
+                    self.final_E = float(y[-1]) if len(y) else None
+                if self.min_E is None:
+                    self.min_E = float(np.min(y)) if len(y) else None
+                if self.max_E is None:
+                    self.max_E = float(np.max(y)) if len(y) else None
+            if "Time" in self.data and len(self.data) >= 2:
+                diffs = np.diff(self.data["Time"].to_numpy(dtype=float))
+                positive_diffs = diffs[diffs > 0]
+                if len(positive_diffs) > 0:
+                    if self.sample_int is None:
+                        self.sample_int = float(np.median(positive_diffs))
+                    self.sample_interval = self.sample_int
+                    if getattr(self, "delta_x", None) is None:
+                        self.delta_x = self.sample_int
+            parse_result = getattr(self, "parse_result", None)
+            step_table = parse_result.raw_metadata.get("step_table", {}) if parse_result else {}
+            is_step = step_table.get("Is", {})
+            is_values = is_step.get("values", [])
+            is_units = is_step.get("units", [])
+            converted = []
+            for idx, value in enumerate(is_values):
+                unit = is_units[idx] if idx < len(is_units) else "A"
                 try:
-                    skiprows = int(line.split(":", 1)[1].strip().split()[0])
-                    break
-                except Exception as exc:
-                    raise ValueError(
-                        "Could not parse number of header lines in EC-Lab CP file."
-                    ) from exc
+                    factor = {"A": 1, "mA": 1e-3, "uA": 1e-6, "µA": 1e-6, "μA": 1e-6}[unit]
+                except KeyError:
+                    factor = 1
+                converted.append(value * factor)
+            positives = [value for value in converted if value > 0]
+            negatives = [value for value in converted if value < 0]
+            if positives and self.anodic_current is None:
+                self.anodic_current = positives[0]
+            if negatives and self.cathodic_current is None:
+                self.cathodic_current = negatives[0]
+            self._refresh_parse_result()
+            return
 
-        if skiprows is None:
-            raise ValueError("Header line count not found in EC-Lab CP file.")
+        raise ValueError("CP file parsing did not produce a parser result.")
 
-        header_lines = lines[: max(skiprows - 1, 0)]
-        self.quiet_time = _parse_quiet_time_from_lines(header_lines)
-
-        def _parse_step_values(label):
-            for idx, line in enumerate(header_lines):
-                if line.strip().startswith(label):
-                    values = []
-                    for token in re.split(r"\s+", line.strip())[1:]:
-                        try:
-                            values.append(float(token))
-                        except ValueError:
-                            pass
-
-                    units = []
-                    if idx + 1 < len(header_lines):
-                        next_line = header_lines[idx + 1].strip()
-                        if next_line.lower().startswith(f"unit {label.lower()}"):
-                            units = re.split(r"\s+", next_line)[2:]
-
-                    return values, units
-
-            return [], []
-
-        def _convert_by_unit(value, unit):
-            unit = "" if unit is None else str(unit).strip()
-            try:
-                return value * get_conversion_factor(unit)
-            except Exception:
-                return value
-
-        is_values, is_units = _parse_step_values("Is")
-        converted_currents = [
-            _convert_by_unit(value, is_units[idx] if idx < len(is_units) else "")
-            for idx, value in enumerate(is_values)
-        ]
-        nonzero_currents = [value for value in converted_currents if value != 0]
-        if nonzero_currents:
-            positive = [value for value in nonzero_currents if value > 0]
-            negative = [value for value in nonzero_currents if value < 0]
-            if positive:
-                self.anodic_current = positive[0]
-            if negative:
-                self.cathodic_current = negative[0]
-
-        df_raw = pd.read_csv(filepath, sep="\t", skiprows=skiprows - 1, encoding="latin1")
-        df_raw = df_raw.dropna(how="all", axis=1).dropna(how="all").reset_index(drop=True)
-        normalized_cols = {str(col).strip().lower(): col for col in df_raw.columns}
-
-        time_col_key = next(
-            (key for key in normalized_cols if key.startswith("time") and "/" in key),
-            None,
-        )
-        potential_col_key = next(
-            (key for key in normalized_cols if "ewe" in key and "/" in key),
-            None,
-        )
-
-        if time_col_key is None or potential_col_key is None:
-            raise ValueError(
-                "Could not find expected EC-Lab CP time/potential columns. "
-                f"Available columns: {list(df_raw.columns)}"
-            )
-
-        time_col = normalized_cols[time_col_key]
-        potential_col = normalized_cols[potential_col_key]
-
-        time_unit = time_col.split("/")[-1].strip()
-        potential_unit = potential_col.split("/")[-1].strip()
-
-        time_numeric = pd.to_numeric(df_raw[time_col], errors="coerce")
-        if time_numeric.notna().all():
-            time_values = time_numeric * get_conversion_factor(time_unit)
-        else:
-            parsed_time = pd.to_datetime(df_raw[time_col], errors="coerce")
-            if parsed_time.isna().any():
-                raise ValueError(
-                    f"Could not parse EC-Lab CP time column '{time_col}' as seconds or timestamps."
-                )
-            time_values = (parsed_time - parsed_time.iloc[0]).dt.total_seconds()
-
-        potential_values = (
-            pd.to_numeric(df_raw[potential_col], errors="coerce")
-            * get_conversion_factor(potential_unit)
-        )
-
-        df = pd.DataFrame({
-            "Time": time_values,
-            "Potential": potential_values,
-        }).dropna().reset_index(drop=True)
-
-        if df.empty:
-            raise ValueError("EC-Lab CP file did not contain any numeric time/potential rows.")
-
-        self.data = df
-        self.units = {
-            key: value
-            for key, value in self.units.items()
-            if key not in {"Current", "<I>"}
-        }
-        self.units["Time"] = "s"
-        self.units["Potential"] = "V"
-
-        self.init_E = df["Potential"].iloc[0]
-        self.final_E = df["Potential"].iloc[-1]
-        self.min_E = df["Potential"].min()
-        self.max_E = df["Potential"].max()
-
-        if len(df) >= 2:
-            diffs = np.diff(df["Time"].to_numpy(dtype=float))
-            positive_diffs = diffs[diffs > 0]
-            if len(positive_diffs) > 0:
-                self.sample_int = float(np.median(positive_diffs))
-                self.delta_x = self.sample_int
-
-        if "ns" in normalized_cols:
-            ns = pd.to_numeric(df_raw[normalized_cols["ns"]], errors="coerce").dropna()
-            if not ns.empty:
-                self.segments = int(ns.nunique())
-
-    def _parse_basi_cp_file(self, filepath, options):
-        with open(filepath, "r", encoding="ISO-8859-1") as f:
-            lines = [line.strip() for line in f.readlines() if line.strip()]
-        self.quiet_time = _parse_quiet_time_from_lines(lines)
-
-        data_header_idx = next(
-            (
-                i + 1
-                for i, line in enumerate(lines)
-                if line.strip().lower() == "[begin data]" and i + 1 < len(lines)
-            ),
-            None,
-        )
-        if data_header_idx is None:
-            data_header_idx = next(
-                (
-                    i
-                    for i, line in enumerate(lines)
-                    if line.lower().startswith("time") and "potential" in line.lower()
-                ),
-                None,
-            )
-
-        if data_header_idx is not None:
-            delimiter = self.infer_delimiter(lines[data_header_idx])
-            df = pd.read_csv(
-                filepath,
-                sep=delimiter,
-                skiprows=data_header_idx,
-                header=0,
-                engine="python",
-                encoding="ISO-8859-1",
-            )
-        else:
-            df = pd.read_csv(
-                filepath,
-                names=["Time", "Potential"],
-                engine="python",
-                encoding="ISO-8859-1",
-            )
-
-        df = df.dropna(how="all", axis=1).dropna(how="all").reset_index(drop=True)
-
-        updated_columns = {}
-        parsed_units = {}
-        for col in df.columns:
-            col_str = str(col).strip()
-            if "/" in col_str:
-                name, unit = map(str.strip, col_str.split("/", 1))
-            else:
-                name, unit = col_str, None
-
-            name_lower = name.lower()
-            if name_lower.startswith("time"):
-                clean_name = "Time"
-                clean_unit = "s" if unit in (None, "sec") else unit
-            elif "potential" in name_lower or name_lower.startswith("ewe"):
-                clean_name = "Potential"
-                clean_unit = "V" if unit is None else unit
-            else:
-                clean_name = name.strip()
-                clean_unit = unit
-
-            updated_columns[col] = clean_name
-            if clean_unit is not None:
-                parsed_units[clean_name] = clean_unit
-            df[col] = pd.to_numeric(df[col], errors="coerce")
-
-        df = df.rename(columns=updated_columns)
-        if not {"Time", "Potential"}.issubset(df.columns):
-            raise ValueError(
-                "Could not find expected BASI CP time/potential columns. "
-                f"Available columns: {list(df.columns)}"
-            )
-
-        df = df[["Time", "Potential"]].dropna().reset_index(drop=True)
-        if df.empty:
-            raise ValueError("BASI CP file did not contain any numeric time/potential rows.")
-
-        time_unit = parsed_units.get("Time", "s")
-        potential_unit = parsed_units.get("Potential", "V")
-        df["Time"] = df["Time"] * get_conversion_factor(time_unit)
-        df["Potential"] = df["Potential"] * get_conversion_factor(potential_unit)
-
-        self.data = df
-        self.units["Time"] = "s"
-        self.units["Potential"] = "V"
-
-        self.init_E = df["Potential"].iloc[0]
-        self.final_E = df["Potential"].iloc[-1]
-        self.min_E = df["Potential"].min()
-        self.max_E = df["Potential"].max()
-        if len(df) >= 2:
-            diffs = np.diff(df["Time"].to_numpy(dtype=float))
-            positive_diffs = diffs[diffs > 0]
-            if len(positive_diffs) > 0:
-                self.sample_int = float(np.median(positive_diffs))
-                self.delta_x = self.sample_int
+    def y(self, options=None):
+        options = {} if options is None else dict(options)
+        options.setdefault("y axis", "Potential")
+        return super().y(options)
 
     def stats(self):
         """
@@ -6086,7 +6087,7 @@ class cp(echem):
         x_mode = options.get('x-axis', 'capacity')
         gradient_enabled = str(options.get("color mode", "auto")).strip().lower() == "gradient"
         cycle_colors = {}
-        color_spec = {"plot labels": [], "gradient groups": [], "discrete indices": []}
+        color_spec = {"labels": [], "gradient groups": [], "discrete indices": []}
         if gradient_enabled and len(sel_cycles) > 0:
             cmap = _get_group_cmap(0, 1, options)
             values = np.asarray(sel_cycles, dtype=float)
@@ -6112,7 +6113,7 @@ class cp(echem):
                 else list(cycle_labels)
             )
             color_spec = {
-                "plot labels": ["_nolegend_"] * len(sel_cycles),
+                "labels": ["_nolegend_"] * len(sel_cycles),
                 "gradient groups": [{
                     "indices": list(range(len(sel_cycles))),
                     "values": values,
@@ -6467,65 +6468,36 @@ class ca(echem):
     """
     def __init__(self, filepath, options=None):
         super().__init__(filepath, options)
-        self.type = "Chronoamperometry"
+        self.type = getattr(self, "type", None) or "Chronoamperometry"
         # CA-specific parameters
-        self.init_E = None
-        self.sample_interval = None
-        self.run_time = None
-        self.quiet_time = None
-        self.sensitivity = None
-        # parse file and load data
-        self._parse_ch_ca_file(filepath)
-        self._refresh_parse_result()
+        self.init_E = getattr(self, "init_E", None)
+        self.sample_interval = getattr(self, "sample_interval", None)
+        self.run_time = getattr(self, "run_time", None)
+        self.quiet_time = getattr(self, "quiet_time", None)
+        self.sensitivity = getattr(self, "sensitivity", None)
+        if getattr(self, "parse_result", None) is not None:
+            if "Potential" in self.data and not self.data["Potential"].dropna().empty:
+                if self.init_E is None:
+                    self.init_E = float(self.data["Potential"].dropna().iloc[0])
+            if "Time" in self.data and len(self.data) >= 2:
+                time_values = self.data["Time"].to_numpy(dtype=float)
+                diffs = np.diff(time_values)
+                positive_diffs = diffs[diffs > 0]
+                if len(positive_diffs) > 0:
+                    if self.sample_interval is None:
+                        self.sample_interval = float(np.median(positive_diffs))
+                    if getattr(self, "delta_x", None) is None:
+                        self.delta_x = self.sample_interval
+                if self.run_time is None:
+                    self.run_time = float(np.nanmax(time_values) - np.nanmin(time_values))
+            self._refresh_parse_result()
+            return
+        raise ValueError("CA file parsing did not produce a parser result.")
 
-    def _parse_ch_ca_file(self, filepath):
-        """
-        Parse CHI chronoamperometry (.bin, .txt) file format.
-        Extract header info, then read Time/current data.
-        """
-        with open(filepath, 'r', encoding='utf-8') as f:
-            lines = f.readlines()
-
-        header_lines = []
-        data_start = 0
-        # find where data begins (line with "Time/sec")
-        for idx, line in enumerate(lines):
-            if re.match(r"\s*Time\s*/sec", line):
-                data_start = idx
-                break
-            header_lines.append(line.strip())
-        self._parse_ir_compensation_from_lines(header_lines)
-
-        # extract header parameters
-        for line in header_lines:
-            if m := re.search(r'Init E \(V\)\s*=\s*([\d.eE+\-]+)', line):
-                self.init_E = float(m.group(1))
-            elif m := re.search(r'Sample Interval \(s\)\s*=\s*([\d.eE+\-]+)', line):
-                self.sample_interval = float(m.group(1))
-            elif m := re.search(r'Run Time \(sec\)\s*=\s*([\d.eE+\-]+)', line):
-                self.run_time = float(m.group(1))
-            elif m := re.search(r'Quiet Time \(sec\)\s*=\s*([\d.eE+\-]+)', line):
-                self.quiet_time = float(m.group(1))
-            elif m := re.search(r'Sensitivity \(A/V\)\s*=\s*([\d.eE+\-]+)', line):
-                self.sensitivity = float(m.group(1))
-
-        # read the time-current data
-        df = pd.read_csv(
-            filepath,
-            skiprows=data_start+1,
-            names=['Time', 'Current'],
-            sep=',',
-            comment='#'
-        )
-        # assign to object
-        self.data = df
-        # set units for plotting
-        self.units['Time'] = 's'
-        self.units['Current'] = 'A'
-
-        # calculate delta_x for plotting convenience
-        if len(df) >= 2:
-            self.delta_x = df['Time'].iloc[1] - df['Time'].iloc[0]
+    def y(self, options=None):
+        options = {} if options is None else dict(options)
+        options.setdefault("y axis", "Current")
+        return super().y(options)
 
     def stats(self):
         """
@@ -6693,6 +6665,529 @@ class ca(echem):
             )
         return float(np.interp(target_charge, Q, t))
 
+    def _coerce_ca_current_options(self, options):
+        raw_options = {} if options is None else dict(options)
+        if raw_options.get("corrected current", False) and "baseline correction" not in raw_options:
+            raw_options["baseline correction"] = True
+        return PlotOptions.from_options(raw_options).to_options_dict()
+
+    def _ca_current_trace_for_options(self, options):
+        t = np.asarray(self.data["Time"].values, dtype=float)
+        current = np.asarray(self.data["Current"].values, dtype=float)
+        baseline = None
+        source = "current"
+        if options.get("corrected current", False):
+            baseline = self._resolve_baseline_correction(options, t, current)
+            if baseline is None:
+                raise ValueError(
+                    "'corrected current' requires 'baseline correction' or uses tail correction when omitted."
+                )
+            current = np.asarray(baseline["corrected current"], dtype=float)
+            source = "corrected current"
+        return t, current, source, baseline
+
+    def _time_window_arrays(self, t, y, time_range):
+        if time_range is None:
+            return np.asarray(t, dtype=float), np.asarray(y, dtype=float), (float(t[0]), float(t[-1]))
+        if len(time_range) != 2:
+            raise ValueError("'time range' must be [start, stop].")
+        start, stop = time_range
+        if start is None:
+            start = float(np.nanmin(t))
+        if stop is None:
+            stop = float(np.nanmax(t))
+        start = float(start)
+        stop = float(stop)
+        if stop < start:
+            start, stop = stop, start
+        t_min = float(np.nanmin(t))
+        t_max = float(np.nanmax(t))
+        if start < t_min or stop > t_max:
+            raise ValueError(
+                f"Requested time range ({start:g}, {stop:g}) s is outside the data range "
+                f"({t_min:g}, {t_max:g}) s."
+            )
+        if start == stop:
+            raise ValueError("'time range' must span a nonzero interval.")
+        interior = (t > start) & (t < stop)
+        t_window = np.concatenate(([start], np.asarray(t, dtype=float)[interior], [stop]))
+        y_window = np.interp(t_window, t, y)
+        return t_window, y_window, (start, stop)
+
+    def _chrono_format_number(self, value, options):
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError):
+            return str(value)
+        if not np.isfinite(numeric):
+            return str(numeric)
+        return f"{round_sigfigs(numeric, options.get('sig figs', 4)):g}"
+
+    def _chrono_format_value(self, value, unit, options, *, kind="plain"):
+        if value is None:
+            return ""
+        unit = "" if unit is None else str(unit)
+        display_value = value
+        display_unit = unit
+        if kind == "time":
+            scale, display_unit = scale_time_axis(np.asarray([float(value)], dtype=float), unit or "s", options.get("x unit", "auto"))
+            display_value = float(value) * scale
+        elif kind == "current":
+            scale, display_unit = scale_axis(np.asarray([float(value)], dtype=float), unit or "A", options.get("y unit", "auto"))
+            display_value = float(value) * scale
+        text = self._chrono_format_number(display_value, options)
+        if display_unit:
+            display_unit = display_unit.replace("u", "μ", 1) if display_unit.startswith("u") else display_unit
+            return f"{text} {display_unit}"
+        return text
+
+    def _chrono_table(self, rows, options):
+        return pd.DataFrame(
+            [
+                {
+                    "Metric": metric,
+                    "Value": self._chrono_format_value(value, unit, options, kind=kind),
+                }
+                for metric, value, unit, kind in rows
+            ],
+            columns=["Metric", "Value"],
+        )
+
+    def _print_chrono_table(self, title, equations, table, options):
+        if not options.get("print", True):
+            return
+        print(f"{title}:")
+        if equations:
+            print("Equations:")
+            for equation in equations:
+                print(f"  {equation}")
+        if options.get("pretty print", True) and display is not None:
+            styled = (
+                table.style
+                .hide(axis="index")
+                .set_properties(**{"text-align": "left"})
+                .set_table_styles([
+                    {
+                        "selector": "caption",
+                        "props": [
+                            ("caption-side", "top"),
+                            ("text-align", "left"),
+                            ("font-weight", "600"),
+                            ("color", "inherit"),
+                            ("margin-bottom", "0.35em"),
+                        ],
+                    },
+                    {"selector": "th", "props": [("text-align", "left")]},
+                    {"selector": "td", "props": [("text-align", "left")]},
+                ])
+                .set_caption(str(title))
+            )
+            display(styled)
+        else:
+            print(table.to_string(index=False))
+
+    def _split_ca_rate_options(self, options):
+        rate_keys = {
+            "c",
+            "c_unit",
+            "catalyst_moles",
+            "electron_stoich",
+            "electron_stoichiometry",
+            "faradaic_efficiency",
+            "fe",
+            "n",
+            "num_electrons",
+            "species",
+            "volume",
+            "volume_unit",
+        }
+        current_options = {}
+        rate_options = {}
+        for key, value in (options or {}).items():
+            norm = normalize_key(key)
+            if norm in rate_keys:
+                rate_options[norm] = value
+            else:
+                current_options[key] = value
+        return current_options, rate_options
+
+    def _parse_ca_volume_liters(self, value, unit=None):
+        if value in (None, ""):
+            return None
+        if isinstance(value, str):
+            match = re.fullmatch(
+                r"\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)\s*([A-Za-zμµ]+)\s*",
+                value,
+            )
+            if match is None:
+                raise ValueError(
+                    "'volume' strings must include a value and unit, such as '3 mL'."
+                )
+            number = float(match.group(1))
+            unit = match.group(2)
+        else:
+            number = float(value)
+            unit = "L" if unit in (None, "") else unit
+
+        if number < 0:
+            raise ValueError("'volume' must be non-negative.")
+
+        unit_key = str(unit).strip().replace("µ", "μ").lower()
+        factors = {
+            "l": 1.0,
+            "liter": 1.0,
+            "liters": 1.0,
+            "ml": 1e-3,
+            "milliliter": 1e-3,
+            "milliliters": 1e-3,
+            "ul": 1e-6,
+            "μl": 1e-6,
+            "microliter": 1e-6,
+            "microliters": 1e-6,
+        }
+        if unit_key not in factors:
+            raise ValueError("'volume unit' must be L, mL, or μL.")
+        return number * factors[unit_key]
+
+    def _resolve_ca_species_concentration_molar(self, species):
+        requested = str(species)
+        compounds = list(getattr(self, "compounds", []) or [])
+        concentrations = list(getattr(self, "concentrations", []) or [])
+        matches = [
+            idx
+            for idx, compound in enumerate(compounds)
+            if str(compound) == requested
+        ]
+        available = ", ".join(str(compound) for compound in compounds) or "none"
+        if not matches:
+            raise ValueError(
+                f"Species '{requested}' was not found in CA compounds. "
+                f"Available species: {available}."
+            )
+        if len(matches) > 1:
+            raise ValueError(
+                f"Species '{requested}' matched multiple CA compounds. "
+                "Provide explicit C and C unit instead."
+            )
+        idx = matches[0]
+        if idx >= len(concentrations) or concentrations[idx] in (None, ""):
+            raise ValueError(
+                f"Species '{requested}' does not have an available concentration. "
+                "Provide explicit C and C unit instead."
+            )
+        concentration_text = str(concentrations[idx])
+        try:
+            return concentration_to_float(concentration_text), concentration_text, requested
+        except Exception as exc:
+            raise ValueError(
+                f"Concentration for species '{requested}' could not be parsed: "
+                f"{concentration_text!r}. Provide explicit C and C unit instead."
+            ) from exc
+
+    def _resolve_ca_rate_concentration_molar(self, rate_options):
+        if "c" in rate_options and rate_options.get("c") is not None:
+            c_value = rate_options.get("c")
+            if isinstance(c_value, str):
+                return concentration_to_float(c_value), c_value, None
+            c_unit = rate_options.get("c_unit")
+            if c_unit in (None, ""):
+                raise ValueError("Numeric C requires 'C unit'.")
+            concentration_text = f"{float(c_value):g}{c_unit}"
+            return concentration_to_float(concentration_text), concentration_text, None
+
+        species = rate_options.get("species")
+        if species not in (None, ""):
+            return self._resolve_ca_species_concentration_molar(species)
+        return None, None, None
+
+    def _resolve_ca_rate_catalyst_moles(self, rate_options):
+        explicit = rate_options.get("catalyst_moles")
+        if explicit not in (None, ""):
+            catalyst_moles = float(explicit)
+            if catalyst_moles <= 0:
+                raise ValueError("'catalyst moles' must be positive.")
+            return catalyst_moles, "catalyst moles", None, None
+
+        volume = rate_options.get("volume")
+        concentration_molar, concentration_text, species = self._resolve_ca_rate_concentration_molar(rate_options)
+        if volume in (None, ""):
+            if concentration_molar is not None:
+                raise ValueError("TOF from concentration requires 'volume'.")
+            return None, None, concentration_text, species
+        if concentration_molar is None:
+            raise ValueError("TOF from volume requires 'species' or explicit C/C unit.")
+
+        volume_liters = self._parse_ca_volume_liters(
+            volume,
+            unit=rate_options.get("volume_unit"),
+        )
+        catalyst_moles = concentration_molar * volume_liters
+        if catalyst_moles <= 0:
+            raise ValueError("Resolved catalyst moles must be positive.")
+        return catalyst_moles, f"{concentration_text} × {volume_liters:g} L", concentration_text, species
+
+    def _ca_rate_num_electrons(self, rate_options):
+        for key in ("num_electrons", "electron_stoich", "electron_stoichiometry", "n"):
+            value = rate_options.get(key)
+            if value not in (None, ""):
+                numeric = float(value)
+                if numeric <= 0:
+                    raise ValueError("'num electrons' must be positive.")
+                return numeric
+        return None
+
+    def _ca_rate_faradaic_efficiency(self, rate_options):
+        value = rate_options.get("faradaic_efficiency", rate_options.get("fe", 1.0))
+        if isinstance(value, str) and value.strip().endswith("%"):
+            numeric = float(value.strip()[:-1]) / 100.0
+        else:
+            numeric = float(value)
+        if numeric < 0 or numeric > 1:
+            raise ValueError("'faradaic efficiency' must be between 0 and 1, or a percent string such as '85%'.")
+        return numeric
+
+    def _ca_rate_values_from_current(self, current, rate_options):
+        current = float(current)
+        values = {
+            "electron flow": current / F,
+            "absolute electron flow": abs(current) / F,
+            "electron flow unit": "mol e-/s",
+        }
+        n = self._ca_rate_num_electrons(rate_options)
+        catalyst_moles, catalyst_source, concentration_text, species = (
+            self._resolve_ca_rate_catalyst_moles(rate_options)
+        )
+        if catalyst_moles is not None and n is None:
+            raise ValueError("TOF calculation requires 'num electrons' or 'electron stoich'.")
+
+        if n is not None:
+            faradaic_efficiency = self._ca_rate_faradaic_efficiency(rate_options)
+            molecular_rate = abs(current) * faradaic_efficiency / (n * F)
+            values.update({
+                "num electrons": n,
+                "faradaic efficiency": faradaic_efficiency,
+                "molecular rate": molecular_rate,
+                "molecular rate unit": "mol/s",
+            })
+            if catalyst_moles is not None:
+                values.update({
+                    "catalyst moles": catalyst_moles,
+                    "catalyst source": catalyst_source,
+                    "TOF": molecular_rate / catalyst_moles,
+                    "TOF unit": "s^-1",
+                })
+        if concentration_text is not None:
+            values["concentration"] = concentration_text
+        if species is not None:
+            values["species"] = species
+        return values
+
+    def _ca_current_rows(self, values):
+        rows = []
+        if "time" in values:
+            rows.append(("Time", values["time"], values.get("time unit", "s"), "time"))
+        if "time range" in values:
+            lo, hi = values["time range"]
+            unit = values.get("time unit", "s")
+            rows.append(("Time Range", f"{lo:g}–{hi:g} {unit}", None, "plain"))
+        if "current" in values:
+            rows.append(("Current", values["current"], values.get("current unit", "A"), "current"))
+        if "average current" in values:
+            rows.append(("Average Current", values["average current"], values.get("current unit", "A"), "current"))
+        rows.append(("Current Source", values.get("current source", "current"), None, "plain"))
+        if "baseline correction" in values:
+            rows.extend([
+                ("Baseline Correction", values.get("baseline correction"), None, "plain"),
+                ("Baseline Current", values.get("baseline current"), values.get("current unit", "A"), "current"),
+                ("Baseline Time", values.get("baseline time"), values.get("time unit", "s"), "time"),
+            ])
+        return rows
+
+    def _ca_rate_rows(self, values):
+        rows = self._ca_current_rows(values)
+        rows.extend([
+            ("Electron Flow", values.get("electron flow"), values.get("electron flow unit", "mol e-/s"), "plain"),
+            ("Absolute Electron Flow", values.get("absolute electron flow"), values.get("electron flow unit", "mol e-/s"), "plain"),
+        ])
+        if "num electrons" in values:
+            rows.append(("n", values.get("num electrons"), None, "plain"))
+            rows.append(("Faradaic Efficiency", values.get("faradaic efficiency"), None, "plain"))
+            rows.append(("Molecular Rate", values.get("molecular rate"), values.get("molecular rate unit", "mol/s"), "plain"))
+        if "catalyst moles" in values:
+            rows.append(("Catalyst Moles", values.get("catalyst moles"), "mol", "plain"))
+            rows.append(("TOF", values.get("TOF"), values.get("TOF unit", "s^-1"), "plain"))
+        return rows
+
+    def current_at_time(self, time=None, options=None):
+        """Return the CA current at a requested time by interpolation."""
+        if isinstance(time, dict) and options in ({}, None):
+            options = time
+            time = None
+        raw_options = {} if options is None else dict(options)
+        if time is None:
+            time = raw_options.pop("time", None)
+        if time is None:
+            raise ValueError("Please provide a time or 'time' option.")
+        options = self._coerce_ca_current_options(raw_options)
+        t, current, source, baseline = self._ca_current_trace_for_options(options)
+        time = float(time)
+        if time < float(np.nanmin(t)) or time > float(np.nanmax(t)):
+            raise ValueError(
+                f"Requested time ({time:g} s) is outside the data range "
+                f"({float(np.nanmin(t)):g} – {float(np.nanmax(t)):g} s)."
+            )
+        current_at = float(np.interp(time, t, current))
+
+        ax = None
+        if options.get("plot", False):
+            plot_options = dict(options)
+            if source == "corrected current":
+                plot_options["corrected current"] = True
+            ax = self.plot(plot_options)
+            scale, _unit = scale_time_axis(t, self.units.get("Time", "s"), options.get("x unit", "auto"))
+            ax.scatter([time * scale], [current_at], color=options.get("color", "black"), zorder=5)
+
+        values = {
+            "time": time,
+            "current": current_at,
+            "current source": source,
+            "time unit": self.units.get("Time", "s"),
+            "current unit": self.units.get("Current", "A"),
+        }
+        if baseline is not None:
+            values.update({
+                "baseline correction": baseline["mode"],
+                "baseline current": baseline["baseline current"],
+                "baseline time": baseline["baseline time"],
+            })
+        equations = ["i(t) = interp(i, t)"]
+        table = self._chrono_table(self._ca_current_rows(values), options)
+        self._print_chrono_table("Current At Time", equations, table, options)
+        return ChronoAnalysisResult(
+            values,
+            table=table,
+            summary={"analysis": "current_at_time", "equations": equations},
+            axes=ax,
+        )
+
+    def rate_at_time(self, time=None, options=None):
+        """Return CA electron flow, and optionally molecular rate/TOF, at a time."""
+        if isinstance(time, dict) and options in ({}, None):
+            options = time
+            time = None
+        raw_options = {} if options is None else dict(options)
+        if time is None:
+            time = raw_options.get("time", None)
+        current_options, rate_options = self._split_ca_rate_options(raw_options)
+        current_options = dict(current_options)
+        current_options["print"] = False
+
+        current_result = self.current_at_time(time, current_options)
+        rate_values = self._ca_rate_values_from_current(
+            current_result["current"],
+            rate_options,
+        )
+        values = dict(current_result)
+        values.update(rate_values)
+        equations = [
+            "electron flow = i / F",
+            "molecular rate = |i| FE / (n F)",
+            "TOF = molecular rate / catalyst moles",
+        ]
+        table_options = PlotOptions.from_options(current_options).to_options_dict()
+        table_options["pretty print"] = raw_options.get("pretty print", table_options.get("pretty print", True))
+        table_options["print"] = raw_options.get("print", True)
+        table = self._chrono_table(self._ca_rate_rows(values), table_options)
+        self._print_chrono_table("Rate At Time", equations, table, table_options)
+        return ChronoAnalysisResult(
+            values,
+            table=table,
+            summary={"analysis": "rate_at_time", "equations": equations},
+            axes=current_result.axes,
+        )
+
+    def average_current(self, time_range=None, options=None):
+        """Return the time-weighted average CA current over a time window."""
+        if isinstance(time_range, dict) and options in ({}, None):
+            options = time_range
+            time_range = None
+        raw_options = {} if options is None else dict(options)
+        if time_range is None:
+            time_range = raw_options.pop("time range", raw_options.pop("window", None))
+        options = self._coerce_ca_current_options(raw_options)
+        t, current, source, baseline = self._ca_current_trace_for_options(options)
+        t_window, current_window, resolved_range = self._time_window_arrays(t, current, time_range)
+        avg_current = float(_integrate_trapezoid(current_window, t_window) / (resolved_range[1] - resolved_range[0]))
+
+        ax = None
+        if options.get("plot", False):
+            plot_options = dict(options)
+            if source == "corrected current":
+                plot_options["corrected current"] = True
+            ax = self.plot(plot_options)
+            scale, _unit = scale_time_axis(t, self.units.get("Time", "s"), options.get("x unit", "auto"))
+            ax.axhline(avg_current, color=options.get("fit color", "tab:red"), ls="--")
+            ax.axvspan(resolved_range[0] * scale, resolved_range[1] * scale, color="0.5", alpha=0.12)
+
+        values = {
+            "time range": resolved_range,
+            "average current": avg_current,
+            "current source": source,
+            "time unit": self.units.get("Time", "s"),
+            "current unit": self.units.get("Current", "A"),
+        }
+        if baseline is not None:
+            values.update({
+                "baseline correction": baseline["mode"],
+                "baseline current": baseline["baseline current"],
+                "baseline time": baseline["baseline time"],
+            })
+        equations = ["i_avg = integral(i(t) dt) / Δt"]
+        table = self._chrono_table(self._ca_current_rows(values), options)
+        self._print_chrono_table("Average Current", equations, table, options)
+        return ChronoAnalysisResult(
+            values,
+            table=table,
+            summary={"analysis": "average_current", "equations": equations},
+            axes=ax,
+        )
+
+    def average_rate(self, time_range=None, options=None):
+        """Return average CA electron flow, and optionally molecular rate/TOF."""
+        if isinstance(time_range, dict) and options in ({}, None):
+            options = time_range
+            time_range = None
+        raw_options = {} if options is None else dict(options)
+        if time_range is None:
+            time_range = raw_options.get("time range", raw_options.get("window", None))
+        current_options, rate_options = self._split_ca_rate_options(raw_options)
+        current_options = dict(current_options)
+        current_options["print"] = False
+
+        current_result = self.average_current(time_range, current_options)
+        rate_values = self._ca_rate_values_from_current(
+            current_result["average current"],
+            rate_options,
+        )
+        values = dict(current_result)
+        values.update(rate_values)
+        equations = [
+            "electron flow = i_avg / F",
+            "molecular rate = |i_avg| FE / (n F)",
+            "TOF = molecular rate / catalyst moles",
+        ]
+        table_options = PlotOptions.from_options(current_options).to_options_dict()
+        table_options["pretty print"] = raw_options.get("pretty print", table_options.get("pretty print", True))
+        table_options["print"] = raw_options.get("print", True)
+        table = self._chrono_table(self._ca_rate_rows(values), table_options)
+        self._print_chrono_table("Average Rate", equations, table, table_options)
+        return ChronoAnalysisResult(
+            values,
+            table=table,
+            summary={"analysis": "average_rate", "equations": equations},
+            axes=current_result.axes,
+        )
+
     def _plot_charge_trace(self, t, Q, options, **mpl_kwargs):
         x_unit = self.units.get('Time', 's')
         selected = options.get('x unit', 'auto')
@@ -6740,7 +7235,7 @@ class ca(echem):
         >>> result = ca_obj.charge({"plot": False})
         >>> result["final charge"]
         """
-        options = PlotOptions.from_options(options).to_legacy_dict()
+        options = PlotOptions.from_options(options).to_options_dict()
         options.update(mpl_kwargs)
 
         t, Q = self._charge_trace()
@@ -6821,54 +7316,96 @@ class ca(echem):
         >>> ca_obj.plot({"y axis": "current"})
         """
         options = {} if options is None else dict(options)
+        options.update(mpl_kwargs)
         if (
             options.get("plot charge", False)
             and "color" not in options
-            and "color" not in mpl_kwargs
         ):
             options["color"] = "black"
+        if options.get("corrected current", False) and "baseline correction" not in options:
+            options["baseline correction"] = True
+        coerced_options = PlotOptions.from_options(options).to_options_dict()
+        current_unit, charge_unit = _resolve_ca_y_units(coerced_options.get("y unit", "auto"))
+        shared_inversion = coerced_options.get("invert y axis", False)
+        current_inversion = _resolve_axis_inversion(
+            shared_inversion,
+            coerced_options.get("invert current axis"),
+        )
+        charge_inversion = _resolve_axis_inversion(
+            shared_inversion,
+            coerced_options.get("invert charge axis"),
+        )
+        coerced_options["y unit"] = current_unit
+        coerced_options["invert y axis"] = current_inversion
 
         # extract data
         t = self.data['Time'].values
         i = self.data['Current'].values
+        baseline = None
+        current_source = "current"
+        if coerced_options.get("corrected current", False):
+            baseline = self._resolve_baseline_correction(coerced_options, t, i)
+            if baseline is None:
+                raise ValueError("'corrected current' requires baseline correction.")
+            i = baseline["corrected current"]
+            current_source = "corrected current"
 
         # plot current vs. time
-        ax1 = super().plot(options, **mpl_kwargs)
-        y0, y1 = ax1.get_ylim()
-        if y0 > 0:
-            ax1.set_ylim(bottom=0)
-        elif y1 < 0:
-            ax1.set_ylim(top=0)
+        if current_source == "corrected current":
+            plot_options = dict(coerced_options)
+            ax1 = self._plot_helper(np.asarray(t, dtype=float), np.asarray(i, dtype=float), plot_options)
+        else:
+            ax1 = super().plot(coerced_options)
+        _set_axis_inversion(ax1, current_inversion)
+        _include_zero_preserving_axis_direction(ax1)
         #ax1.set_xlabel(f"Time ({self.units.get('Time','s')})")
         #ax1.set_ylabel(f"Current ({self.units.get('Current','A')})")
 
         # optional cumulative charge curve
-        if options.get('plot charge', False):
+        if coerced_options.get('plot charge', False):
             x_unit = self.units.get('Time', 's')
-            selected = options.get('x unit', 'auto')
+            selected = coerced_options.get('x unit', 'auto')
             scale, _ = scale_time_axis(t, x_unit, selected)
             t_plot = t * scale
             _, Q = self._charge_trace()
-            baseline = self._resolve_baseline_correction(options, t, i)
+            if baseline is None:
+                baseline = self._resolve_baseline_correction(coerced_options, t, self.data['Current'].values)
             if baseline is not None:
                 Q = baseline["corrected charge"]
+            charge_scale, charge_unit_label = self.scale_axis(
+                np.asarray(Q, dtype=float),
+                "Charge",
+                "C",
+                charge_unit,
+            )
+            Q_plot = np.asarray(Q, dtype=float) * charge_scale
             ax2 = ax1.twinx()
-            charge_color = options.get('charge color', 'tab:red')
-            ax2.plot(t_plot, Q, color=charge_color, label='Charge')
-            ax2.set_ylabel('Charge (C)', color=charge_color)
+            charge_color = coerced_options.get('charge color', 'tab:red')
+            ax2.plot(t_plot, Q_plot, color=charge_color, label='Charge')
+            ax2.set_ylabel(
+                self.format_axis_label(
+                    "Charge",
+                    charge_unit_label,
+                    coerced_options.get("symbol labels", "auto"),
+                ),
+                color=charge_color,
+            )
+            _include_zero_preserving_axis_direction(ax2)
+            _set_axis_inversion(ax2, charge_inversion)
+            _apply_ecat_axis_style(ax2, coerced_options)
             ax2.spines['right'].set_color(charge_color)
             ax2.tick_params(axis='y', colors=charge_color)
             ax2.tick_params(which='minor', axis='y', colors=charge_color)
 
             # combined legend
-            if options.get('legend', False):
+            if coerced_options.get('legend', False):
                 h1, l1 = ax1.get_legend_handles_labels()
                 h2, l2 = ax2.get_legend_handles_labels()
                 ax1.legend(h1 + h2, l1 + l2)
 
             return ax1
         else:
-            if options.get('legend', False):
+            if coerced_options.get('legend', False):
                 ax1.legend()
 
         return ax1
@@ -6897,7 +7434,7 @@ class ca(echem):
         if isinstance(charge, dict) and options in ({}, None):
             options = charge
             charge = None
-        options = PlotOptions.from_options(options).to_legacy_dict()
+        options = PlotOptions.from_options(options).to_options_dict()
 
         target_charge = self._resolve_charge_target(options, charge=charge)
         if target_charge is None:

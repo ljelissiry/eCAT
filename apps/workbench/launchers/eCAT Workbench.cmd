@@ -10,14 +10,6 @@ echo eCAT Workbench launch started. > "%LOG_FILE%"
 echo Launcher directory: %LAUNCHER_DIR% >> "%LOG_FILE%"
 echo Matplotlib config: %MPLCONFIGDIR% >> "%LOG_FILE%"
 
-where ecat-app >nul 2>nul
-if not errorlevel 1 (
-  echo Trying installed ecat-app command. >> "%LOG_FILE%"
-  ecat-app --port 0 >> "%LOG_FILE%" 2>&1
-  if not errorlevel 1 exit /b 0
-  echo Installed ecat-app failed with status %ERRORLEVEL%. >> "%LOG_FILE%"
-)
-
 set "SEARCH_DIR=%LAUNCHER_DIR:~0,-1%"
 :find_repo
 if exist "%SEARCH_DIR%\apps\workbench\app.py" (
@@ -49,10 +41,20 @@ call :try_python python3
 if not errorlevel 1 exit /b 0
 
 echo Repository launcher failed. >> "%LOG_FILE%"
-goto failure
+goto installed_fallback
 
 :repo_missing
 echo Could not find repository root. >> "%LOG_FILE%"
+goto installed_fallback
+
+:installed_fallback
+where ecat-app >nul 2>nul
+if not errorlevel 1 (
+  echo Trying installed ecat-app command. >> "%LOG_FILE%"
+  ecat-app --port 0 >> "%LOG_FILE%" 2>&1
+  if not errorlevel 1 exit /b 0
+  echo Installed ecat-app failed with status !ERRORLEVEL!. >> "%LOG_FILE%"
+)
 goto failure
 
 :try_python
@@ -76,11 +78,11 @@ echo. >> "%LOG_FILE%"
 echo Install or update the app dependencies from the eCAT repository folder: >> "%LOG_FILE%"
 echo. >> "%LOG_FILE%"
 if defined REPO_ROOT echo cd /d "%REPO_ROOT%" >> "%LOG_FILE%"
-echo python -m pip install -e . >> "%LOG_FILE%"
+echo python -m pip install -e ".[app]" >> "%LOG_FILE%"
 echo. >> "%LOG_FILE%"
 echo If you use a specific Python, set ECAT_PYTHON to that interpreter. >> "%LOG_FILE%"
 exit /b 0
 
 :show_failure_popup
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$repo=$env:REPO_ROOT; $lines=@('Install or update the app dependencies from the eCAT repository folder:',''); if ($repo) { $lines += 'cd /d \"' + $repo + '\"' }; $lines += 'python -m pip install -e .'; $lines += ''; $lines += 'Log: ' + $env:LOG_FILE; $lines += ''; $lines += 'If you use a specific Python, set ECAT_PYTHON to that interpreter.'; Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show(($lines -join [Environment]::NewLine), 'eCAT Workbench could not start', 'OK', 'Error')" >nul 2>nul
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$repo=$env:REPO_ROOT; $lines=@('Install or update the app dependencies from the eCAT repository folder:',''); if ($repo) { $lines += 'cd /d \"' + $repo + '\"' }; $lines += 'python -m pip install -e \".[app]\"'; $lines += ''; $lines += 'Log: ' + $env:LOG_FILE; $lines += ''; $lines += 'If you use a specific Python, set ECAT_PYTHON to that interpreter.'; Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show(($lines -join [Environment]::NewLine), 'eCAT Workbench could not start', 'OK', 'Error')" >nul 2>nul
 exit /b 0

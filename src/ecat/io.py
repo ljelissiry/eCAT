@@ -1,23 +1,29 @@
 """Data-loading helpers."""
 
 import glob
+import json
 import os
 import re
+import warnings
 
 import numpy as np
 import pandas as pd
 
-from .metadata import get_file_times
-from .options import ImportOptions, import_options_to_legacy_dict
+from .options import ImportOptions, resolve_import_options
 from .utils import (
     _format_path_for_display,
-    apply_text_alterations,
     count_segments,
-    get_conversion_factor,
     resolve_electrode_area_option,
     round_sigfigs,
 )
-from .objects import _normalize_parser_settings, ca, cp, cv, dpv, echem
+from .objects import (
+    _canonicalize_standard_data_units,
+    ca,
+    cp,
+    cv,
+    dpv,
+    echem,
+)
 from .plotting import _coerce_display_columns, show_objects
 from .collection import sort
 from .reference import (
@@ -32,9 +38,32 @@ from .reference import (
     _print_reference_usage_troubleshoot,
     _resolve_reference_shifts,
     canonical_reference_label,
-    normalize_legacy_reference_options,
     resolve_reference_options,
 )
+
+
+def _append_unique_warning(messages, warning):
+    text = str(getattr(warning, "message", warning)).strip()
+    if text and text not in messages:
+        messages.append(text)
+
+
+def _run_with_captured_import_warnings(messages, func, *args, **kwargs):
+    with warnings.catch_warnings(record=True) as captured:
+        warnings.simplefilter("always", UserWarning)
+        result = func(*args, **kwargs)
+    for warning in captured:
+        _append_unique_warning(messages, warning)
+    return result
+
+
+def _print_import_warnings(messages):
+    if not messages:
+        return
+    print("Import warnings:")
+    for message in messages:
+        print(f"  - {message}")
+    print()
 
 
 def _relative_folderpath(folder, root):
@@ -152,304 +181,6 @@ def _parse_scan_rate_from_name(name):
     return value * factor
 
 
-def _parse_scan_rate_from_text_lines(lines):
-    """
-    Parse scan-rate metadata from common text-export headers.
-    """
-    for line in lines:
-        match = re.search(
-            r"scan\s*rate\s*(?:\([^)]*\))?\s*=\s*([-+]?\d+(?:\.\d+)?(?:[eE][-+]?\d+)?)",
-            line,
-            flags=re.IGNORECASE,
-        )
-        if match:
-            return float(match.group(1))
-    return None
-
-
-def _parse_unit_from_text_column(column_name, default=None):
-    """
-    Extract a unit from labels like 'Potential/V', 'Current (A)', or
-    'WE(1).Current (uA)'.
-    """
-    text = str(column_name).strip()
-    paren = re.search(r"\(([^()]+)\)\s*$", text)
-    if paren:
-        return paren.group(1).strip()
-
-    slash = re.search(r"/\s*([^\s,/;]+)\s*$", text)
-    if slash:
-        return slash.group(1).strip()
-
-    return default
-
-
-def _standardize_cv_text_columns(df):
-    """
-    Pick potential/current columns from a real text CV table and normalize to
-    eCAT's standard Potential/Current columns in V and A when units are known.
-    """
-    potential_cols = [
-        col for col in df.columns
-        if "potential" in str(col).lower()
-    ]
-    current_cols = [
-        col for col in df.columns
-        if "current" in str(col).lower()
-        and "range" not in str(col).lower()
-    ]
-
-    if not potential_cols or not current_cols:
-        raise ValueError(
-            "Could not identify potential/current columns. "
-            f"Available columns: {list(df.columns)}"
-        )
-
-    potential_col = potential_cols[0]
-    current_col = current_cols[0]
-
-    potential_unit = _parse_unit_from_text_column(potential_col, default="V")
-    current_unit = _parse_unit_from_text_column(current_col, default="A")
-
-    out = pd.DataFrame(
-        {
-            "Potential": pd.to_numeric(df[potential_col], errors="coerce"),
-            "Current": pd.to_numeric(df[current_col], errors="coerce"),
-        }
-    ).dropna(how="any").reset_index(drop=True)
-
-    if out.empty:
-        raise ValueError("No numeric potential/current rows were found.")
-
-    try:
-        out["Potential"] *= get_conversion_factor(potential_unit, "V")
-        potential_unit = "V"
-    except Exception:
-        pass
-
-    try:
-        out["Current"] *= get_conversion_factor(current_unit, "A")
-        current_unit = "A"
-    except Exception:
-        pass
-
-    return out, {"Potential": potential_unit, "Current": current_unit}
-
-
-def _read_cv_text_table(filepath):
-    """
-    Read a CV text export with automatic table-start, delimiter, and decimal
-    detection. Handles European semicolon/comma tables, tab-delimited tables,
-    and CH-style metadata followed by a potential/current table.
-    """
-    with open(filepath, "r", encoding="utf-8", errors="replace") as handle:
-        lines = handle.read().splitlines()
-
-    header_idx = None
-    for idx, line in enumerate(lines):
-        lower = line.lower()
-        if "potential" in lower and "current" in lower:
-            header_idx = idx
-            break
-
-    if header_idx is None:
-        raise ValueError("Could not find a potential/current table header.")
-
-    header_line = lines[header_idx]
-
-    if ";" in header_line:
-        sep = ";"
-        decimal = ","
-        engine = None
-    elif "\t" in header_line:
-        sep = "\t"
-        decimal = "."
-        engine = None
-    elif "," in header_line:
-        # Some CH exports use a comma-delimited header followed by tab data.
-        sep = r"[,\t]+"
-        decimal = "."
-        engine = "python"
-    else:
-        sep = r"\s+"
-        decimal = "."
-        engine = "python"
-
-    read_kwargs = {
-        "sep": sep,
-        "skiprows": header_idx,
-        "decimal": decimal,
-        "encoding": "utf-8",
-    }
-    if engine is not None:
-        read_kwargs["engine"] = engine
-
-    df = pd.read_csv(filepath, **read_kwargs)
-    df.columns = [str(col).strip() for col in df.columns]
-    df = df.dropna(how="all", axis=1)
-
-    return _standardize_cv_text_columns(df)
-
-
-def _make_cv_object_from_text_file(filepath, options=None, root_abs=None):
-    """
-    Build a file-backed cv object from a flexible real text CV export.
-    """
-    options = import_options_to_legacy_dict(options)
-    filepath = os.path.abspath(filepath)
-    root_abs = os.path.abspath(root_abs) if root_abs is not None else os.path.dirname(filepath)
-
-    data, units = _read_cv_text_table(filepath)
-    with open(filepath, "r", encoding="utf-8", errors="replace") as handle:
-        lines = handle.read().splitlines()
-
-    obj = cv.__new__(cv)
-    obj.filepath = filepath
-    obj.options = dict(options)
-    obj.timestamp = None
-    try:
-        obj.creation_time, obj.modification_time = get_file_times(filepath)
-    except OSError:
-        obj.creation_time = None
-        obj.modification_time = None
-
-    obj.name = os.path.basename(filepath[:filepath.rindex(".")])
-    obj.name = apply_text_alterations(
-        obj.name,
-        options.get("name alterations")
-    )
-    obj.type = "Cyclic Voltammetry"
-    obj.software = "Text CV"
-    obj.num_x_cols = 1
-    obj.data = data
-    obj.units = units
-
-    obj.temperature = options.get("temperature", 298)
-    obj.electrode_area = resolve_electrode_area_option(options)
-    obj.gas = options.get("gas")
-    obj.solvent = options.get("solvent")
-
-    obj.reference_shift = None
-    obj.reference_label = None
-    obj.reference_mode = "none"
-    obj.reference_source_file = None
-    obj.reference_failure_message = None
-
-    obj.folderpath = _relative_folderpath(os.path.dirname(filepath), root_abs)
-
-    parser_settings = options.get("parser settings")
-    obj.get_data_from_name(parser_settings)
-    compounds, concentrations = obj.extract_compounds_and_concentrations(
-        options.get("compounds"),
-        parser_settings=parser_settings,
-    )
-    metadata = {
-        "gas": obj.gas,
-        "solvent": obj.solvent,
-        "compounds": compounds,
-        "concentrations": concentrations,
-    }
-    metadata = obj._apply_custom_parser_metadata(metadata, options)
-    obj.gas = metadata.get("gas", obj.gas)
-    obj.solvent = metadata.get("solvent", obj.solvent)
-    obj.compounds = metadata.get("compounds", [])
-    obj.concentrations = metadata.get("concentrations", [])
-
-    scan_rate = _parse_scan_rate_from_text_lines(lines)
-    if scan_rate is None:
-        scan_rate = _parse_scan_rate_from_name(obj.name)
-    if scan_rate is None:
-        scan_rate = options.get("scan rate")
-    prefer_file_metadata = _normalize_parser_settings(parser_settings)["prefer file metadata"]
-    custom_scan_rate = metadata.get("scan rate", None)
-    if custom_scan_rate is not None and (scan_rate is None or not prefer_file_metadata):
-        scan_rate = float(custom_scan_rate)
-    obj.scan_rate = scan_rate
-
-    x = obj.data["Potential"].to_numpy(dtype=float)
-    obj.init_E = float(x[0]) if len(x) else None
-    obj.final_E = float(x[-1]) if len(x) else None
-    obj.min_E = float(np.min(x)) if len(x) else None
-    obj.max_E = float(np.max(x)) if len(x) else None
-    obj.segments = count_segments(x) if len(x) else 0
-    obj.delta_x = float(abs(x[1] - x[0])) if len(x) > 1 else None
-
-    if options.get("convert current", False):
-        obj.current_to(options["convert current"])
-    if options.get("invert current", False):
-        obj.invert_current()
-    if options.get("shift potential"):
-        obj.potential_shift(options)
-
-    obj._refresh_parse_result(parser="Text CV")
-    return obj
-
-
-def get_CVs(options=None):
-    """
-    Load CV text files from a folder as eCAT cv objects.
-
-    This is a CV-specific companion to get_data() for practical notebook
-    workflows where text exports use mixed delimiters, decimal conventions,
-    and minimal instrument metadata.
-    """
-    typed_options = ImportOptions.from_options(options)
-    options = typed_options.to_legacy_dict()
-
-    folder_path = os.path.expanduser(options.get("folder path", "."))
-    root_abs = os.path.abspath(folder_path)
-    glob_root = glob.escape(root_abs)
-    recursive = options.get("recursive search", True)
-    recursive_search = "recursively" if recursive else "exclusively"
-
-    if not os.path.exists(root_abs):
-        print(f"Folder does not exist:\n{_format_path_for_display(root_abs)}")
-        return []
-    if not os.path.isdir(root_abs):
-        print(f"Path exists but is not a folder:\n {_format_path_for_display(root_abs)}")
-        return []
-
-    print(
-        "Searching "
-        f"{recursive_search} for CV text files through:\n "
-        f"{_format_path_for_display(root_abs)}"
-    )
-
-    search_pattern = os.path.join(glob_root, "**", "*.txt") if recursive else os.path.join(glob_root, "*.txt")
-    file_paths = sorted(
-        (os.path.abspath(p) for p in glob.glob(search_pattern, recursive=recursive)),
-        key=lambda p: os.path.normcase(os.path.relpath(p, root_abs)),
-    )
-
-    if not file_paths:
-        print(f"No .txt files were found in the folder:\n {_format_path_for_display(root_abs)}")
-        return []
-
-    cvs = []
-    failures = []
-    for filepath in file_paths:
-        try:
-            cvs.append(_make_cv_object_from_text_file(filepath, options, root_abs=root_abs))
-        except Exception as exc:
-            failures.append((filepath, exc))
-
-    print(f"{len(cvs)} CV file(s) loaded.")
-    if failures:
-        print(f"{len(failures)} file(s) skipped because no CV table could be loaded.")
-        if options.get("troubleshoot"):
-            for filepath, exc in failures:
-                rel = os.path.relpath(filepath, root_abs)
-                print(f"  {rel}: {type(exc).__name__}: {exc}")
-
-    if not cvs:
-        return []
-
-    if options.get("print", False):
-        show_objects(cvs, options)
-
-    return cvs
-
-
 def _make_cv_object_from_dataframe(
     display_name,
     cv_data,
@@ -520,9 +251,6 @@ def _make_cv_object_from_dataframe(
     obj.max_E = float(np.max(x)) if len(x) else None
     obj.segments = count_segments(x) if len(x) else 0
     obj.delta_x = float(abs(x[1] - x[0])) if len(x) > 1 else None
-
-    if options.get("convert current", False):
-        obj.current_to(options["convert current"])
 
     if options.get("invert current", False):
         obj.invert_current()
@@ -606,6 +334,19 @@ def _manifest_int(row, lookup, *names, default=None):
     if value is None:
         return default
     return int(value)
+
+
+def _manifest_json(row, lookup, *names, default=None):
+    value = _manifest_value(row, lookup, *names, default=None)
+    if value is None:
+        return default
+    if isinstance(value, (dict, list)):
+        return value
+    try:
+        return json.loads(str(value))
+    except (TypeError, ValueError) as exc:
+        field = names[0] if names else "manifest field"
+        raise ValueError(f"Excel manifest '{field}' must contain valid JSON.") from exc
 
 
 def _split_manifest_compounds(value):
@@ -705,7 +446,9 @@ def _make_object_from_excel_manifest(class_key, name, data, units, row, lookup, 
     obj.type = type_value
     obj.software = _manifest_value(row, lookup, "Software", default="Excel")
     obj.data = data.reset_index(drop=True)
-    obj.units = units
+    obj.units = dict(units)
+    original_units = dict(obj.units)
+    _canonicalize_standard_data_units(obj.data, obj.units)
     obj.num_x_cols = _leading_excel_axis_column_count(obj.data.columns)
 
     obj.temperature = _manifest_float(row, lookup, "Temperature", default=options.get("temperature", 298))
@@ -753,7 +496,29 @@ def _make_object_from_excel_manifest(class_key, name, data, units, row, lookup, 
         obj.quiet_time = _manifest_float(row, lookup, "Quiet Time", default=None)
     elif class_key in {"cp", "dpv"}:
         obj.quiet_time = _manifest_float(row, lookup, "Quiet Time", default=None)
-    obj._refresh_parse_result(parser="Excel manifest")
+    obj._refresh_parse_result(
+        parser="Excel manifest",
+        raw_metadata={"original_units": original_units},
+    )
+    processing_history = _manifest_json(
+        row,
+        lookup,
+        "Processing History",
+        default=None,
+    )
+    if processing_history is not None:
+        if not isinstance(processing_history, list):
+            raise ValueError("Excel manifest 'Processing History' must contain a JSON list.")
+        obj.processing_history = processing_history
+        filters = [
+            item for item in processing_history
+            if isinstance(item, dict) and item.get("operation") == "filter"
+        ]
+        if filters:
+            obj.filter_metadata = {
+                key: value for key, value in filters[-1].items()
+                if key != "operation"
+            }
     return obj
 
 
@@ -827,7 +592,7 @@ def _create_data_objects_from_excel(file_path, options=None):
     4. A current column first looks for local axes immediately to its right.
     5. If none exist, it inherits the most recent axis block to its left.
     """
-    options = import_options_to_legacy_dict(options)
+    options = resolve_import_options(options)
 
     try:
         workbook_info = pd.ExcelFile(file_path, engine="openpyxl")
@@ -1002,7 +767,6 @@ def get_data_from_excel(file_path, options=None):
 
 __all__ = [
     "get_data",
-    "get_CVs",
     "get_data_from_excel",
 ]
 
@@ -1028,17 +792,15 @@ def get_data(options=None):
     # 1. Normalize user options
     # ---------------------------
     typed_options = ImportOptions.from_options(options)
-    options = typed_options.to_legacy_dict()
-    options = normalize_legacy_reference_options(options)
+    options = typed_options.to_options_dict()
     reference_config = resolve_reference_options(options)
     reference_label = reference_config.get("label", None)
 
-    user_supplied_reference_label = (
-            "reference label" in options or "shift label" in options
-    )
+    user_supplied_reference_label = "reference_label" in typed_options._provided_options
 
     folder_path = os.path.expanduser(options.get("folder path", "."))
     root_abs = os.path.abspath(folder_path)
+    options["_display root"] = root_abs
     glob_root = glob.escape(root_abs)
 
     recursive = options.get("recursive search", True)
@@ -1107,22 +869,28 @@ def get_data(options=None):
     # ---------------------------
     # 3. Build raw objects and sort
     # ---------------------------
+    import_warnings = []
     raw_file_options = options.copy()
-    raw_file_options["shift label"] = reference_label
-    raw_file_options["shift guess"] = None
-    raw_file_options["shift potential"] = False
+    raw_file_options["reference label"] = reference_label
+    raw_file_options["reference mode"] = "none"
     raw_file_options["print"] = False
 
     object_list = []
     for filepath in file_paths:
         if options.get("troubleshoot", False):
-            print("Getting data from", _format_path_for_display(filepath, root_abs))
+            display_name = _format_reference_display(filepath, root_abs, quote=True)
+            print(f"Getting data from {display_name}")
 
         try:
-            echem_object = echem.from_file(filepath, raw_file_options.copy())
+            echem_object = _run_with_captured_import_warnings(
+                import_warnings,
+                echem.from_file,
+                filepath,
+                raw_file_options.copy(),
+            )
         except Exception as exc:
-            display_name = _format_reference_display(filepath, root_abs)
-            print(f"Warning: could not convert {display_name}: {exc}")
+            display_name = _format_reference_display(filepath, root_abs, quote=True)
+            print(f"Warning: could not convert {display_name}: {type(exc).__name__}: {exc}")
             continue
 
         file_folder = os.path.dirname(filepath)
@@ -1133,7 +901,7 @@ def get_data(options=None):
         print("No .txt files could be converted into eCAT objects.")
         return []
 
-    sort_keys = options.get("sort keys", ["timestamp"])
+    sort_keys = options.get("sort keys", ["subfolder", "timestamp"])
     if isinstance(sort_keys, str):
         sort_keys = [sort_keys]
     if sort_keys:
@@ -1154,8 +922,8 @@ def get_data(options=None):
     # ---------------------------
     # 5. Resolve reference assignments
     # ---------------------------
-    # Keep current _resolve_reference_shifts() machinery for now by feeding it
-    # a legacy-compatible shim.
+    # Adapt the canonical reference configuration to the resolver's internal
+    # assignment structure.
     reference_info = {
         "use_reference_files": False,
         "ref_name": None,
@@ -1169,16 +937,19 @@ def get_data(options=None):
     explicit_reference_shift = None
 
     if reference_mode == "keyword":
-        legacy_ref_options = options.copy()
-        legacy_ref_options["shift potential"] = reference_config.get("keyword")
-        legacy_ref_options["shift guess"] = reference_guess
-        legacy_ref_options["shift label"] = reference_label
-        legacy_ref_options["allow self reference"] = reference_config.get("allow self reference", True)
+        reference_options = options.copy()
+        reference_options["reference mode"] = "keyword"
+        reference_options["reference keyword"] = reference_config.get("keyword")
+        reference_options["reference guess"] = reference_guess
+        reference_options["reference label"] = reference_label
+        reference_options["allow self reference"] = reference_config.get("allow self reference", True)
 
-        reference_info = _resolve_reference_shifts(
+        reference_info = _run_with_captured_import_warnings(
+            import_warnings,
+            _resolve_reference_shifts,
             file_paths=file_paths,
             root_abs=root_abs,
-            options=legacy_ref_options,
+            options=reference_options,
         )
         reference_info["chosen_keyword"] = reference_config.get("keyword")
 
@@ -1187,17 +958,20 @@ def get_data(options=None):
         last_error = None
 
         for keyword in keywords:
-            legacy_ref_options = options.copy()
-            legacy_ref_options["shift potential"] = keyword
-            legacy_ref_options["shift guess"] = reference_guess
-            legacy_ref_options["shift label"] = reference_label
-            legacy_ref_options["allow self reference"] = reference_config.get("allow self reference", True)
+            reference_options = options.copy()
+            reference_options["reference mode"] = "keyword"
+            reference_options["reference keyword"] = keyword
+            reference_options["reference guess"] = reference_guess
+            reference_options["reference label"] = reference_label
+            reference_options["allow self reference"] = reference_config.get("allow self reference", True)
 
             try:
-                candidate_info = _resolve_reference_shifts(
+                candidate_info = _run_with_captured_import_warnings(
+                    import_warnings,
+                    _resolve_reference_shifts,
                     file_paths=file_paths,
                     root_abs=root_abs,
-                    options=legacy_ref_options,
+                    options=reference_options,
                 )
 
                 # Accept first successful keyword that actually produced a mapping
@@ -1223,7 +997,9 @@ def get_data(options=None):
 
     elif reference_mode == "file":
         explicit_reference_file, explicit_reference_shift = (
-            _compute_explicit_reference_file_shift(
+            _run_with_captured_import_warnings(
+                import_warnings,
+                _compute_explicit_reference_file_shift,
                 reference_config=reference_config,
                 root_abs=root_abs,
                 options=options,
@@ -1293,8 +1069,10 @@ def get_data(options=None):
                 else:
                     # Self-reference failed -> fall back to the designated nearest-ancestor reference
                     if assigned_ref_file is None:
+                        display_name = _format_reference_display(filepath_abs, root_abs, quote=True)
                         raise ValueError(
-                            f"No designated folder/ancestor reference file was available for fallback: {filepath_abs}"
+                            "No designated folder/ancestor reference file was "
+                            f"available for fallback: {display_name}"
                         )
 
                     fallback_shift = ref_shift_guess[assigned_ref_file]
@@ -1314,11 +1092,18 @@ def get_data(options=None):
                     try:
                         shift_guess = ref_shift_guess[assigned_ref_file]
 
-                        record["mode"] = "folder"
-                        record["ref_file"] = assigned_ref_file
+                        if (
+                            reference_config.get("allow self reference", True)
+                            and is_folder_reference
+                        ):
+                            record["mode"] = "self"
+                            record["ref_file"] = filepath_abs
+                        else:
+                            record["mode"] = "folder"
+                            record["ref_file"] = assigned_ref_file
                         record["shift"] = shift_guess
                     except KeyError as exc:
-                        display_name = _format_reference_display(assigned_ref_file, root_abs)
+                        display_name = _format_reference_display(assigned_ref_file, root_abs, quote=True)
                         raise ValueError(
                             f"Reference shift assignment failed for: {display_name}\n"
                             "The designated folder/ancestor reference file was selected, but no "
@@ -1346,6 +1131,9 @@ def get_data(options=None):
         reference_label=reference_label,
         options=options,
     )
+
+    if options.get("print", False) and options.get("warnings", True):
+        _print_import_warnings(import_warnings)
 
     _print_reference_correction_summary(
         reference_config=reference_config,
@@ -1385,7 +1173,4 @@ def get_data(options=None):
 
 def parse_file(filepath, options=None):
     """Load one file and return its standardized parser contract."""
-    obj = echem.from_file(filepath, options)
-    if getattr(obj, "parse_result", None) is None:
-        obj._refresh_parse_result()
-    return obj.parse_result
+    return echem.parse_file_to_result(filepath, options)

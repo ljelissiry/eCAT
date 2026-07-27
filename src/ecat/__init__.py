@@ -3,7 +3,6 @@
 Common starting points:
     echem.from_file(path)
     get_data({"folder path": path})
-    get_CVs({"folder path": path})
     multiplot(objects)
     animate(obj_or_list)
     open_app()
@@ -55,7 +54,7 @@ from .analysis_batch import (
     tafel_analysis,
     trumpet_analysis,
 )
-from .analysis_cv import normalize, normalize_current, scale_current
+from .analysis_cv import normalize, normalize_current, scale_current, trim
 from .animation import animate
 from .app import open_app
 from .collection import (
@@ -68,7 +67,7 @@ from .collection import (
 )
 from .utils import describe_options
 from .export import save_data
-from .io import get_CVs, get_data, get_data_from_excel, parse_file
+from .io import get_data, get_data_from_excel, parse_file
 from .objects import CVAnalysisResult, ChronoAnalysisResult, ca, cp, cv, dpv, echem
 from .plotting import (
     ScatterFitResult,
@@ -83,6 +82,7 @@ from .plotting import (
 from .results import AnalysisResult
 from .parsers import ParseResult
 from .options import (
+    CVFilterOptions,
     FilterOptions,
     FitPeakCurrentOptions,
     FitPeakPotentialOptions,
@@ -120,6 +120,7 @@ __all__ = [
     "ParseResult",
     "CVAnalysisResult",
     "ChronoAnalysisResult",
+    "CVFilterOptions",
     "ScatterFitResult",
     "echem",
     "cv",
@@ -128,7 +129,6 @@ __all__ = [
     "dpv",
     "get_data",
     "parse_file",
-    "get_CVs",
     "get_data_from_excel",
     "multiplot",
     "multimultiplot",
@@ -158,6 +158,7 @@ __all__ = [
     "normalize",
     "normalize_current",
     "scale_current",
+    "trim",
     "plotting_style",
     "describe_options",
     "get_defaults",

@@ -16,7 +16,6 @@ def test_split_module_boundaries_preserve_public_object_identity():
         ],
         "ecat.io": [
             "get_data",
-            "get_CVs",
             "get_data_from_excel",
         ],
         "ecat.plotting": [
@@ -52,7 +51,6 @@ def test_split_module_boundaries_preserve_public_object_identity():
         "ecat.reference": [
             "midpoint_potential",
             "find_reference_midpoint_from_cv",
-            "normalize_legacy_reference_options",
             "canonical_reference_label",
             "resolve_reference_options",
         ],
@@ -75,6 +73,7 @@ def test_parser_module_exposes_parser_helpers_used_by_implementation():
 
     expected = [
         "ParseResult",
+        "parse_text_file_to_result",
         "parse_ch_timestamp",
         "parse_duration_seconds",
         "parse_quiet_time_from_lines",
@@ -123,7 +122,6 @@ def test_io_module_owns_cv_specific_loading_helpers_used_by_implementation():
     from ecat import io
 
     expected = [
-        "get_CVs",
         "get_data_from_excel",
     ]
 

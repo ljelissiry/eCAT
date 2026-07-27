@@ -1,10 +1,12 @@
 .venv/
+.local_tests/
 __pycache__/
 .pytest_cache/
 *.pyc
 *.egg-info/
 build/
 dist/
+packaging/
 .DS_Store
 .idea/
 .ipynb_checkpoints/
@@ -24,11 +26,15 @@ htmlcov/
 docs/app_todo.md
 docs/app_ui_design_criteria.md
 docs/assets/
+docs/_private/
 docs/github_image_assets.md
 docs/google_form_response_sheet_columns.csv
+docs/pools_equilibria_fitting_handoff.md
+docs/parser_implementation_handoff.md
 docs/todo.md
 eCAT Logo v1.png
 eCAT Guide.docx
+pkcs11.txt
 tmp_docx_render/
 tmp_docx_*.docx
 pytest-cache-files-*/
@@ -36,3 +42,4 @@ notebooks/*.ek
 notebooks/_outputs/
 notebooks/_scratch/
 tests/tmp_real_examples/
+tests/tmp_parser_examples/

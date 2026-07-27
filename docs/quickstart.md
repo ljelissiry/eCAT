@@ -37,6 +37,22 @@ ax = obj.plot({
 ```python
 co2 = e.filter(data, {"gas": "CO2"}, {"print": False})
 
+co2_titration = e.filter(
+    data,
+    {
+        "species": ["1mM[Co]", "3mMFc", "2.8MH2O"],
+        "gas": "CO2",
+        "replicate": -1,
+    },
+    {"print": False},
+)
+
+optional_additive = e.filter(
+    data,
+    {"species": {"any": ["PhOH", "H2O"]}},
+    {"print": False},
+)
+
 grouped = e.sort_and_group(
     data,
     sort_keys=["gas", "scan rate"],
@@ -44,6 +60,10 @@ grouped = e.sort_and_group(
     options={"print": False},
 )
 ```
+
+For `compounds`, `concentrations`, and `species`, a list means all listed values
+must be present. Use `{"any": [...]}` inside the key when you want any-of
+matching. Scalar keys such as `gas` still treat lists as any-of.
 
 ## Run Peak Analysis
 

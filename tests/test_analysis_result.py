@@ -129,8 +129,11 @@ def test_plateau_current_returns_explicit_table_analysis_result(ecat_module):
 
     assert isinstance(result, ecat_module.AnalysisResult)
     assert result["data"] is result.table
-    assert result.table["kobs"].iloc[0] == pytest.approx(result.table.loc[0, "kobs"])
-    assert result.table.loc[0, "formula mode"] == "normalized"
+    assert list(result.table.columns) == ["Metric", "Value"]
+    assert "kobs" in set(result.table["Metric"])
+    assert result.summary["formula mode"] == "normalized"
+    assert result.summary["kobs"] > 0
+    assert result.diagnostics["plateau details"].loc[0, "formula mode"] == "normalized"
     with pytest.raises(KeyError):
         result["kobs"]
 

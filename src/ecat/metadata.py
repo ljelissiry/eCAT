@@ -74,6 +74,57 @@ def concentration_to_float(concentration_str):
 
 
 SUBSCRIPT_TRANSLATION = str.maketrans("0123456789+-()", "₀₁₂₃₄₅₆₇₈₉⁺⁻₍₎")
+SUPERSCRIPT_TRANSLATION = str.maketrans("0123456789+-", "⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻")
+
+
+_CHARGE_SIGN_RE = r"[+\-−]"
+_CHARGE_PIECE_RE = rf"(?:\d+{_CHARGE_SIGN_RE}|{_CHARGE_SIGN_RE}\d+|{_CHARGE_SIGN_RE}|0)"
+_CHARGE_TOKEN_RE = re.compile(
+    rf"(?P<charge>(?:{_CHARGE_PIECE_RE})(?:/{_CHARGE_PIECE_RE})+|"
+    r"\d+[+-]|[+-]\d+|[+-])(?=$|[\s,;)])"
+)
+
+
+def _format_charge_token(token, mode):
+    if mode == "html":
+        return f"<sup>{token.replace('-', '−')}</sup>"
+    if mode == "unicode":
+        return token.replace("−", "-").translate(SUPERSCRIPT_TRANSLATION)
+    if mode == "mathtext":
+        return "$^{" + token.replace("−", "-").replace("-", r"-") + "}$"
+    raise ValueError("mode must be one of: 'mathtext', 'html', 'unicode', 'plain'")
+
+
+def _charge_has_formula_prefix(text, start):
+    if start <= 0:
+        return False
+    before = text[:start]
+    token = re.split(r"[\s,;/]+", before)[-1]
+    if not token:
+        return False
+    if token[-1] in "])":
+        return True
+    return bool(re.search(r"[A-Z]", token))
+
+
+def _protect_charge_notation(label, mode):
+    replacements = {}
+    parts = []
+    last = 0
+    index = 0
+    for match in _CHARGE_TOKEN_RE.finditer(label):
+        if not _charge_has_formula_prefix(label, match.start()):
+            continue
+        placeholder = f"\ue000ECAT_CHARGE_{index}\ue001"
+        replacements[placeholder] = _format_charge_token(match.group("charge"), mode)
+        parts.append(label[last:match.start()])
+        parts.append(placeholder)
+        last = match.end()
+        index += 1
+    if not replacements:
+        return label, replacements
+    parts.append(label[last:])
+    return "".join(parts), replacements
 
 
 def format_chemical_formulas(label, mode="mathtext"):
@@ -92,6 +143,8 @@ def format_chemical_formulas(label, mode="mathtext"):
 
     if mode == "plain":
         return label
+
+    label, charge_replacements = _protect_charge_notation(label, mode)
 
     formula_pattern = r"([A-Za-z\(\)\]\-\+]+)(\d*)"
 
@@ -116,7 +169,10 @@ def format_chemical_formulas(label, mode="mathtext"):
             "mode must be one of: 'mathtext', 'html', 'unicode', 'plain'"
         )
 
-    return re.sub(formula_pattern, repl, label)
+    formatted = re.sub(formula_pattern, repl, label)
+    for placeholder, replacement in charge_replacements.items():
+        formatted = formatted.replace(placeholder, replacement)
+    return formatted
 
 __all__ = [
     "concentration_to_float",
