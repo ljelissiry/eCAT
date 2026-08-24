@@ -383,7 +383,9 @@ def _canonical_type_and_technique(raw_type):
     if "differential" in lower and "pulse" in lower:
         return "Differential Pulse Voltammetry", "DPV"
     if "cyclic" in lower or lower in {"cv", "cva"}:
-        return text if text and lower not in {"cv", "cva"} else "Cyclic Voltammetry", "CV"
+        if "advanced" in lower or lower == "cva":
+            return "Cyclic Voltammetry Advanced", "CV"
+        return "Cyclic Voltammetry", "CV"
     if "chronoamperometry" in lower or "amperometric" in lower:
         return "Chronoamperometry", "CA"
     if "chronopotentiometry" in lower or "galvanostatic" in lower or "gcpl" in lower:
@@ -487,6 +489,26 @@ def _read_table(lines, header_idx, delimiter, decimal, *, has_header=True):
     df = df.dropna(how="all", axis=1).dropna(how="all").reset_index(drop=True)
     df.columns = [str(col).strip() for col in df.columns]
     return df
+
+
+def _assign_headerless_basi_columns(df_raw, technique):
+    """Assign canonical BASI roles when older exports omit a data-header row."""
+    columns_by_technique = {
+        "CV": ["Potential/V", "Current/A"],
+        "DPV": ["Potential/V", "Current/A"],
+        "CA": ["Time/s", "Current/A"],
+        "CP": ["Time/s", "Potential/V"],
+    }
+    columns = columns_by_technique.get(technique)
+    if not columns or df_raw.shape[1] < len(columns):
+        return df_raw
+
+    renamed = df_raw.copy()
+    rename_map = {
+        old_name: columns[idx]
+        for idx, old_name in enumerate(renamed.columns[: len(columns)])
+    }
+    return renamed.rename(columns=rename_map)
 
 
 def _canonicalize_data(df_raw, technique, warnings):
@@ -1179,6 +1201,9 @@ def parse_text_file_to_result(filepath, options=None):
         decimal,
         has_header=not locals().get("numeric_only", False),
     )
+    if software == "BASI" and locals().get("numeric_only", False):
+        _exp_type, detected_technique = _canonical_type_and_technique(technique_raw)
+        df_raw = _assign_headerless_basi_columns(df_raw, detected_technique)
     return _make_parse_result(
         filepath=filepath,
         software=software,
