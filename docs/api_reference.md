@@ -69,7 +69,7 @@ Public function names, argument names, and return shapes should match the top-le
 | `get_data(options=None)` | Load supported electrochemistry files from a folder. | `describe_options("get_data")` |
 | `get_data_from_excel(file_path, options=None)` | Create eCAT objects from an eCAT Excel workbook, or fall back to curated Excel CV header parsing when no `manifest` sheet is present. | `describe_options("get_data")` |
 
-The built-in text importer accepts `.txt` and EC-Lab ASCII `.mpt` files. BioLogic binary `.mpr` files raise `UnsupportedFileFormatError` before they reach the table parser; export `.mpt`, convert externally, or provide a direct custom reader. Folder loaders skip `.mpr` files with a clear relative-path diagnostic and continue loading supported text files.
+The built-in text importer accepts `.txt`, old BASI-Epsilon `.dat`, and EC-Lab ASCII `.mpt` files. BioLogic binary `.mpr` files raise `UnsupportedFileFormatError` before they reach the table parser; export `.mpt`, convert externally, or provide a direct custom reader. Folder loaders skip `.mpr` files with a clear relative-path diagnostic and continue loading supported text files.
 
 Folder loaders return an empty list (`[]`) when no supported files are found or no files can be converted, so notebook loops and filters can safely consume the result without a separate `None` check. By default, folder imports keep subfolders together and order objects within each subfolder by acquisition timestamp using `sort keys = ["subfolder", "timestamp"]`; pass explicit `sort keys` to override that ordering.
 

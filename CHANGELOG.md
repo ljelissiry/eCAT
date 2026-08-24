@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Added old BASI-Epsilon `.dat` CV text import support, including folder discovery and headerless potential/current table handling.
+
 ## 0.1.0b4 - Beta Parser, Plotting, Analysis, Simulation, And App Refresh - 2026-08-24
 
 - Added `reversibility_analysis()` for cautious, series-level bulk or surface-confined electron-transfer assessment plus a separate chemical-reversibility conclusion, with documented Matsuda-Ayabe, Nicholson, Sevcik, trumpet/Laviron, and irreversible-asymptote eligibility rules.

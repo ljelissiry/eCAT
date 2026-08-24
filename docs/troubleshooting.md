@@ -2,9 +2,9 @@
 
 ## No Files Load
 
-- Confirm the files are supported text exports: `.txt` generally, or EC-Lab ASCII `.mpt`.
+- Confirm the files are supported text exports: `.txt` generally, old BASI-Epsilon `.dat`, or EC-Lab ASCII `.mpt`.
 - Check `docs/beta_scope.md` to see whether the format is in beta scope.
-- Try loading one file directly with `e.echem.from_file("path/to/file.txt", {})` or `e.echem.from_file("path/to/file.mpt", {})`.
+- Try loading one file directly with `e.echem.from_file("path/to/file.txt", {})`, `e.echem.from_file("path/to/file.dat", {})`, or `e.echem.from_file("path/to/file.mpt", {})`.
 - BioLogic `.mpr` is a binary format, not another spelling of `.mpt`. eCAT raises `UnsupportedFileFormatError` before text parsing; export EC-Lab ASCII `.mpt`, convert externally, or provide a custom reader for direct loading.
 
 ## Units Look Wrong
