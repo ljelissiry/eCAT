@@ -3249,9 +3249,17 @@ def test_trumpet_analysis_uses_temperature_attribute_not_legacy_T(ecat_module):
 def test_trumpet_analysis_preserves_shared_flat_paired_guess_for_more_than_two_cvs(ecat_module):
     class FakeCV:
         def __init__(self, scan_rate):
+            self.name = f"fake-{scan_rate:g}"
             self.scan_rate = scan_rate
             self.temperature = 298
             self.observed_options = None
+
+        def analysis_segment_data(self, options=None):
+            segment = int((options or {}).get("segment", 1))
+            potential = np.linspace(-0.5, 0.5, 21)
+            if segment == 1:
+                potential = potential[::-1]
+            return potential, np.zeros_like(potential)
 
         def half_wave_potential(self, options=None):
             self.observed_options = dict(options or {})
@@ -3279,9 +3287,17 @@ def test_trumpet_analysis_preserves_shared_flat_paired_guess_for_more_than_two_c
 def test_trumpet_analysis_two_cv_flat_guess_is_per_cv_scalar(ecat_module):
     class FakeCV:
         def __init__(self, scan_rate):
+            self.name = f"fake-{scan_rate:g}"
             self.scan_rate = scan_rate
             self.temperature = 298
             self.observed_options = None
+
+        def analysis_segment_data(self, options=None):
+            segment = int((options or {}).get("segment", 1))
+            potential = np.linspace(-0.5, 0.5, 21)
+            if segment == 1:
+                potential = potential[::-1]
+            return potential, np.zeros_like(potential)
 
         def half_wave_potential(self, options=None):
             self.observed_options = dict(options or {})
@@ -3305,9 +3321,17 @@ def test_trumpet_analysis_two_cv_flat_guess_is_per_cv_scalar(ecat_module):
 def test_trumpet_analysis_supports_nested_per_cv_paired_guesses(ecat_module):
     class FakeCV:
         def __init__(self, scan_rate):
+            self.name = f"fake-{scan_rate:g}"
             self.scan_rate = scan_rate
             self.temperature = 298
             self.observed_options = None
+
+        def analysis_segment_data(self, options=None):
+            segment = int((options or {}).get("segment", 1))
+            potential = np.linspace(-0.5, 0.5, 21)
+            if segment == 1:
+                potential = potential[::-1]
+            return potential, np.zeros_like(potential)
 
         def half_wave_potential(self, options=None):
             self.observed_options = dict(options or {})
