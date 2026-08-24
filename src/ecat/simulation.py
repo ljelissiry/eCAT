@@ -9,6 +9,7 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import dataclass, field
 import pprint
+import re
 from typing import Any
 import warnings
 
@@ -25,6 +26,9 @@ _DEFAULT_CV_DATA_MIN_POINTS = 300
 _DEFAULT_CV_DATA_MAX_POINTS = 3000
 _DEFAULT_FAST_K0_INIT = 1e-3
 _MIN_POSITIVE_FIT_BOUND = 1e-30
+_DEFAULT_ACTIVITY_STANDARD_CONCENTRATION = 1000.0
+_DEFAULT_ACTIVITY_STANDARD_COVERAGE = 1.0
+_ACTIVITY_DISPLAY_RTOL = 1e-12
 
 KINETIC_FALLBACKS = {
     "E0": 0.0,
@@ -125,6 +129,11 @@ class SimulatedCVInput:
     def __post_init__(self):
         self.E = np.asarray(self.E, dtype=float)
         self.t = np.asarray(self.t, dtype=float)
+        self.metadata = dict(self.metadata or {})
+        incubation_time = float(self.metadata.get("incubation_time", 0.0) or 0.0)
+        if incubation_time < 0:
+            raise ValueError("incubation_time cannot be negative.")
+        self.metadata["incubation_time"] = incubation_time
         if self.i is not None:
             self.i = np.asarray(self.i, dtype=float)
             if len(self.i) != len(self.E):
@@ -161,6 +170,21 @@ class SimulatedCVInput:
             source=self.source,
         )
 
+    def with_incubation_time(self, incubation_time):
+        """Return a copy of this input with a new chemical incubation time."""
+        incubation_time = float(incubation_time)
+        if incubation_time < 0:
+            raise ValueError("incubation_time cannot be negative.")
+        metadata = dict(self.metadata or {})
+        metadata["incubation_time"] = incubation_time
+        return SimulatedCVInput(
+            E=self.E.copy(),
+            t=self.t.copy(),
+            i=None if self.i is None else self.i.copy(),
+            metadata=metadata,
+            source=self.source,
+        )
+
 
 @dataclass
 class MechanismSpec:
@@ -171,6 +195,7 @@ class MechanismSpec:
     note: str | None = None
     surface_confined: bool = False
     raw: bool = False
+    steps: list[dict[str, Any]] = field(default_factory=list)
 
 
 class SimulatedCV(_EcatCV):
@@ -184,6 +209,7 @@ class SimulatedCV(_EcatCV):
         *,
         data,
         params,
+        input_params=None,
         mechanism,
         input,
         backend_result=None,
@@ -194,6 +220,7 @@ class SimulatedCV(_EcatCV):
     ):
         self.data = data
         self.params = params
+        self.input_params = deepcopy(params if input_params is None else input_params)
         self.mechanism = mechanism
         self.input = input
         self.backend_result = backend_result
@@ -240,14 +267,23 @@ class SimulatedCV(_EcatCV):
         """Rerun this simulated CV at a new scan rate without modifying the original."""
         input_obj = self.input.with_scan_rate(scan_rate)
         mechanism = self.mechanism if mechanism is None else mechanism
-        params = deepcopy(self.params if params is None else params)
+        params = deepcopy(self.input_params if params is None else params)
+        backend = self.summary.get("backend", "electrokitty") if backend is None else backend
+        options = {"plot": False} if options is None else options
+        return simulate_cv(input_obj, mechanism, params, options=options, backend=backend)
+
+    def with_incubation_time(self, incubation_time, mechanism=None, params=None, backend=None, options=None):
+        """Rerun this simulated CV after a different chemical incubation time."""
+        input_obj = self.input.with_incubation_time(incubation_time)
+        mechanism = self.mechanism if mechanism is None else mechanism
+        params = deepcopy(self.input_params if params is None else params)
         backend = self.summary.get("backend", "electrokitty") if backend is None else backend
         options = {"plot": False} if options is None else options
         return simulate_cv(input_obj, mechanism, params, options=options, backend=backend)
 
     def with_params(self, params=None, *, set=None, mechanism=None, input=None, backend=None, options=None):
         """Rerun this simulated CV with deep-merged parameter updates."""
-        next_params = deepcopy(self.params)
+        next_params = deepcopy(self.input_params)
         if params:
             next_params = _deep_merge_dicts(next_params, params)
         if set:
@@ -272,14 +308,14 @@ class SimulatedCV(_EcatCV):
     def with_input(self, input, *, mechanism=None, params=None, backend=None, options=None):
         """Rerun this simulated CV with a replacement simulation input."""
         mechanism = self.mechanism if mechanism is None else mechanism
-        params = deepcopy(self.params if params is None else params)
+        params = deepcopy(self.input_params if params is None else params)
         backend = self.summary.get("backend", "electrokitty") if backend is None else backend
         options = {"plot": False} if options is None else options
         return simulate_cv(input, mechanism, params, options=options, backend=backend)
 
     def with_mechanism(self, mechanism, *, params=None, input=None, backend=None, options=None):
         """Rerun this simulated CV with a replacement mechanism."""
-        params = deepcopy(self.params if params is None else params)
+        params = deepcopy(self.input_params if params is None else params)
         input_obj = self.input if input is None else input
         backend = self.summary.get("backend", "electrokitty") if backend is None else backend
         options = {"plot": False} if options is None else options
@@ -361,6 +397,7 @@ class SimulatedCV(_EcatCV):
         """Display setup, optional parameters, and optional data for this simulated CV."""
         options = _normalize_options(options)
         _maybe_print_simulated_cv_setup(self, options, default=True)
+        _maybe_print_simulation_concentration_states(self, options)
         print_params = options.get("print params", options.get("print_params", False))
         if _truthy_option(print_params):
             param_options = dict(options)
@@ -713,15 +750,18 @@ def _plot_simulated_cv(result, options=None, measured_current=None):
     y_scale, y_unit = _ecat_plot_axis_scale(y_for_scale, y_name, y_unit, options.get("y unit", "auto"))
 
     y = result.data["Current"].to_numpy(dtype=float)
+    simulation_linestyle = options.get("linestyle")
+    if simulation_linestyle is None:
+        simulation_linestyle = options.get(
+            "simulation linestyle",
+            options.get("simulation_linestyle", "--"),
+        )
     ax.plot(
         x_plot,
         y * y_scale,
         color=options.get("color"),
         label=options.get("label", options.get("simulation label", "Simulation")),
-        linestyle=options.get(
-            "linestyle",
-            options.get("simulation linestyle", options.get("simulation_linestyle", "--")),
-        ),
+        linestyle=simulation_linestyle,
     )
 
     if measured is not None:
@@ -810,6 +850,7 @@ def cv_program(
     segments=2,
     points_per_segment=1000,
     quiet_time=0.0,
+    incubation_time=0.0,
 ):
     """Create a synthetic CV potential program as a :class:`SimulatedCVInput`."""
     Ei = float(Ei)
@@ -821,6 +862,7 @@ def cv_program(
     segments = int(segments)
     points_per_segment = int(points_per_segment)
     quiet_time = float(quiet_time)
+    incubation_time = float(incubation_time)
 
     if E_low is None and E_high is None:
         raise ValueError("cv_program requires E_low, E_high, or both.")
@@ -832,6 +874,8 @@ def cv_program(
         raise ValueError("points_per_segment must be at least 2.")
     if quiet_time < 0:
         raise ValueError("quiet_time cannot be negative.")
+    if incubation_time < 0:
+        raise ValueError("incubation_time cannot be negative.")
 
     vertices = _cv_program_vertices(Ei, E_low, E_high, Ef, direction, segments)
     E = _joined_segments(
@@ -859,6 +903,7 @@ def cv_program(
             "points_per_segment": points_per_segment,
             "quiet_time": quiet_time,
             "quiet_time_applied": False,
+            "incubation_time": incubation_time,
             "potential_axis_name": "Potential",
             "potential_unit": "V",
             "current_axis_name": "Current",
@@ -956,6 +1001,8 @@ def cv_data(cv, options=None):
     if len(E) == 0:
         raise ValueError("cv_data selected no points.")
 
+    i, background_info = _cv_data_background_corrected_current(cv, E, i, options)
+
     original_points = len(E)
     stride_info = _cv_data_stride_info(E, options)
     E = E[stride_info["indices"]]
@@ -978,6 +1025,7 @@ def cv_data(cv, options=None):
         "window_break_count": window_info["break_count"],
         "quiet_time": _source_quiet_time(cv),
         "quiet_time_applied": False,
+        "incubation_time": _cv_data_incubation_time(options),
         "potential_axis_name": potential_axis_name,
         "potential_unit": potential_unit,
         "current_axis_name": current_axis_name,
@@ -990,6 +1038,7 @@ def cv_data(cv, options=None):
         "original_points": original_points,
         "selected_points": len(E),
     }
+    metadata.update(background_info)
     estimate_cdl = options.get("estimate Cdl", options.get("estimate_cdl", "auto"))
     if not _falsey_option(estimate_cdl):
         try:
@@ -1011,6 +1060,121 @@ def cv_data(cv, options=None):
     )
     _maybe_print_simulated_cv_input_setup(input_obj, options, default=False)
     return input_obj
+
+
+def _cv_data_incubation_time(options):
+    value = options.get("incubation time", options.get("incubation_time", 0.0))
+    value = float(0.0 if value is None else value)
+    if value < 0:
+        raise ValueError("incubation_time cannot be negative.")
+    return value
+
+
+def _cv_data_background_corrected_current(cv, E, i, options):
+    mode = _cv_data_background_correction_mode(options)
+    if mode is None:
+        return i, {}
+
+    E = np.asarray(E, dtype=float)
+    i = np.asarray(i, dtype=float)
+    if len(i) == 0:
+        return i, {}
+
+    if mode == "start current":
+        start_current = float(i[0])
+        return i - start_current, {
+            "background_correction": "start current",
+            "background_correction_applied": True,
+            "background_correction_points": int(len(i)),
+            "background_current": start_current,
+        }
+
+    tangent_potential = options.get("tangent potential", options.get("tangent_potential"))
+    target_potential = _cv_data_background_target_potential(options)
+    tangent_options = dict(options)
+    tangent_options["print"] = False
+    tangent_options["internal call"] = True
+    tangent_options["new plot"] = False
+    tangent_options["plot all"] = False
+
+    try:
+        if tangent_potential is not None:
+            tangent_meta = cv._fit_tangent_line(
+                E,
+                i,
+                idx_target=None,
+                tangent_potential=float(tangent_potential),
+                options=tangent_options,
+            )
+            anchor = float(tangent_potential)
+        elif target_potential is not None:
+            idx_target = int(np.argmin(np.abs(E - float(target_potential))))
+            tangent_meta = cv._fit_tangent_line(
+                E,
+                i,
+                idx_target=idx_target,
+                tangent_potential=None,
+                options=tangent_options,
+            )
+            anchor = float(target_potential)
+        else:
+            raise ValueError(
+                "'background correction': 'tangent' requires 'tangent potential', "
+                "'peak potential', 'exact potential', or 'guess potential'."
+            )
+    except Exception as exc:
+        if isinstance(exc, ValueError) and "background correction" in str(exc):
+            raise
+        raise ValueError(
+            "Could not fit tangent background for simulation.cv_data. "
+            "Set 'tangent potential' near a baseline region or use "
+            "{'background correction': 'start current'}."
+        ) from exc
+
+    slope = float(tangent_meta["slope"])
+    intercept = float(tangent_meta["intercept"])
+    background = slope * E + intercept
+    return i - background, {
+        "background_correction": "tangent",
+        "background_correction_applied": True,
+        "background_correction_points": int(len(i)),
+        "background_tangent_potential": anchor,
+        "background_slope": slope,
+        "background_intercept": intercept,
+        "background_fit_indices": [int(idx) for idx in np.asarray(tangent_meta.get("fit_indices", []), dtype=int)],
+    }
+
+
+def _cv_data_background_correction_mode(options):
+    value = options.get("background correction", options.get("background_correction"))
+    if value is None or _falsey_option(value):
+        return None
+    token = _canonical_token(value)
+    aliases = {
+        "start_current": "start current",
+        "start": "start current",
+        "initial_current": "start current",
+        "initial": "start current",
+        "first_current": "start current",
+        "first": "start current",
+        "t0": "start current",
+        "t_0": "start current",
+        "time_0": "start current",
+        "time_zero": "start current",
+        "tangent": "tangent",
+        "tangent_line": "tangent",
+        "linear_tangent": "tangent",
+    }
+    if token in aliases:
+        return aliases[token]
+    raise ValueError("'background correction' must be None, 'start current', or 'tangent'.")
+
+
+def _cv_data_background_target_potential(options):
+    for key in ("peak potential", "peak_potential", "exact potential", "exact_potential", "guess potential", "guess_potential"):
+        if key in options and options[key] is not None:
+            return options[key]
+    return None
 
 
 def _cv_data_window_info(E, potential_window, options):
@@ -1082,6 +1246,103 @@ def _cv_data_window_mode(options):
     return mode
 
 
+def _mechanism_spec(mechanism, preset, **kwargs):
+    return MechanismSpec(
+        mechanism=mechanism,
+        preset=preset,
+        steps=_mechanism_steps(mechanism),
+        **kwargs,
+    )
+
+
+def _mechanism_steps(mechanism):
+    steps = []
+    counts = {"E": 0, "C": 0}
+    for global_index, line in enumerate(str(mechanism or "").splitlines()):
+        text = line.strip()
+        if not text or ":" not in text:
+            continue
+        prefix, equation = text.split(":", 1)
+        kind = prefix.strip()[:1].upper()
+        if kind not in {"E", "C"}:
+            continue
+        group_index = counts[kind]
+        counts[kind] += 1
+        equation = equation.strip()
+        steps.append(
+            {
+                "kind": kind,
+                "index": group_index,
+                "global_index": global_index,
+                "line": text,
+                "equation": equation,
+                "key": _reaction_key(equation),
+            }
+        )
+    return steps
+
+
+def _reaction_key(reaction):
+    left, separator, right = _split_reaction_equation(reaction)
+    return (
+        f"{_canonical_stoichiometric_side(left)}"
+        f"{separator}"
+        f"{_canonical_stoichiometric_side(right)}"
+    ).lower()
+
+
+def _normalize_reaction_arrows(reaction):
+    text = str(reaction or "").strip()
+    text = text.replace("⇌", "=").replace("<=>", "=").replace("<->", "=")
+    return text.replace("→", ">").replace("->", ">")
+
+
+def _split_reaction_equation(reaction):
+    normalized = _normalize_reaction_arrows(reaction)
+    separators = [separator for separator in ("=", "<", ">") if normalized.count(separator) == 1]
+    if len(separators) != 1:
+        raise ValueError("reaction must contain exactly one '=', '<', or '>' separator.")
+    separator = separators[0]
+    left, right = normalized.split(separator, 1)
+    if not left.strip() or not right.strip():
+        raise ValueError("reaction must have reactants and products.")
+    return left, separator, right
+
+
+def _parse_stoichiometric_term(term):
+    text = str(term or "").strip()
+    if not text:
+        raise ValueError("Reaction species terms cannot be empty.")
+    if re.match(r"^\d+\.\d+", text):
+        raise ValueError("Only positive integer stoichiometric coefficients are supported.")
+    match = re.match(r"^(\d+)?\s*(.+?)\s*$", text)
+    if not match:
+        raise ValueError(f"Could not parse reaction term {text!r}.")
+    coefficient_text, species = match.groups()
+    coefficient = int(coefficient_text) if coefficient_text else 1
+    species = species.replace(" ", "")
+    if coefficient <= 0 or not species:
+        raise ValueError("Only positive integer stoichiometric coefficients are supported.")
+    return species, coefficient
+
+
+def _canonical_stoichiometric_side(side):
+    coefficients = {}
+    for raw_term in str(side).split("+"):
+        species, coefficient = _parse_stoichiometric_term(raw_term)
+        coefficients[species] = coefficients.get(species, 0) + coefficient
+    return "+".join(
+        f"{coefficient if coefficient != 1 else ''}{species}"
+        for species, coefficient in sorted(coefficients.items(), key=lambda item: item[0].lower())
+    )
+
+
+def _mechanism_steps_of_kind(mechanism_spec, kind):
+    kind = str(kind).upper()
+    steps = getattr(mechanism_spec, "steps", None) or _mechanism_steps(getattr(mechanism_spec, "mechanism", ""))
+    return [step for step in steps if step.get("kind") == kind]
+
+
 def _source_quiet_time(source):
     quiet_time = _first_finite_attr(source, ["quiet_time", "quiet time", "quiet_time_s"])
     if quiet_time is None:
@@ -1090,7 +1351,7 @@ def _source_quiet_time(source):
 
 
 def compile_mechanism(mechanism, params=None):
-    """Compile an eCAT mechanism preset or raw ElectroKitty string."""
+    """Compile an eCAT mechanism preset or custom eCAT mechanism string."""
     if isinstance(mechanism, MechanismSpec):
         return mechanism
     params = {} if params is None else params
@@ -1099,12 +1360,12 @@ def compile_mechanism(mechanism, params=None):
     concentrations = normalize_concentrations(_concentrations_from_params(params))
 
     if ":" in text:
-        return MechanismSpec(mechanism=text, preset="raw", raw=True)
+        return _mechanism_spec(text, "raw", raw=True)
 
     if "," in normalized and "*" in normalized:
         raise ValueError(
             "Mixed surface/bulk shorthand labels are not supported. "
-            "Use a raw ElectroKitty mechanism string for mixed mechanisms."
+            "Use a custom eCAT mechanism string for mixed mechanisms."
         )
 
     force_surface = normalized.endswith("*")
@@ -1116,31 +1377,31 @@ def compile_mechanism(mechanism, params=None):
     )
 
     if normalized == "e":
-        return MechanismSpec(
+        return _mechanism_spec(
             _compile_e_preset(concentrations, surface_confined),
             "E",
             surface_confined=surface_confined,
         )
     if normalized in {"ee", "e,e"}:
-        return MechanismSpec(
+        return _mechanism_spec(
             _compile_ee_preset(concentrations, surface_confined),
             "EE",
             surface_confined=surface_confined,
         )
     if normalized == "ec":
-        return MechanismSpec(
+        return _mechanism_spec(
             _compile_ec_preset(concentrations, surface_confined),
             "EC",
             surface_confined=surface_confined,
         )
     if normalized == "ece":
-        return MechanismSpec(
+        return _mechanism_spec(
             _compile_ece_preset(concentrations, surface_confined),
             "ECE",
             surface_confined=surface_confined,
         )
     if normalized in {"square", "squarescheme", "square-scheme", "square_scheme", "sq"}:
-        return MechanismSpec(
+        return _mechanism_spec(
             _compile_square_preset(concentrations, surface_confined),
             "Square",
             surface_confined=surface_confined,
@@ -1149,10 +1410,10 @@ def compile_mechanism(mechanism, params=None):
         compiled = _compile_ecat_preset(params, force_surface=force_surface)
         note = (
             "EC'/Ecat preset inferred catalysis form from '*' adsorbed-species notation; "
-            "use a raw ElectroKitty mechanism string for unusual catalytic cycles."
+            "use a custom eCAT mechanism string for unusual catalytic cycles."
         )
         warnings.warn(note, UserWarning, stacklevel=2)
-        return MechanismSpec(
+        return _mechanism_spec(
             compiled,
             "Ecat",
             note=note,
@@ -1176,7 +1437,14 @@ def simulate_cv(input, mechanism, params, options=None, backend="electrokitty"):
     """Run a backend CV simulation."""
     options = _normalize_options(options)
     plot = bool(options.get("plot", True))
-    params = _prepare_simulation_params(input, params, options)
+    input_params = _prepare_simulation_params(
+        input,
+        params,
+        options,
+        mechanism=mechanism,
+        expand_parameter_model=False,
+    )
+    params = _prepare_simulation_params(input, input_params, options, mechanism=mechanism)
 
     backend_adapter = get_backend(backend)
     mechanism_spec = compile_mechanism(mechanism, params)
@@ -1220,10 +1488,15 @@ def simulate_cv(input, mechanism, params, options=None, backend="electrokitty"):
     fallback_notes = list(params.get("_fallbacks", []) or [])
     if fallback_notes:
         data.attrs["parameter fallbacks"] = fallback_notes
+    parameter_model_report = deepcopy(params.get("_parameter_model", {}))
+    incubation_report = parameter_model_report.get("incubation", {}) or {}
+    if parameter_model_report:
+        data.attrs["parameter model"] = parameter_model_report
 
     result = SimulatedCV(
         data=data,
         params=params,
+        input_params=input_params,
         mechanism=mechanism_spec,
         input=input,
         backend_result=backend_result,
@@ -1236,32 +1509,678 @@ def simulate_cv(input, mechanism, params, options=None, backend="electrokitty"):
             "current sign": current_sign,
             "quiet_time": quiet_info["quiet_time"],
             "quiet_time_applied": quiet_info["applied"],
+            "incubation_time": float(incubation_report.get("time", _input_incubation_time(input))),
+            "incubation_applied": bool(incubation_report.get("applied", False)),
             "parameter_fallbacks": fallback_notes,
             "parameter fallbacks": fallback_notes,
+            "parameter_model": parameter_model_report,
+            "parameter model": parameter_model_report,
         },
     )
+    _maybe_print_simulation_concentration_states(result, options)
     if plot:
         result.plot(options.get("plot options", options))
     return result
 
 
-def _prepare_simulation_params(input_obj, params, options=None):
+def _prepare_simulation_params(
+    input_obj,
+    params,
+    options=None,
+    mechanism=None,
+    *,
+    expand_parameter_model=True,
+):
     options = _normalize_options(options)
     prepared = deepcopy(params)
+    prepared.pop("_compiled", None)
+    prepared.pop("_parameter_model", None)
     prepared = _normalize_simulation_species_params(prepared)
+    prepared = _normalize_simulation_activity_params(prepared)
     prepared["cell"] = _cell_with_source_defaults(input_obj, prepared.get("cell", {}), options)
     prepared["spatial"] = _spatial_with_aliases(
         prepared.get("spatial", {}),
         source=getattr(input_obj, "source", None),
     )
+    mechanism_spec = _compile_mechanism_for_preparation(mechanism, prepared) if mechanism is not None else None
+    prepared = _normalize_mechanism_parameter_sections(prepared, mechanism_spec)
+    prepared["kinetics"], fallback_notes = _kinetics_with_fallbacks(prepared.get("kinetics", []))
+    if fallback_notes:
+        prepared["_fallbacks"] = fallback_notes
+    if expand_parameter_model:
+        prepared = _expand_parameter_model(prepared, input_obj, options, mechanism_spec=mechanism_spec)
     prepared["diffusion"] = _diffusion_with_species_defaults(
         prepared.get("diffusion", {}),
         prepared.get("concentrations", {}),
     )
-    prepared["kinetics"], fallback_notes = _kinetics_with_fallbacks(prepared.get("kinetics", []))
-    if fallback_notes:
-        prepared["_fallbacks"] = fallback_notes
     return prepared
+
+
+def _compile_mechanism_for_preparation(mechanism, params):
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        return compile_mechanism(mechanism, params)
+
+
+def _expand_parameter_model(params, input_obj=None, options=None, mechanism_spec=None):
+    params = deepcopy(params or {})
+    if "pools" in params:
+        raise ValueError(
+            "Simulation pools are no longer supported. Enter every initial concentration; "
+            "eCAT derives conservation constraints from reaction stoichiometry."
+        )
+    if "equilibria" in params:
+        raise ValueError(
+            "Top-level equilibria are no longer supported. Put K directly in the matching "
+            "reactions entry."
+        )
+    concentrations = normalize_concentrations(params.get("concentrations", {}) or {})
+    reaction_equilibria = _reaction_local_equilibria(params, mechanism_spec)
+    params["concentrations"] = concentrations
+    activity = _activity_config(params)
+    parsed_equilibria = {}
+    initial_state = _parameter_model_concentration_state(concentrations)
+    report = {
+        "equilibria": [],
+        "warnings": [],
+        "states": {
+            "initial": deepcopy(initial_state),
+            "equilibrated": deepcopy(initial_state),
+        },
+    }
+    for name, entry in reaction_equilibria.items():
+        parsed = _parse_equilibrium_reaction(entry["reaction"])
+        phase = _equilibrium_reaction_phase(parsed, concentrations, entry)
+        parsed_equilibria[str(name)] = {
+            **entry,
+            "phase": phase,
+            "_name": str(name),
+            "_parsed": parsed,
+        }
+
+    equilibrated_entries = [
+        entry for entry in parsed_equilibria.values() if _reaction_uses_pre_equilibrium(entry)
+    ]
+    if equilibrated_entries:
+        concentrations, equilibrium_report = _solve_stoichiometric_pre_equilibrium(
+            concentrations,
+            equilibrated_entries,
+            activity,
+            options,
+        )
+        params["concentrations"] = concentrations
+        report["equilibrium"] = equilibrium_report
+        report["states"]["equilibrated"] = _parameter_model_concentration_state(concentrations)
+
+    reactions = list(params.get("reactions", []) or [])
+    compiled_reactions = _base_compiled_reactions(reactions)
+    for name, entry in parsed_equilibria.items():
+        derived = _expand_equilibrium_rate(entry, compiled_reactions, concentrations, activity)
+        if derived:
+            report["equilibria"].append(derived)
+    incubation_time = _input_incubation_time(input_obj)
+    concentrations, incubation_report = _apply_chemical_incubation(
+        concentrations,
+        mechanism_spec,
+        compiled_reactions,
+        incubation_time,
+    )
+    params["concentrations"] = concentrations
+    report["incubation"] = incubation_report
+    report["states"]["incubated"] = _parameter_model_concentration_state(concentrations)
+    params["_compiled"] = _compiled_parameter_sections(params, {"reactions": compiled_reactions})
+
+    params["_parameter_model"] = report
+    return params
+
+
+def _input_incubation_time(input_obj):
+    metadata = getattr(input_obj, "metadata", {}) or {}
+    value = float(metadata.get("incubation_time", 0.0) or 0.0)
+    if value < 0:
+        raise ValueError("incubation_time cannot be negative.")
+    return value
+
+
+def _apply_chemical_incubation(concentrations, mechanism_spec, compiled_reactions, incubation_time):
+    incubation_time = float(incubation_time)
+    if incubation_time <= 0:
+        return deepcopy(concentrations), {
+            "time": incubation_time,
+            "applied": False,
+            "reaction_count": 0,
+            "skipped_reaction_count": 0,
+            "skipped_reactions": [],
+            "phases": [],
+        }
+    steps = _mechanism_steps_of_kind(mechanism_spec, "C") if mechanism_spec is not None else []
+    if not steps:
+        return deepcopy(concentrations), {
+            "time": incubation_time,
+            "applied": False,
+            "reaction_count": 0,
+            "skipped_reaction_count": 0,
+            "skipped_reactions": [],
+            "phases": [],
+        }
+    if len(compiled_reactions) < len(steps):
+        raise ValueError("Chemical incubation requires rate parameters for every chemical mechanism step.")
+
+    parsed_steps = []
+    skipped_reactions = []
+    for step in steps:
+        parsed = _parse_equilibrium_reaction(step["equation"])
+        if not _chemical_incubation_is_bulk(parsed, concentrations):
+            skipped_reactions.append(step["equation"])
+            continue
+        rates = compiled_reactions[int(step["index"])]
+        if not isinstance(rates, dict) or not any(key in rates for key in ("k", "kf", "kb")):
+            raise ValueError(
+                f"Chemical incubation requires k or kf/kb for reaction {step['equation']!r}."
+            )
+        parsed_steps.append({"parsed": parsed, "phase": "bulk", "rates": rates})
+
+    out = deepcopy(concentrations)
+    phase_reports = []
+    for phase in ("bulk",):
+        phase_steps = [entry for entry in parsed_steps if entry["phase"] == phase]
+        if not phase_steps:
+            continue
+        out[phase], phase_report = _integrate_chemical_incubation_phase(
+            phase,
+            out.get(phase, {}),
+            phase_steps,
+            incubation_time,
+        )
+        phase_reports.append(phase_report)
+    return out, {
+        "time": incubation_time,
+        "applied": bool(phase_reports),
+        "reaction_count": len(parsed_steps),
+        "skipped_reaction_count": len(skipped_reactions),
+        "skipped_reactions": skipped_reactions,
+        "phases": phase_reports,
+    }
+
+
+def _chemical_incubation_is_bulk(parsed, concentrations):
+    phases = set()
+    for species, _coefficient in list(parsed["reactants"]) + list(parsed["products"]):
+        present = {
+            phase
+            for phase in ("bulk", "surface")
+            if species in ((concentrations or {}).get(phase, {}) or {})
+        }
+        if not present:
+            raise ValueError(
+                f"Chemical reaction {parsed['reaction']!r} references species {species!r}, "
+                "but no entered concentration is defined. Enter zero when the species is "
+                "initially absent."
+            )
+        phases.update(present)
+    return phases == {"bulk"}
+
+
+def _integrate_chemical_incubation_phase(phase, phase_concentrations, entries, incubation_time):
+    species = []
+    for entry in entries:
+        parsed = entry["parsed"]
+        for name, _coefficient in list(parsed["reactants"]) + list(parsed["products"]):
+            if name not in species:
+                species.append(name)
+    index = {name: position for position, name in enumerate(species)}
+    stoichiometry = np.zeros((len(species), len(entries)), dtype=float)
+    initial = np.asarray([float(phase_concentrations[name]) for name in species], dtype=float)
+    if np.any(~np.isfinite(initial)) or np.any(initial < 0):
+        raise ValueError("Chemical incubation concentrations must be finite and nonnegative.")
+
+    for reaction_index, entry in enumerate(entries):
+        parsed = entry["parsed"]
+        for name, coefficient in parsed["reactants"]:
+            stoichiometry[index[name], reaction_index] -= float(coefficient)
+        for name, coefficient in parsed["products"]:
+            stoichiometry[index[name], reaction_index] += float(coefficient)
+
+    def rhs(_time, values):
+        nonnegative = np.maximum(values, 0.0)
+        rates = []
+        for entry in entries:
+            parsed = entry["parsed"]
+            constants = entry["rates"]
+            forward_constant = float(constants.get("k", constants.get("kf", 0.0)))
+            forward = forward_constant * np.prod(
+                [nonnegative[index[name]] ** coefficient for name, coefficient in parsed["reactants"]]
+            )
+            reverse = 0.0
+            if "kb" in constants:
+                reverse = float(constants["kb"]) * np.prod(
+                    [nonnegative[index[name]] ** coefficient for name, coefficient in parsed["products"]]
+                )
+            rates.append(float(forward - reverse))
+        return stoichiometry @ np.asarray(rates, dtype=float)
+
+    from scipy.integrate import solve_ivp
+
+    result = solve_ivp(
+        rhs,
+        (0.0, float(incubation_time)),
+        initial,
+        method="BDF",
+        rtol=1e-8,
+        atol=1e-12,
+    )
+    if not result.success:
+        raise ValueError(f"Chemical incubation failed: {result.message}")
+    final = np.asarray(result.y[:, -1], dtype=float)
+    negative_tolerance = 1e-9 * max(1.0, float(np.max(initial)) if initial.size else 1.0)
+    if np.any(final < -negative_tolerance):
+        raise ValueError("Chemical incubation produced materially negative concentrations.")
+    final = np.maximum(final, 0.0)
+    out = dict(phase_concentrations)
+    out.update({name: float(value) for name, value in zip(species, final)})
+    return out, {
+        "phase": phase,
+        "species": list(species),
+        "reaction_count": len(entries),
+        "evaluations": int(result.nfev),
+        "success": bool(result.success),
+    }
+
+
+def _parameter_model_concentration_state(concentrations):
+    return {
+        phase: {str(name): float(value) for name, value in ((concentrations or {}).get(phase, {}) or {}).items()}
+        for phase in ("bulk", "surface")
+    }
+
+
+def _reaction_uses_pre_equilibrium(entry):
+    value = entry.get("equilibrate", True)
+    return not _falsey_option(value)
+
+
+def _equilibrium_reaction_phase(parsed, concentrations, entry=None):
+    entry = {} if entry is None else entry
+    explicit = entry.get("phase")
+    phases = set()
+    for species, _coefficient in list(parsed["reactants"]) + list(parsed["products"]):
+        present = [
+            phase
+            for phase in ("bulk", "surface")
+            if species in ((concentrations or {}).get(phase, {}) or {})
+        ]
+        if not present:
+            raise ValueError(
+                f"Equilibrium reaction {parsed['reaction']!r} references species {species!r}, "
+                "but no entered concentration is defined. Enter zero when the species is "
+                "initially absent."
+            )
+        if len(present) > 1:
+            raise ValueError(
+                f"Equilibrium species {species!r} exists in both bulk and surface concentrations; "
+                "use distinct species names."
+            )
+        phases.add(present[0])
+    if explicit not in (None, ""):
+        explicit = _normalize_concentration_phase(explicit)
+        if phases != {explicit}:
+            raise ValueError(
+                f"Equilibrium reaction {parsed['reaction']!r} does not match its declared {explicit} phase."
+            )
+    if len(phases) != 1:
+        raise ValueError(
+            f"Equilibrium reaction {parsed['reaction']!r} mixes bulk and surface species. "
+            "Cross-phase pre-equilibrium is not supported."
+        )
+    return next(iter(phases))
+
+
+def _solve_stoichiometric_pre_equilibrium(concentrations, entries, activity, options=None):
+    solved = deepcopy(concentrations)
+    phase_reports = []
+    for phase in ("bulk", "surface"):
+        phase_entries = [entry for entry in entries if entry.get("phase") == phase]
+        if not phase_entries:
+            continue
+        solved[phase], phase_report = _solve_stoichiometric_equilibrium_phase(
+            phase,
+            solved.get(phase, {}),
+            phase_entries,
+            activity,
+            options,
+        )
+        phase_reports.append(phase_report)
+    max_residual = max((report["max_equilibrium_residual"] for report in phase_reports), default=0.0)
+    return solved, {
+        "reaction_count": int(sum(report["reaction_count"] for report in phase_reports)),
+        "reaction_rank": int(sum(report["reaction_rank"] for report in phase_reports)),
+        "dependent_reactions": int(sum(report["dependent_reactions"] for report in phase_reports)),
+        "conservation_rank": int(sum(report["conservation_rank"] for report in phase_reports)),
+        "max_equilibrium_residual": float(max_residual),
+        "phases": phase_reports,
+    }
+
+
+def _solve_stoichiometric_equilibrium_phase(phase, phase_concentrations, entries, activity, options=None):
+    species = []
+    for entry in entries:
+        for name, _coefficient in list(entry["_parsed"]["reactants"]) + list(entry["_parsed"]["products"]):
+            if name not in species:
+                species.append(name)
+    index = {name: position for position, name in enumerate(species)}
+    stoichiometry = np.zeros((len(species), len(entries)), dtype=float)
+    for reaction_index, entry in enumerate(entries):
+        for name, coefficient in entry["_parsed"]["reactants"]:
+            stoichiometry[index[name], reaction_index] -= float(coefficient)
+        for name, coefficient in entry["_parsed"]["products"]:
+            stoichiometry[index[name], reaction_index] += float(coefficient)
+
+    initial = np.asarray([float(phase_concentrations[name]) for name in species], dtype=float)
+    if np.any(~np.isfinite(initial)) or np.any(initial < 0):
+        raise ValueError("Pre-equilibrium concentrations must be finite and nonnegative.")
+
+    from scipy.linalg import null_space
+    from scipy.optimize import least_squares
+
+    reaction_rank = int(np.linalg.matrix_rank(stoichiometry))
+    conservation = null_space(stoichiometry.T)
+    conserved_totals = conservation.T @ initial
+    conservation_scales = np.maximum(
+        np.sum(np.abs(conservation.T) * np.maximum(initial, 1e-30)[None, :], axis=1),
+        1e-30,
+    )
+    standard = _activity_standard(activity, phase)
+    positive_initial = np.maximum(initial, max(standard, 1.0) * 1e-12)
+
+    def residual(log_values):
+        values = np.exp(log_values)
+        value_map = {name: float(value) for name, value in zip(species, values)}
+        equilibrium_rows = [
+            _log_activity_quotient(entry["_parsed"], value_map, phase, {phase: value_map}, activity)
+            - np.log(_dimensionless_equilibrium_constant(entry, entry["_parsed"], activity))
+            for entry in entries
+        ]
+        conservation_rows = (
+            (conservation.T @ values - conserved_totals) / conservation_scales
+            if conservation.shape[1]
+            else np.asarray([], dtype=float)
+        )
+        return np.r_[equilibrium_rows, conservation_rows]
+
+    result = least_squares(residual, np.log(positive_initial), max_nfev=8000)
+    final_rows = residual(result.x)
+    equilibrium_rows = final_rows[: len(entries)]
+    conservation_rows = final_rows[len(entries) :]
+    tolerance = float(_normalize_options(options).get("parameter model tolerance", 1e-7))
+    max_equilibrium = float(np.max(np.abs(equilibrium_rows))) if equilibrium_rows.size else 0.0
+    max_conservation = float(np.max(np.abs(conservation_rows))) if conservation_rows.size else 0.0
+    if not result.success or max(max_equilibrium, max_conservation) > tolerance:
+        raise ValueError(
+            "Stoichiometric pre-equilibrium has inconsistent equilibrium constraints or "
+            f"failed to converge; residual {max(max_equilibrium, max_conservation):.3g} "
+            f"exceeds tolerance {tolerance:.3g}."
+        )
+    values = np.exp(result.x)
+    out = dict(phase_concentrations)
+    out.update({name: float(value) for name, value in zip(species, values)})
+    return out, {
+        "phase": phase,
+        "species": list(species),
+        "reaction_count": len(entries),
+        "reaction_rank": reaction_rank,
+        "dependent_reactions": len(entries) - reaction_rank,
+        "conservation_rank": int(conservation.shape[1]),
+        "max_equilibrium_residual": max_equilibrium,
+        "max_conservation_residual": max_conservation,
+        "success": bool(result.success),
+        "evaluations": int(result.nfev),
+    }
+
+
+def _reaction_local_equilibria(params, mechanism_spec=None):
+    reactions = params.get("reactions", []) or []
+    if not isinstance(reactions, list):
+        return {}
+    steps = ((params.get("_mechanism_steps", {}) or {}).get("reactions") or [])
+    if not steps and mechanism_spec is not None:
+        steps = _mechanism_steps_of_kind(mechanism_spec, "C")
+    out = {}
+    for index, entry in enumerate(reactions):
+        if not isinstance(entry, dict) or "K" not in entry:
+            continue
+        normalized = _normalize_equilibrium_param_entry(entry)
+        reaction = normalized.get("reaction")
+        if reaction in (None, ""):
+            if index >= len(steps):
+                raise ValueError(f"reactions.{index}.K requires a mechanism chemical step or explicit reaction.")
+            reaction = steps[index]["equation"]
+        normalized["reaction"] = reaction
+        normalized.setdefault("target", f"reactions.{index}")
+        out[f"reactions.{index}"] = normalized
+    return out
+
+
+def _normalize_equilibrium_param_entry(entry):
+    out = dict(entry)
+    if "K" in out:
+        out.update(_coerce_equilibrium_constant_fields(out["K"], out))
+    return out
+
+
+def _compiled_parameter_sections(params, overrides=None):
+    compiled = dict((params or {}).get("_compiled", {}) or {})
+    compiled["kinetics"] = deepcopy((params or {}).get("kinetics", []) or [])
+    compiled["reactions"] = _base_compiled_reactions((params or {}).get("reactions", []) or [])
+    for key, value in (overrides or {}).items():
+        compiled[key] = deepcopy(value)
+    return compiled
+
+
+def _base_compiled_reactions(reactions):
+    out = []
+    for entry in reactions or []:
+        if isinstance(entry, dict):
+            compiled = {
+                key: value
+                for key, value in entry.items()
+                if key in {"k", "kf", "kb"} or (isinstance(key, str) and key.startswith("_"))
+            }
+            out.append(compiled)
+        else:
+            out.append(deepcopy(entry))
+    return out
+
+
+def _normalize_concentration_phase(value):
+    phase = _canonical_token(value or "bulk")
+    if phase in {"bulk", "solution", "soluble"}:
+        return "bulk"
+    if phase in {"surface", "adsorbed", "ads"}:
+        return "surface"
+    raise ValueError("concentration phase must be bulk/solution/soluble or surface/adsorbed/ads.")
+
+
+
+def _parse_equilibrium_reaction(reaction):
+    text = str(reaction or "").strip()
+    try:
+        left, separator, right = _split_reaction_equation(text)
+    except ValueError as exc:
+        raise ValueError("equilibrium reaction must contain exactly one '=' or reaction arrow.") from exc
+    if separator == "<":
+        left, right = right, left
+    reactants = _parse_equilibrium_side(left)
+    products = _parse_equilibrium_side(right)
+    if not reactants or not products:
+        raise ValueError("equilibrium reaction must have reactants and products.")
+    return {"reactants": reactants, "products": products, "reaction": text}
+
+
+def _parse_equilibrium_side(side):
+    terms = []
+    for raw in str(side).split("+"):
+        species, coefficient = _parse_stoichiometric_term(raw)
+        terms.append((species.rstrip("*"), float(coefficient)))
+    return terms
+
+
+def _log_activity_quotient(parsed, variable_values, phase, concentrations, activity):
+    log_products = sum(
+        coeff * _log_species_activity(species, coeff, variable_values, phase, concentrations, activity)
+        for species, coeff in parsed["products"]
+    )
+    log_reactants = sum(
+        coeff * _log_species_activity(species, coeff, variable_values, phase, concentrations, activity)
+        for species, coeff in parsed["reactants"]
+    )
+    return float(log_products - log_reactants)
+
+
+def _log_species_activity(species, coeff, variable_values, phase, concentrations, activity):
+    del coeff
+    concentration = _species_concentration(species, variable_values, phase, concentrations)
+    if concentration <= 0:
+        raise ValueError(f"Species {species!r} has nonpositive concentration in an equilibrium.")
+    gamma = _activity_gamma(activity, phase, species)
+    if gamma <= 0:
+        raise ValueError(f"Activity coefficient for {species!r} must be positive.")
+    return float(np.log(gamma) + np.log(concentration) - np.log(_activity_standard(activity, phase)))
+
+
+def _species_concentration(species, variable_values, phase, concentrations):
+    clean = str(species).rstrip("*")
+    if clean in variable_values:
+        return float(variable_values[clean])
+    phase_values = concentrations.get(phase, {}) or {}
+    if clean in phase_values:
+        return float(phase_values[clean])
+    bulk_values = concentrations.get("bulk", {}) or {}
+    if clean in bulk_values:
+        return float(bulk_values[clean])
+    raise ValueError(f"Equilibrium references species {clean!r}, but no concentration is defined.")
+
+
+def _expand_equilibrium_rate(entry, reactions, concentrations, activity):
+    target = entry.get("target")
+    if target in (None, "", False):
+        return None
+    index = _equilibrium_target_reaction_index(target)
+    while len(reactions) <= index:
+        reactions.append({})
+    parsed = entry["_parsed"]
+    k_concentration = _equilibrium_concentration_quotient(entry, parsed, activity)
+    external_reference_factor = 1.0
+    if "k_exchange" in entry and entry.get("k_exchange") is not None:
+        k_exchange = float(entry["k_exchange"])
+        if k_exchange <= 0 or not np.isfinite(k_exchange):
+            raise ValueError("reaction k_exchange must be positive and finite.")
+        phase = entry.get("phase", "bulk")
+        reference_key = "reference_coverage" if phase == "surface" else "reference_concentration"
+        reference = float(
+            entry.get(
+                reference_key,
+                entry.get("reference_amount", _activity_standard(activity, phase)),
+            )
+        )
+        if reference <= 0 or not np.isfinite(reference):
+            raise ValueError(f"reaction {reference_key} must be positive and finite.")
+        reactant_order = _total_stoich(parsed["reactants"])
+        product_order = _total_stoich(parsed["products"])
+        forward_factor = reference ** max(reactant_order - 1, 0)
+        reverse_factor = reference ** max(product_order - 1, 0)
+        external_reference_factor = forward_factor
+        kb = k_exchange / (k_concentration * forward_factor + reverse_factor)
+        kf = k_concentration * kb
+        derived_from = "K, k_exchange"
+    elif "koff" in entry and entry.get("koff") is not None:
+        kb = float(entry["koff"])
+        kf = k_concentration * kb
+        derived_from = "K, koff"
+    else:
+        return None
+    reactions[index] = {**(reactions[index] if isinstance(reactions[index], dict) else {}), "kf": float(kf), "kb": float(kb)}
+    return {
+        "equilibrium": entry["_name"],
+        "target": f"reactions.{index}",
+        "kf": float(kf),
+        "kb": float(kb),
+        "K_concentration": float(k_concentration),
+        "derived_from": derived_from,
+        "external_reference_factor": float(external_reference_factor),
+    }
+
+
+def _equilibrium_target_reaction_index(target):
+    if isinstance(target, (tuple, list)) and len(target) >= 2 and target[0] == "reactions":
+        return int(target[1])
+    text = str(target).strip()
+    if text.startswith("reactions."):
+        return int(text.split(".")[1])
+    raise ValueError("equilibrium target must be a reactions.N path.")
+
+
+def _total_stoich(terms):
+    return int(sum(coeff for _species, coeff in terms))
+
+
+def _dimensionless_equilibrium_constant(entry, parsed, activity):
+    value = float(entry.get("K"))
+    if value <= 0 or not np.isfinite(value):
+        raise ValueError("equilibrium K must be positive.")
+    unit = _canonical_k_unit(entry.get("K_unit", entry.get("K unit", entry.get("K units", "dimensionless"))))
+    if unit in {"", "dimensionless", "activity"}:
+        return value
+    if entry.get("phase", "bulk") == "surface":
+        raise ValueError(
+            "Unit-bearing K is only supported for bulk reactions; use dimensionless activity K "
+            "with activity.standard_coverage for surface equilibria."
+        )
+    reactant_order = _total_stoich(parsed["reactants"])
+    product_order = _total_stoich(parsed["products"])
+    power = reactant_order - product_order
+    if power <= 0:
+        raise ValueError("concentration-quotient K_unit is only supported when reactant order exceeds product order.")
+    if unit in {"m^-1"}:
+        return value
+    if unit in {"mm^-1"}:
+        return value * (1000.0**power)
+    if unit in {"native", "m^3/mol", "m3/mol", "m3mol"}:
+        return value * (_activity_standard(activity, entry.get("phase", "bulk")) ** power)
+    raise ValueError(f"Unknown K_unit {entry.get('K_unit')!r}.")
+
+
+def _canonical_k_unit(value):
+    text = str(value or "dimensionless").strip().lower()
+    text = text.replace(" ", "").replace("−", "-")
+    if text in {"", "dimensionless", "activity"}:
+        return "dimensionless"
+    if text in {"m^-1", "m-1", "1/m"}:
+        return "m^-1"
+    if text in {"mm^-1", "mm-1", "1/mm"}:
+        return "mm^-1"
+    if text in {"native", "m^3/mol", "m3/mol", "m3mol"}:
+        return text
+    return text
+
+
+def _equilibrium_concentration_quotient(entry, parsed, activity):
+    k_dimless = _dimensionless_equilibrium_constant(entry, parsed, activity)
+    reactant_gamma = np.prod([
+        _activity_gamma(activity, entry.get("phase", "bulk"), species) ** coeff
+        for species, coeff in parsed["reactants"]
+    ])
+    product_gamma = np.prod([
+        _activity_gamma(activity, entry.get("phase", "bulk"), species) ** coeff
+        for species, coeff in parsed["products"]
+    ])
+    reactant_order = _total_stoich(parsed["reactants"])
+    product_order = _total_stoich(parsed["products"])
+    return float(
+        k_dimless
+        * reactant_gamma
+        / product_gamma
+        * (_activity_standard(activity, entry.get("phase", "bulk")) ** (product_order - reactant_order))
+    )
 
 
 def _kinetics_with_fallbacks(kinetics):
@@ -1534,6 +2453,11 @@ def _source_electrode_area_m2(source, options):
 
 def _normalize_simulation_species_params(params):
     params = {} if params is None else dict(params)
+    if "pools" in params:
+        raise ValueError(
+            "Simulation pools are no longer supported. Enter every initial concentration; "
+            "eCAT derives conservation constraints from reaction stoichiometry."
+        )
     species_input = params.pop("species", None)
     concentrations = normalize_concentrations(params.get("concentrations", {}) or {})
     diffusion = dict(params.get("diffusion", {}) or {})
@@ -1549,6 +2473,211 @@ def _normalize_simulation_species_params(params):
     params["concentrations"] = concentrations
     params["diffusion"] = diffusion
     return params
+
+
+def _normalize_simulation_activity_params(params):
+    params = {} if params is None else dict(params)
+    sugar = params.pop("activity_coefficients", None)
+    activity = _activity_config({"activity": params.get("activity", {}), "activity_coefficients": sugar})
+    has_activity = "activity" in params or sugar not in (None, {})
+    if has_activity:
+        params["activity"] = activity
+    return params
+
+
+def _activity_config(params):
+    params = {} if params is None else params
+    activity = params.get("activity", {}) if isinstance(params.get("activity", {}), dict) else {}
+    standard = activity.get(
+        "standard_concentration",
+        activity.get("standard concentration", activity.get("C_standard", _DEFAULT_ACTIVITY_STANDARD_CONCENTRATION)),
+    )
+    standard_coverage = activity.get(
+        "standard_coverage",
+        activity.get("standard coverage", activity.get("Gamma_standard", _DEFAULT_ACTIVITY_STANDARD_COVERAGE)),
+    )
+    gamma_raw = activity.get(
+        "gamma",
+        activity.get("gammas", activity.get("coefficients", activity.get("activity_coefficients", {}))),
+    )
+    if not gamma_raw and params.get("activity_coefficients") not in (None, {}):
+        gamma_raw = params.get("activity_coefficients")
+    standard = float(standard)
+    standard_coverage = float(standard_coverage)
+    if standard <= 0 or not np.isfinite(standard):
+        raise ValueError("activity standard_concentration must be positive and finite.")
+    if standard_coverage <= 0 or not np.isfinite(standard_coverage):
+        raise ValueError("activity standard_coverage must be positive and finite.")
+    return {
+        "standard_concentration": standard,
+        "standard_coverage": standard_coverage,
+        "gamma": _normalize_gamma_mapping(gamma_raw),
+    }
+
+
+def _normalize_gamma_mapping(gamma):
+    out = {"bulk": {}, "surface": {}}
+    if not isinstance(gamma, dict) or not gamma:
+        return out
+    if any(key in gamma for key in ("bulk", "surface")):
+        for phase in ("bulk", "surface"):
+            values = gamma.get(phase, {}) or {}
+            if not isinstance(values, dict):
+                raise ValueError("activity gamma phase entries must be mappings.")
+            for name, value in values.items():
+                clean = _strip_surface_star(name) if phase == "surface" else str(name).rstrip("*")
+                out[phase][clean] = float(value)
+    else:
+        for name, value in gamma.items():
+            out["bulk"][str(name).rstrip("*")] = float(value)
+    for phase, values in out.items():
+        for name, value in values.items():
+            if value <= 0 or not np.isfinite(value):
+                raise ValueError(f"activity coefficient gamma for {phase}.{name} must be positive.")
+    return out
+
+
+def _activity_gamma(activity, phase, species):
+    phase = _normalize_concentration_phase(phase)
+    clean = _strip_surface_star(species) if phase == "surface" else str(species).rstrip("*")
+    return float(((activity or {}).get("gamma", {}).get(phase, {}) or {}).get(clean, 1.0))
+
+
+def _activity_standard(activity, phase):
+    phase = _normalize_concentration_phase(phase)
+    key = "standard_coverage" if phase == "surface" else "standard_concentration"
+    default = (
+        _DEFAULT_ACTIVITY_STANDARD_COVERAGE
+        if phase == "surface"
+        else _DEFAULT_ACTIVITY_STANDARD_CONCENTRATION
+    )
+    return float((activity or {}).get(key, default))
+
+
+def _species_activity(concentration, activity, phase, species):
+    return float(_activity_gamma(activity, phase, species) * float(concentration) / _activity_standard(activity, phase))
+
+
+def _has_nonideal_activity(params):
+    activity = _activity_config(params)
+    for phase in ("bulk", "surface"):
+        for value in (activity.get("gamma", {}).get(phase, {}) or {}).values():
+            if not np.isclose(float(value), 1.0, rtol=_ACTIVITY_DISPLAY_RTOL, atol=0.0):
+                return True
+    return False
+
+
+def _normalize_mechanism_parameter_sections(params, mechanism_spec=None):
+    params = {} if params is None else dict(params)
+    if mechanism_spec is None:
+        return params
+    params["kinetics"] = _normalize_step_parameter_section(
+        params.get("kinetics", []),
+        _mechanism_steps_of_kind(mechanism_spec, "E"),
+        "kinetics",
+    )
+    params["reactions"] = _normalize_step_parameter_section(
+        params.get("reactions", []),
+        _mechanism_steps_of_kind(mechanism_spec, "C"),
+        "reactions",
+    )
+    params["_mechanism_steps"] = {
+        "kinetics": _mechanism_steps_of_kind(mechanism_spec, "E"),
+        "reactions": _mechanism_steps_of_kind(mechanism_spec, "C"),
+    }
+    return params
+
+
+def _normalize_step_parameter_section(values, steps, section):
+    if values is None:
+        return []
+    if isinstance(values, list):
+        normalized = [deepcopy(entry) for entry in values]
+    elif isinstance(values, tuple):
+        normalized = [deepcopy(entry) for entry in values]
+    elif isinstance(values, dict):
+        normalized = []
+        for key, entry in values.items():
+            index = _resolve_step_parameter_key(key, steps, section)
+            while len(normalized) <= index:
+                normalized.append({})
+            if normalized[index] not in ({}, None):
+                raise ValueError(f"Duplicate {section} entry for step {index}.")
+            normalized[index] = deepcopy(entry)
+    else:
+        raise ValueError(f"{section} params must be a list or mapping.")
+    if section == "reactions":
+        normalized = [_normalize_reaction_param_entry(entry) for entry in normalized]
+    return normalized
+
+
+def _resolve_step_parameter_key(key, steps, section):
+    if isinstance(key, (int, np.integer)):
+        index = int(key)
+        if index < 0:
+            raise ValueError(f"{section} step index cannot be negative.")
+        return index
+    text = str(key).strip()
+    if text.isdigit():
+        return int(text)
+    lowered = text.lower()
+    for prefix in (f"{section}.", f"{section[:-1]}."):
+        if lowered.startswith(prefix):
+            tail = text.split(".", 1)[1]
+            if tail.isdigit():
+                return int(tail)
+    key_text = _reaction_key(text)
+    matches = [int(step["index"]) for step in steps if step.get("key") == key_text]
+    if len(matches) == 1:
+        return matches[0]
+    if not matches:
+        raise ValueError(f"Could not match {section} key {key!r} to a mechanism step.")
+    raise ValueError(f"{section} key {key!r} matches multiple mechanism steps; use a numeric key.")
+
+
+def _normalize_reaction_param_entry(entry):
+    if not isinstance(entry, dict):
+        return entry
+    out = dict(entry)
+    if "pool" in out:
+        raise ValueError(
+            "Reaction pool fields are no longer supported. Use equilibrate=False for a "
+            "reversible reaction that should remain dynamic-only."
+        )
+    if "mode" in out:
+        raise ValueError(
+            "Reaction mode is no longer supported. Equilibrium reactions equilibrate by "
+            "default; use equilibrate=False to opt out."
+        )
+    if "k_exchange_ref" in out:
+        raise ValueError(
+            "reaction k_exchange_ref is no longer supported; use the standard-state "
+            "k_exchange parameter."
+        )
+    if "K" in out:
+        out.update(_coerce_equilibrium_constant_fields(out["K"], out))
+    return out
+
+
+def _coerce_equilibrium_constant_fields(value, entry=None):
+    entry = {} if entry is None else entry
+    if isinstance(value, str):
+        parsed_value, parsed_unit = _parse_equilibrium_constant_string(value)
+        unit = entry.get("K_unit", entry.get("K unit", entry.get("K units", parsed_unit)))
+        out = {"K": parsed_value}
+        if unit not in (None, ""):
+            out["K_unit"] = str(unit)
+        return out
+    return {"K": float(value)}
+
+
+def _parse_equilibrium_constant_string(value):
+    text = str(value).strip()
+    match = re.match(r"^\s*([+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)\s*(.*?)\s*$", text)
+    if not match:
+        raise ValueError(f"Could not parse equilibrium constant {value!r}.")
+    number, unit = match.groups()
+    return float(number), unit.strip()
 
 
 def _concentrations_from_params(params):
@@ -1623,6 +2752,12 @@ def _diffusion_with_species_defaults(diffusion, species):
     diffusion = {} if diffusion is None else dict(diffusion)
     normalized_concentrations = normalize_concentrations(species)
     species_names = list(normalized_concentrations["bulk"])
+    if not species_names:
+        return diffusion
+    if "D" in diffusion:
+        default = float(diffusion["D"])
+        overrides = {str(name).rstrip("*"): float(value) for name, value in diffusion.items() if name != "D"}
+        return {name: overrides.get(name, default) for name in species_names}
     if len(diffusion) == 1 and len(species_names) > 1:
         value = float(next(iter(diffusion.values())))
         return {name: value for name in species_names}
@@ -1836,6 +2971,7 @@ def _simulated_cv_input_setup_dataframe(input_obj):
         {"Parameter": "Points", "Value": _format_param_value(len(input_obj.E))},
         {"Parameter": "Scan Rate", "Value": _format_scan_rate_value(metadata.get("scan_rate", _scan_rate_from_input(input_obj)))},
         {"Parameter": "Segments", "Value": _format_param_value(_input_segment_count(metadata.get("segments")))},
+        {"Parameter": "Incubation Time", "Value": _format_param_value(metadata.get("incubation_time", 0.0), "s")},
         {"Parameter": "Quiet Time", "Value": _format_param_value(metadata.get("quiet_time", 0.0), "s")},
         {"Parameter": "Potential Range", "Value": _format_array_range(input_obj.E, _simulation_axis_unit(input_obj, "potential", "V"))},
         {"Parameter": "Time Range", "Value": _format_array_range(input_obj.t, "s")},
@@ -1843,6 +2979,8 @@ def _simulated_cv_input_setup_dataframe(input_obj):
         {"Parameter": "Current Unit", "Value": _simulation_axis_unit(input_obj, "current", "A")},
         {"Parameter": "Has Current", "Value": str(input_obj.has_current)},
     ]
+    if metadata.get("background_correction"):
+        rows.append({"Parameter": "Background Correction", "Value": metadata.get("background_correction")})
     if input_obj.i is not None:
         rows.insert(
             8,
@@ -1867,11 +3005,12 @@ def _simulated_cv_setup_dataframe(result):
     rows = [
         {"Parameter": "Backend", "Value": summary.get("backend", getattr(result, "software", ""))},
         {"Parameter": "Mechanism Preset", "Value": mechanism_preset},
-        {"Parameter": "Mechanism", "Value": str(mechanism_text).replace("\n", " ; ")},
+        {"Parameter": "Mechanism", "Value": str(mechanism_text)},
         {"Parameter": "Current Sign", "Value": _format_param_value(summary.get("current_sign", getattr(result, "current_sign", "")))},
         {"Parameter": "Points", "Value": _format_param_value(len(data))},
         {"Parameter": "Scan Rate", "Value": _format_scan_rate_value(getattr(result, "scan_rate", np.nan))},
         {"Parameter": "Segments", "Value": _format_param_value(getattr(result, "segments", ""))},
+        {"Parameter": "Incubation Time", "Value": _format_param_value(summary.get("incubation_time", _metadata_value(input_obj, "incubation_time", 0.0)), "s")},
         {"Parameter": "Quiet Time", "Value": _format_param_value(summary.get("quiet_time", _metadata_value(input_obj, "quiet_time", 0.0)), "s")},
         {"Parameter": "Potential Range", "Value": _format_column_range(data, "Potential", units.get("Potential", _simulation_axis_unit(input_obj, "potential", "V")))},
         {"Parameter": "Current Range", "Value": _format_column_range(data, "Current", units.get("Current", _simulation_axis_unit(input_obj, "current", "A")))},
@@ -1881,6 +3020,57 @@ def _simulated_cv_setup_dataframe(result):
         {"Parameter": "Input Has Measured Current", "Value": str(input_obj is not None and getattr(input_obj, "i", None) is not None)},
     ]
     return pd.DataFrame(rows, columns=["Parameter", "Value"])
+
+
+def _maybe_print_simulation_concentration_states(result, options):
+    options = _normalize_options(options)
+    mode = options.get(
+        "print states",
+        options.get("print_states", options.get("print concentration states", False)),
+    )
+    if not _truthy_option(mode):
+        return
+    frame = _simulation_concentration_states_dataframe(result)
+    if frame.empty:
+        return
+    _display_dataframe_sections(
+        "Simulation Concentration States:",
+        [(None, frame)],
+        options=options,
+    )
+
+
+def _simulation_concentration_states_dataframe(result):
+    report = (getattr(result, "summary", {}) or {}).get("parameter_model", {}) or {}
+    states = report.get("states", {}) or {}
+    initial = states.get("initial", {}) or {}
+    equilibrated = states.get("equilibrated", initial) or initial
+    incubated = states.get("incubated", equilibrated) or equilibrated
+    rows = []
+    for phase in ("bulk", "surface"):
+        names = []
+        for state in (initial, equilibrated, incubated):
+            for name in ((state.get(phase, {}) or {})):
+                if name not in names:
+                    names.append(name)
+        for name in names:
+            entered = (initial.get(phase, {}) or {}).get(name, np.nan)
+            equilibrium_value = (equilibrated.get(phase, {}) or {}).get(name, entered)
+            incubation_value = (incubated.get(phase, {}) or {}).get(name, equilibrium_value)
+            values = np.asarray([entered, equilibrium_value, incubation_value], dtype=float)
+            if np.allclose(values, values[0], rtol=1e-9, atol=1e-30, equal_nan=True):
+                continue
+            unit = _concentration_unit(phase)
+            rows.append(
+                {
+                    "Phase": phase,
+                    "Species": name,
+                    "Entered": _format_param_value(entered, unit),
+                    "Equilibrated": _format_param_value(equilibrium_value, unit),
+                    "Incubated": _format_param_value(incubation_value, unit),
+                }
+            )
+    return pd.DataFrame(rows, columns=["Phase", "Species", "Entered", "Equilibrated", "Incubated"])
 
 
 def _is_raw_display_mode(value):
@@ -2294,68 +3484,85 @@ def _species_param_rows(params):
     rows = []
     concentrations = normalize_concentrations((params or {}).get("concentrations", {}) or {})
     diffusion = (params or {}).get("diffusion", {}) or {}
+    activity = _activity_config(params or {})
+    show_activity = _has_nonideal_activity(params or {})
     for phase in ("bulk", "surface"):
         for name, value in concentrations[phase].items():
-            rows.append(
-                {
-                    "Group": phase,
-                    "Path": _fit_target_path_label(("concentrations", phase, name)),
-                    "Species": name,
-                    "Parameter": _concentration_symbol(phase, name),
-                    "Value": _format_param_value(value, _concentration_unit(phase)),
-                }
-            )
+            row = {
+                "Group": phase,
+                "Path": _fit_target_path_label(("concentrations", phase, name)),
+                "Species": name,
+                "Parameter": _concentration_symbol(phase, name),
+                "Value": _format_param_value(value, _concentration_unit(phase)),
+            }
+            if show_activity:
+                row["gamma"] = _format_param_value(_activity_gamma(activity, phase, name))
+                row["Activity"] = _format_param_value(_species_activity(value, activity, phase, name))
+            rows.append(row)
             if phase == "bulk" and name in diffusion:
-                rows.append(_diffusion_param_row(name, diffusion[name], group_label=phase))
+                rows.append(_diffusion_param_row(name, diffusion[name], group_label=phase, show_activity=show_activity))
     for name, value in diffusion.items():
         clean_name = str(name).rstrip("*")
         if clean_name not in concentrations["bulk"]:
-            rows.append(_diffusion_param_row(name, value, group_label="bulk"))
+            rows.append(_diffusion_param_row(name, value, group_label="bulk", show_activity=show_activity))
     return rows
 
 
-def _diffusion_param_row(name, value, group_label="bulk"):
+def _diffusion_param_row(name, value, group_label="bulk", show_activity=False):
     clean_name = str(name).rstrip("*")
-    return {
+    row = {
         "Group": group_label,
         "Path": _fit_target_path_label(("diffusion", clean_name)),
         "Species": clean_name,
         "Parameter": _parameter_symbol("diffusion", clean_name),
         "Value": _format_param_value(value, _parameter_unit("diffusion", clean_name)),
     }
+    if show_activity:
+        row["gamma"] = ""
+        row["Activity"] = ""
+    return row
 
 
 def _compact_species_dataframe(params):
     concentrations = normalize_concentrations((params or {}).get("concentrations", {}) or {})
     diffusion = (params or {}).get("diffusion", {}) or {}
+    activity = _activity_config(params or {})
+    show_activity = _has_nonideal_activity(params or {})
     rows = []
     for phase in ("bulk", "surface"):
         for name, value in concentrations[phase].items():
             clean_name = str(name).rstrip("*")
-            rows.append(
-                {
-                    "Phase": phase,
-                    "Species": clean_name,
-                    "Amount": _format_param_value(value, _concentration_unit(phase)),
-                    "Diffusion": (
-                        _format_param_value(diffusion[clean_name], _parameter_unit("diffusion", clean_name))
-                        if phase == "bulk" and clean_name in diffusion
-                        else ""
-                    ),
-                }
-            )
+            row = {
+                "Phase": phase,
+                "Species": clean_name,
+                "Amount": _format_param_value(value, _concentration_unit(phase)),
+                "Diffusion": (
+                    _format_param_value(diffusion[clean_name], _parameter_unit("diffusion", clean_name))
+                    if phase == "bulk" and clean_name in diffusion
+                    else ""
+                ),
+            }
+            if show_activity:
+                row["gamma"] = _format_param_value(_activity_gamma(activity, phase, clean_name))
+                row["Activity"] = _format_param_value(_species_activity(value, activity, phase, clean_name))
+            rows.append(row)
     for name, value in diffusion.items():
         clean_name = str(name).rstrip("*")
         if clean_name not in concentrations["bulk"]:
-            rows.append(
-                {
-                    "Phase": "bulk",
-                    "Species": clean_name,
-                    "Amount": "",
-                    "Diffusion": _format_param_value(value, _parameter_unit("diffusion", clean_name)),
-                }
-            )
-    return pd.DataFrame(rows, columns=["Phase", "Species", "Amount", "Diffusion"])
+            row = {
+                "Phase": "bulk",
+                "Species": clean_name,
+                "Amount": "",
+                "Diffusion": _format_param_value(value, _parameter_unit("diffusion", clean_name)),
+            }
+            if show_activity:
+                row["gamma"] = ""
+                row["Activity"] = ""
+            rows.append(row)
+    columns = ["Phase", "Species", "Amount", "Diffusion"]
+    if show_activity:
+        columns.extend(["gamma", "Activity"])
+    return pd.DataFrame(rows, columns=columns)
 
 
 def _compact_mechanism_dataframe(rows):
@@ -2578,6 +3785,8 @@ def _parameter_symbol(section, key):
         "kf": "k₁",
         "kb": "k₋₁",
         "k": "k",
+        "k_exchange": "k_exchange",
+        "koff": "koff",
     }
     if section == "diffusion":
         return "D" if key_text == "D" else f"D({key_text})"
@@ -2604,7 +3813,7 @@ def _parameter_unit(section, key):
     if section == "kinetics":
         return {"k0": "m/s", "e0": "V"}.get(lower, "")
     if section == "reactions":
-        return {"kf": "s⁻¹", "kb": "s⁻¹", "k": "s⁻¹"}.get(lower, "")
+        return {"kf": "s⁻¹", "kb": "s⁻¹", "k": "s⁻¹", "koff": "s⁻¹", "k_exchange": "s⁻¹"}.get(lower, "")
     return ""
 
 
@@ -2639,28 +3848,39 @@ def _value_should_show_unit(value):
 def _display_dataframe_sections(title, sections, options=None):
     options = _normalize_options(options)
     if options.get("pretty print", True) and _can_rich_display():
-        from IPython.display import Markdown, display
+        from IPython.display import display
 
-        display(Markdown(f"**{title}**"))
         for name, frame in sections:
-            if name:
-                display(Markdown(f"`{name}`"))
-            display(_left_justified_dataframe(frame))
+            caption = f"{title} {name}" if name else title
+            display(_left_justified_dataframe(frame, caption=caption))
         return
     print(title)
     print(_format_dataframe_sections_text(sections))
 
 
-def _left_justified_dataframe(frame):
+def _left_justified_dataframe(frame, caption=None):
     if frame is None:
         return frame
     try:
-        return frame.style.set_properties(**{"text-align": "left"}).set_table_styles(
+        styled = frame.style.set_properties(**{"text-align": "left", "white-space": "pre-line"}).set_table_styles(
             [
+                {
+                    "selector": "caption",
+                    "props": [
+                        ("caption-side", "top"),
+                        ("text-align", "left"),
+                        ("font-weight", "600"),
+                        ("color", "inherit"),
+                        ("margin-bottom", "0.35em"),
+                    ],
+                },
                 {"selector": "th", "props": [("text-align", "left")]},
-                {"selector": "td", "props": [("text-align", "left")]},
+                {"selector": "td", "props": [("text-align", "left"), ("white-space", "pre-line")]},
             ]
         )
+        if caption:
+            styled = styled.set_caption(str(caption).strip())
+        return styled
     except Exception:
         return frame
 
@@ -3339,7 +4559,13 @@ def _fit_cv_least_squares(input_obj, mechanism, params, fit, options, backend, i
 
 def _fit_cv_strategy(input_obj, mechanism, params, fit, options, backend, initial_result, method_spec):
 
-    params = _prepare_simulation_params(input_obj, params, options)
+    params = _prepare_simulation_params(
+        input_obj,
+        params,
+        options,
+        mechanism=mechanism,
+        expand_parameter_model=False,
+    )
     fit_spec = _normalize_fit_spec(fit, params, input_obj)
     base_params = fit_spec["base_params"]
     vary_paths = fit_spec["vary"]
@@ -3476,7 +4702,7 @@ def _fit_cv_strategy(input_obj, mechanism, params, fit, options, backend, initia
     _maybe_print_fit_progress(progress_rows, options)
     _maybe_print_fit_statistics(fit_summary, corrections, options)
     _maybe_print_fit_params(
-        _prepare_simulation_params(input_obj, base_params, options),
+        _prepare_simulation_params(input_obj, base_params, options, mechanism=mechanism),
         final_result.params,
         options,
         fit_spec,
@@ -3510,13 +4736,21 @@ def _fit_cvs_strategy(datasets, mechanism, params, fit, per_cv, options, backend
             dataset["input"],
             _params_with_dataset_inference(dataset["params"], dataset["input"], options),
             options,
+            mechanism=dataset["mechanism"],
+            expand_parameter_model=False,
         )
         for dataset in datasets
     ]
     for dataset, params_i in zip(datasets, dataset_params):
         dataset["input_concentrations"] = _input_concentration_label(dataset["input"])
         dataset["mapped_concentrations"] = _mapped_concentration_label(dataset["input"], params_i, options)
-    shared_params = _prepare_simulation_params(datasets[0]["input"], params, options)
+    shared_params = _prepare_simulation_params(
+        datasets[0]["input"],
+        params,
+        options,
+        mechanism=mechanism,
+        expand_parameter_model=False,
+    )
     fit_spec = _normalize_fit_spec(fit, shared_params, datasets[0]["input"])
     fixed_paths = fit_spec.get("fixed", {}) or {}
     for params_i in dataset_params:
@@ -4248,16 +5482,26 @@ def _fit_cv_electrokitty(input_obj, mechanism, params, fit, options, initial_res
     if fit not in (None, "all"):
         raise ValueError("method='electrokitty' does not honor arbitrary fit specs; use options['electrokitty'] flags instead.")
 
-    params = _prepare_simulation_params(input_obj, params, options)
+    input_params = _prepare_simulation_params(
+        input_obj,
+        params,
+        options,
+        mechanism=mechanism,
+        expand_parameter_model=False,
+    )
+    params = _prepare_simulation_params(input_obj, input_params, options, mechanism=mechanism)
     initial_params = deepcopy(params)
     mechanism_spec = compile_mechanism(mechanism, params)
-    adapter = _electrokitty_parameters(params, mechanism_spec)
     ElectroKitty = _import_electrokitty()
-    ek = ElectroKitty(mechanism_spec.mechanism)
+    backend_mechanism = _electrokitty_backend_mechanism(mechanism_spec)
+    ek = ElectroKitty(backend_mechanism)
+    species_order = _electrokitty_runtime_species_order(ek)
+    adapter = _electrokitty_parameters(params, mechanism_spec, species_order=species_order)
+    backend_input, quiet_info = _backend_input_with_quiet_time(input_obj, options)
     ek.set_data(
-        np.asarray(input_obj.E, dtype=float),
-        np.asarray(input_obj.i, dtype=float),
-        np.asarray(input_obj.t, dtype=float),
+        np.asarray(backend_input.E, dtype=float),
+        np.asarray(backend_input.i, dtype=float),
+        np.asarray(backend_input.t, dtype=float),
     )
     ek.create_simulation(
         adapter["kin"],
@@ -4280,12 +5524,22 @@ def _fit_cv_electrokitty(input_obj, mechanism, params, fit, options, initial_res
     ek_options.update(options.get("electrokitty", {}) or {})
     ek.fit_to_data(**ek_options)
 
-    E_generated = np.asarray(getattr(ek, "E_Corr", input_obj.E), dtype=float)
-    backend_current = np.asarray(getattr(ek, "current", input_obj.i), dtype=float)
-    t = np.asarray(input_obj.t[: len(E_generated)], dtype=float)
+    E_generated = np.asarray(getattr(ek, "E_Corr", backend_input.E), dtype=float)
+    backend_current = np.asarray(getattr(ek, "current", backend_input.i), dtype=float)
+    t = np.asarray(getattr(ek, "t", backend_input.t), dtype=float)[: len(E_generated)]
+    E_generated, backend_current, t = _trim_backend_quiet_time_output(
+        E_generated,
+        backend_current,
+        t,
+        quiet_info,
+    )
     current_sign = _resolve_current_sign(backend_current, input_obj.i, options)
     display_current = current_sign * backend_current
     measured_current = np.asarray(input_obj.i, dtype=float)
+    if len(display_current) != len(measured_current):
+        raise ValueError(
+            "ElectroKitty native fit returned a different number of CV points after quiet-time trimming."
+        )
     data = pd.DataFrame(
         {
             "Potential": E_generated,
@@ -4298,6 +5552,7 @@ def _fit_cv_electrokitty(input_obj, mechanism, params, fit, options, initial_res
     final_result = SimulatedCV(
         data=data,
         params=params,
+        input_params=input_params,
         mechanism=mechanism_spec,
         input=input_obj,
         backend_result=ek,
@@ -4309,6 +5564,19 @@ def _fit_cv_electrokitty(input_obj, mechanism, params, fit, options, initial_res
             "preset": mechanism_spec.preset,
             "current_sign": current_sign,
             "current sign": current_sign,
+            "quiet_time": quiet_info["quiet_time"],
+            "quiet_time_applied": quiet_info["applied"],
+            "incubation_time": float(
+                (params.get("_parameter_model", {}).get("incubation", {}) or {}).get(
+                    "time",
+                    _input_incubation_time(input_obj),
+                )
+            ),
+            "incubation_applied": bool(
+                (params.get("_parameter_model", {}).get("incubation", {}) or {}).get("applied", False)
+            ),
+            "parameter_model": deepcopy(params.get("_parameter_model", {})),
+            "parameter model": deepcopy(params.get("_parameter_model", {})),
         },
     )
     fit_metrics = _fit_quality_metrics(
@@ -4328,7 +5596,7 @@ def _fit_cv_electrokitty(input_obj, mechanism, params, fit, options, initial_res
         **fit_metrics,
     }
     fit_result = SimulationFitResult(
-        best_params=params,
+        best_params=input_params,
         fit_spec={"method": "electrokitty", "options": ek_options},
         method="electrokitty",
         backend="electrokitty",
@@ -4352,11 +5620,13 @@ class _ElectroKittyBackend:
     name = "electrokitty"
 
     def simulate(self, input, mechanism_spec, params, options):
-        adapter = _electrokitty_parameters(params, mechanism_spec)
         measured_current = input.i if input.i is not None else np.zeros(len(input.E), dtype=float)
 
         ElectroKitty = _import_electrokitty()
-        ek = ElectroKitty(mechanism_spec.mechanism)
+        backend_mechanism = _electrokitty_backend_mechanism(mechanism_spec)
+        ek = ElectroKitty(backend_mechanism)
+        species_order = _electrokitty_runtime_species_order(ek)
+        adapter = _electrokitty_parameters(params, mechanism_spec, species_order=species_order)
         ek.set_data(
             np.asarray(input.E, dtype=float),
             np.asarray(measured_current, dtype=float),
@@ -4391,7 +5661,7 @@ def _resolve_fit_dataset(input_or_result, mechanism, params, backend, options, *
         result = input_or_result
         input_obj = result.input
         mechanism_value = result.mechanism
-        params_value = deepcopy(result.params)
+        params_value = deepcopy(result.input_params)
         backend_value = result.summary.get("backend", backend)
         if mechanism is not None:
             mechanism_value = mechanism
@@ -4460,6 +5730,7 @@ def _fit_cv_data_options(options):
 
 def _normalize_fit_spec(fit, params, input_obj):
     base_params = _normalize_simulation_species_params(deepcopy(params))
+    base_params = _normalize_simulation_activity_params(base_params)
     fixed = _fit_mapping(fit, "fixed")
     fixed_paths = _expand_fit_mapping(fixed, base_params)
     for path, value in fixed_paths.items():
@@ -4826,6 +6097,18 @@ def _fit_safe_numeric_paths(params):
         for key, value in concentrations.items():
             if _is_numeric(value):
                 out.append(("concentrations", "bulk", key))
+    activity = _activity_config(params)
+    out.extend(_safe_numeric_nested_paths(activity.get("gamma", {}) or {}, ("activity", "gamma")))
+    return out
+
+
+def _safe_numeric_nested_paths(value, prefix):
+    out = []
+    if isinstance(value, dict):
+        for key, nested in value.items():
+            out.extend(_safe_numeric_nested_paths(nested, tuple(prefix) + (key,)))
+    elif _is_numeric(value):
+        out.append(tuple(prefix))
     return out
 
 
@@ -4868,6 +6151,9 @@ def _deep_merge_dicts(base, updates):
 def _coerce_param_path_value(path, value):
     if tuple(path)[-1] == "k0" and isinstance(value, str):
         return _resolve_k0_preset(value)
+    if str(tuple(path)[-1]).lower() == "k" and isinstance(value, str):
+        parsed, _unit = _parse_equilibrium_constant_string(value)
+        return parsed
     return value
 
 
@@ -4905,7 +6191,11 @@ def _auto_fit_bounds(path, init, input_obj):
         return (_MIN_POSITIVE_FIT_BOUND, 1e12)
     if key in {"kf", "kb", "k"}:
         return (_MIN_POSITIVE_FIT_BOUND, 1e12)
-    if key in {"a", "cdl", "ru"} or path[0] in {"diffusion", "concentrations"}:
+    if (
+        key in {"a", "cdl", "ru", "total", "k", "k_exchange", "koff"}
+        or path[0] in {"diffusion", "concentrations"}
+        or (path[0] == "activity" and "gamma" in path)
+    ):
         if init > 0:
             return (max(init / 100.0, 1e-30), init * 100.0)
         return (0.0, 1000.0)
@@ -4914,7 +6204,11 @@ def _auto_fit_bounds(path, init, input_obj):
 
 def _auto_fit_transform(path, bounds):
     key = str(path[-1]).lower()
-    if key in {"k0", "kf", "kb", "k", "a", "cdl", "ru"} or path[0] in {"diffusion", "concentrations"}:
+    if (
+        key in {"k0", "kf", "kb", "k", "a", "cdl", "ru", "total", "k_exchange", "koff"}
+        or path[0] in {"diffusion", "concentrations"}
+        or (path[0] == "activity" and "gamma" in path)
+    ):
         if float(bounds[0]) > 0 and float(bounds[1]) > 0:
             return "log10"
     return "linear"
@@ -5600,6 +6894,11 @@ def _representative_dt(t):
 def normalize_concentrations(concentrations):
     """Normalize concentration mappings into explicit bulk/surface groups."""
     concentrations = {} if concentrations is None else dict(concentrations)
+    if "pools" in concentrations:
+        raise ValueError(
+            "Simulation pools are no longer supported. Enter every initial concentration; "
+            "eCAT derives conservation constraints from reaction stoichiometry."
+        )
     has_groups = any(key in concentrations for key in ("bulk", "surface"))
     if has_groups:
         bulk = concentrations.get("bulk", {}) or {}
@@ -5713,16 +7012,22 @@ def _first_four_species(species, fallback):
     return names[0], names[1], names[2], names[3]
 
 
-def _electrokitty_parameters(params, mechanism_spec=None):
+def _electrokitty_parameters(params, mechanism_spec=None, species_order=None):
     cell = params.get("cell", {}) or {}
     spatial = _spatial_with_aliases(params.get("spatial", {}) or {})
     concentrations = normalize_concentrations(_concentrations_from_params(params))
+    if species_order is None:
+        surface_order, bulk_order = _electrokitty_species_order(mechanism_spec)
+    else:
+        surface_order, bulk_order = species_order
+    area = float(cell.get("A", 1e-5))
+    total_cdl = float(cell.get("Cdl", 0.0))
 
     cell_const = [
         float(cell.get("T", 298.15)),
         float(cell.get("Ru", 0.0)),
-        float(cell.get("Cdl", 0.0)),
-        float(cell.get("A", 1e-5)),
+        _electrokitty_areal_cdl(total_cdl, area),
+        area,
     ]
     spatial_info = [
         float(spatial.get("dx_fraction", spatial.get("fraction", 0.001 / 36))),
@@ -5734,19 +7039,117 @@ def _electrokitty_parameters(params, mechanism_spec=None):
     return {
         "kin": _electrokitty_kinetics(params, mechanism_spec),
         "cell_const": cell_const,
-        "diffusion_const": _mapping_values(params.get("diffusion", {})),
-        "isotherm": _isotherm_to_electrokitty(params.get("isotherm", [])),
+        "diffusion_const": _mapping_values(params.get("diffusion", {}), bulk_order),
+        "isotherm": _mapping_values(params.get("isotherm", []), surface_order, surface=True),
         "spatial_info": spatial_info,
         "species_information": [
-            _mapping_values(concentrations["surface"]),
-            _mapping_values(concentrations["bulk"]),
+            _mapping_values(concentrations["surface"], surface_order, default=0.0, surface=True),
+            _mapping_values(concentrations["bulk"], bulk_order, default=0.0),
         ],
     }
 
 
+def _electrokitty_areal_cdl(total_cdl, area):
+    total_cdl = float(total_cdl)
+    area = float(area)
+    if total_cdl == 0.0:
+        return 0.0
+    if not np.isfinite(area) or area <= 0:
+        raise ValueError("ElectroKitty simulation requires positive cell.A when cell.Cdl is nonzero.")
+    return total_cdl / area
+
+
+def _electrokitty_backend_mechanism(mechanism_spec):
+    mechanism = getattr(mechanism_spec, "mechanism", mechanism_spec)
+    backend_lines = []
+    for raw_line in str(mechanism or "").splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if ":" not in line:
+            raise ValueError(f"Mechanism line {line!r} must contain ':' before the reaction equation.")
+        prefix, equation = line.split(":", 1)
+        left, separator, right = _split_reaction_equation(equation)
+        backend_lines.append(
+            f"{prefix.replace(' ', '')}:"
+            f"{_electrokitty_expand_stoichiometric_side(left)}"
+            f"{separator}"
+            f"{_electrokitty_expand_stoichiometric_side(right)}"
+        )
+    return "\n".join(backend_lines)
+
+
+def _electrokitty_expand_stoichiometric_side(side):
+    expanded = []
+    for raw_term in str(side).split("+"):
+        species, coefficient = _parse_stoichiometric_term(raw_term)
+        expanded.extend([species] * coefficient)
+    return "+".join(expanded)
+
+
+def _electrokitty_species_order(mechanism_spec=None):
+    if mechanism_spec is None:
+        return None, None
+    mechanism = _electrokitty_backend_mechanism(mechanism_spec)
+    surface = []
+    bulk = []
+    for raw_line in str(mechanism or "").splitlines():
+        line = raw_line.strip().replace(" ", "")
+        if not line or ":" not in line:
+            continue
+        equation = line.split(":", 1)[1]
+        equation = equation.replace("⇌", "=").replace("<=>", "=").replace("<->", "=")
+        equation = equation.replace("→", ">").replace("->", ">")
+        if "=" in equation:
+            sides = equation.split("=")
+        elif "<" in equation:
+            sides = equation.split("<")
+        elif ">" in equation:
+            sides = equation.split(">")
+        else:
+            continue
+        for side in sides:
+            for term in side.split("+"):
+                name = term.strip()
+                if not name:
+                    raise ValueError("ElectroKitty mechanism contains an empty species term.")
+                if name.endswith("*"):
+                    if name not in surface:
+                        surface.append(name)
+                elif name not in bulk:
+                        bulk.append(name)
+    return surface, bulk
+
+
+def _electrokitty_runtime_species_order(electrokitty):
+    parser = getattr(electrokitty, "Parser", None)
+    parse = getattr(parser, "Parse_mechanism", None)
+    if not callable(parse):
+        raise RuntimeError(
+            "The installed ElectroKitty version does not expose Parser.Parse_mechanism(); "
+            "eCAT cannot safely align backend species parameter arrays."
+        )
+    try:
+        parsed = parse()
+        species = parsed[0]
+        surface = list(species[0])
+        bulk = list(species[1])
+    except Exception as exc:
+        raise RuntimeError(
+            "The installed ElectroKitty parser returned an unsupported mechanism structure; "
+            "eCAT cannot safely align backend species parameter arrays."
+        ) from exc
+    if any(not isinstance(name, str) or not name for name in [*surface, *bulk]):
+        raise RuntimeError("The installed ElectroKitty parser returned invalid species names.")
+    if len(surface) != len(set(surface)) or len(bulk) != len(set(bulk)):
+        raise RuntimeError("The installed ElectroKitty parser returned duplicate species names.")
+    return surface, bulk
+
+
 def _electrokitty_kinetics(params, mechanism_spec=None):
-    kinetics = list(params.get("kinetics", []) or [])
-    reactions = list(params.get("reactions", []) or [])
+    compiled = params.get("_compiled", {}) or {}
+    kinetics = list(compiled.get("kinetics", params.get("kinetics", [])) or [])
+    reactions = list(compiled.get("reactions", params.get("reactions", [])) or [])
     if mechanism_spec is None:
         return _kinetics_to_electrokitty(kinetics)
 
@@ -5830,8 +7233,23 @@ def _kinetics_to_electrokitty(kinetics):
     return out
 
 
-def _mapping_values(value):
+def _mapping_values(value, order=None, default=None, surface=False):
     if isinstance(value, dict):
+        if order is not None:
+            lookup = {
+                (_strip_surface_star(key) if surface else str(key).rstrip("*")): item
+                for key, item in value.items()
+            }
+            out = []
+            for name in order:
+                key = _strip_surface_star(name) if surface else str(name).rstrip("*")
+                if key in lookup:
+                    out.append(float(lookup[key]))
+                elif default is not None:
+                    out.append(float(default))
+                else:
+                    raise ValueError(f"Missing ElectroKitty parameter value for species {key!r}.")
+            return out
         return [float(v) for v in value.values()]
     return [float(v) for v in value]
 

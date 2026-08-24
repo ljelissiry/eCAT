@@ -24,6 +24,33 @@ def test_analysis_result_keeps_tabular_access_explicit(ecat_module):
         _ = result.loc
 
 
+def test_analysis_result_show_uses_display_formatter_without_mutating_raw_table(
+    ecat_module,
+    capsys,
+):
+    table = pd.DataFrame({"kobs": [123456.0]})
+
+    def display_formatter(raw_table, options):
+        sig_figs = int(options.get("sig figs", 4))
+        display_table = raw_table.copy()
+        display_table["kobs"] = display_table["kobs"].map(
+            lambda value: f"{float(value):.{sig_figs}g} s^-1"
+        )
+        return display_table
+
+    result = ecat_module.AnalysisResult(
+        {"data": table},
+        table=table,
+        display_table_formatter=display_formatter,
+    )
+
+    result.show({"pretty print": False, "sig figs": 3})
+    out = capsys.readouterr().out
+
+    assert "1.23e+05 s^-1" in out
+    assert result.table["kobs"].tolist() == [123456.0]
+
+
 def test_analysis_result_to_csv_exports_primary_table(ecat_module, tmp_path):
     table = pd.DataFrame({"x": [1.0, 2.0], "kobs": [3.0, 6.0]})
     result = ecat_module.AnalysisResult({"data": table}, table=table)
@@ -129,8 +156,11 @@ def test_plateau_current_returns_explicit_table_analysis_result(ecat_module):
 
     assert isinstance(result, ecat_module.AnalysisResult)
     assert result["data"] is result.table
-    assert result.table["kobs"].iloc[0] == pytest.approx(result.table.loc[0, "kobs"])
-    assert result.table.loc[0, "formula mode"] == "normalized"
+    assert list(result.table.columns) == ["Metric", "Value"]
+    assert "kobs" in set(result.table["Metric"])
+    assert result.summary["formula mode"] == "normalized"
+    assert result.summary["kobs"] > 0
+    assert result.diagnostics["plateau details"].loc[0, "formula mode"] == "normalized"
     with pytest.raises(KeyError):
         result["kobs"]
 

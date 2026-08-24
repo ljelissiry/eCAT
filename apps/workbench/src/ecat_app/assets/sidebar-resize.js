@@ -15,6 +15,18 @@
     let dragging = false;
     let startX = 0;
     let startWidth = 0;
+    let layoutNotifyFrame = null;
+
+    function notifyLayoutResized() {
+      if (layoutNotifyFrame !== null) {
+        return;
+      }
+      layoutNotifyFrame = window.requestAnimationFrame(function () {
+        layoutNotifyFrame = null;
+        window.dispatchEvent(new Event("resize"));
+        window.dispatchEvent(new CustomEvent("ecat:layout-resized"));
+      });
+    }
 
     function currentZoom() {
       const cssZoom = Number(
@@ -64,6 +76,7 @@
       const width = clamp(startWidth + (event.clientX - startX) / currentZoom(), 260, 520);
       sidebar.style.width = width + "px";
       sidebar.dataset.ecatLastWidth = sidebar.style.width;
+      notifyLayoutResized();
     });
 
     window.addEventListener("mouseup", function () {
@@ -74,6 +87,7 @@
       startX = 0;
       startWidth = 0;
       document.body.classList.remove("ecat-resizing-sidebar");
+      notifyLayoutResized();
     });
 
     if (shell) {

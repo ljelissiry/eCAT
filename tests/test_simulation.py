@@ -32,6 +32,7 @@ def test_cv_program_returns_simulation_input(ecat_module):
         scan_rate=0.1,
         points_per_segment=5,
         quiet_time=1.0,
+        incubation_time=2.0,
     )
 
     assert isinstance(program, ecat_module.simulation.SimulatedCVInput)
@@ -46,6 +47,41 @@ def test_cv_program_returns_simulation_input(ecat_module):
     assert program.metadata["direction"] == "negative"
     assert program.metadata["quiet_time"] == pytest.approx(1.0)
     assert program.metadata["quiet_time_applied"] is False
+    assert program.metadata["incubation_time"] == pytest.approx(2.0)
+
+
+def test_cv_program_defaults_incubation_time_to_zero_and_rejects_negative(ecat_module):
+    sim = ecat_module.simulation
+
+    program = sim.cv_program(Ei=0.2, E_low=-0.2, points_per_segment=5)
+
+    assert program.metadata["incubation_time"] == pytest.approx(0.0)
+    with pytest.raises(ValueError, match="incubation_time cannot be negative"):
+        sim.cv_program(Ei=0.2, E_low=-0.2, points_per_segment=5, incubation_time=-1.0)
+
+
+def test_simulated_cv_input_with_incubation_time_returns_immutable_copy(ecat_module):
+    sim = ecat_module.simulation
+    program = sim.cv_program(Ei=0.2, E_low=-0.2, points_per_segment=5)
+
+    updated = program.with_incubation_time(12.5)
+
+    assert updated is not program
+    np.testing.assert_allclose(updated.E, program.E)
+    np.testing.assert_allclose(updated.t, program.t)
+    assert updated.i is None
+    assert updated.metadata["incubation_time"] == pytest.approx(12.5)
+    assert program.metadata["incubation_time"] == pytest.approx(0.0)
+    with pytest.raises(ValueError, match="incubation_time cannot be negative"):
+        program.with_incubation_time(-0.1)
+
+
+def test_manual_simulated_cv_input_normalizes_incubation_metadata(ecat_module):
+    sim = ecat_module.simulation
+
+    input_obj = sim.SimulatedCVInput(E=[0.0, -0.1], t=[0.0, 1.0])
+
+    assert input_obj.metadata["incubation_time"] == pytest.approx(0.0)
 
 
 def test_simulated_cv_input_with_scan_rate_returns_copy_with_new_timebase(ecat_module):
@@ -246,9 +282,13 @@ def test_simulated_cv_can_use_cv_analysis_methods(ecat_module):
     assert result.current_at_potential(-0.2, {"segment": 2, "plot": False, "print": False})[2] == pytest.approx((-0.2, 5e-6))
 
 
-def test_simulated_cv_objects_can_be_multiplotted(ecat_module):
+def test_simulated_cv_objects_can_be_multiplotted(ecat_module, cv_factory):
     sim = ecat_module.simulation
-    results = []
+    real_cv = cv_factory(
+        potential=[0.2, 0.1, 0.0, -0.1, -0.2],
+        current=[1e-6, 2e-6, 3e-6, 4e-6, 5e-6],
+    )
+    results = [real_cv]
     for scan_rate, scale in [(0.1, 1.0), (0.2, 2.0)]:
         program = sim.cv_program(Ei=0.2, E_low=-0.2, scan_rate=scan_rate, points_per_segment=5)
         results.append(
@@ -270,9 +310,32 @@ def test_simulated_cv_objects_can_be_multiplotted(ecat_module):
 
     ax = ecat_module.multiplot(results, {"legend": True, "title": False})
 
-    assert len(ax.lines) == 2
+    assert len(ax.lines) == 3
+    assert ax.lines[0].get_linestyle() == "-"
+    assert all(line.get_linestyle() == "--" for line in ax.lines[1:])
+    plt.close(ax.figure)
+
+    ax = ecat_module.multiplot(
+        results,
+        {"legend": True, "title": False, "simulation linestyle": "-"},
+    )
+
+    assert len(ax.lines) == 3
+    assert ax.lines[0].get_linestyle() == "-"
+    assert all(line.get_linestyle() == "-" for line in ax.lines[1:])
+    plt.close(ax.figure)
+
+    ax = ecat_module.multiplot(
+        results,
+        {"legend": True, "title": False, "simulation linestyle": ":", "linestyle": "-."},
+    )
+
+    assert len(ax.lines) == 3
+    assert ax.lines[0].get_linestyle() == "-."
+    assert all(line.get_linestyle() == ":" for line in ax.lines[1:])
     assert ax.get_xlabel() == "Potential (V)"
     assert ax.get_ylabel() == "Current (μA)"
+    plt.close(ax.figure)
 
 
 def test_simulated_cv_input_show_prints_setup_by_default(ecat_module, capsys):
@@ -430,6 +493,33 @@ def test_simulated_cv_show_prints_two_column_setup(ecat_module, capsys):
     assert "Simulation Params:" not in out
 
 
+def test_simulated_cv_setup_preserves_raw_mechanism_line_breaks(ecat_module):
+    sim = ecat_module.simulation
+    program = sim.cv_program(Ei=0.2, E_low=-0.2, scan_rate=0.1, points_per_segment=5)
+    raw_mechanism = "E(1):a=b\nC:b>a\nC:a=b"
+    result = sim.SimulatedCV(
+        data=pd.DataFrame(
+            {
+                "Potential": program.E,
+                "Current": np.linspace(1e-6, 5e-6, len(program.E)),
+                "Time": program.t,
+                "Backend Current": np.linspace(1e-6, 5e-6, len(program.E)),
+            }
+        ),
+        params={**_basic_params(), "reactions": [{"k": 1.0}, {"kf": 1.0, "kb": 1.0}]},
+        mechanism=sim.compile_mechanism(raw_mechanism),
+        input=program,
+        backend_result=None,
+        summary={"backend": "fake", "preset": "raw", "current_sign": 1},
+    )
+
+    setup = sim._simulated_cv_setup_dataframe(result)
+    mechanism_value = setup.loc[setup["Parameter"] == "Mechanism", "Value"].iloc[0]
+
+    assert mechanism_value == raw_mechanism
+    assert " ; " not in mechanism_value
+
+
 def test_simulated_cv_show_can_include_params_and_data(ecat_module, capsys):
     sim = ecat_module.simulation
     program = sim.cv_program(Ei=0.2, E_low=-0.2, scan_rate=0.1, points_per_segment=5)
@@ -536,6 +626,7 @@ def test_cv_data_extracts_segments_window_stride_and_time(ecat_module, cv_factor
             "potential window": [-0.15, 0.15],
             "trim mode": "pointwise",
             "stride": 2,
+            "incubation time": 7.5,
         },
     )
 
@@ -559,6 +650,7 @@ def test_cv_data_extracts_segments_window_stride_and_time(ecat_module, cv_factor
     assert data.metadata["stride_basis"] == "manual"
     assert data.metadata["original_points"] == int(mask.sum())
     assert data.metadata["selected_points"] == len(expected_E)
+    assert data.metadata["incubation_time"] == pytest.approx(7.5)
     assert data.t[0] == pytest.approx(0.0)
     assert np.all(np.diff(data.t) >= 0)
 
@@ -829,6 +921,76 @@ def test_cv_data_can_preserve_all_points_with_manual_stride_one(ecat_module, cv_
     np.testing.assert_allclose(data.i, expected_i)
 
 
+def test_cv_data_start_current_background_correction_applies_before_stride(ecat_module, cv_factory):
+    potential = np.array([0.0, -0.1, -0.2, -0.3, -0.4])
+    current = np.array([5.0, 6.0, 8.0, 11.0, 15.0])
+    cv_obj = cv_factory(potential=potential, current=current)
+
+    data = ecat_module.simulation.cv_data(
+        cv_obj,
+        {
+            "potential window": [-0.3, 0.0],
+            "trim mode": "pointwise",
+            "stride": 2,
+            "estimate Cdl": False,
+            "background correction": "start current",
+        },
+    )
+
+    np.testing.assert_allclose(data.E, [0.0, -0.2, -0.3])
+    np.testing.assert_allclose(data.i, [0.0, 3.0, 6.0])
+    assert data.metadata["background_correction"] == "start current"
+    assert data.metadata["background_current"] == pytest.approx(5.0)
+    assert data.metadata["background_correction_applied"] is True
+    assert data.metadata["background_correction_points"] == 4
+
+
+def test_cv_data_t0_background_correction_alias_matches_start_current(ecat_module, cv_factory):
+    potential = np.array([0.0, -0.1, -0.2])
+    current = np.array([2.0, 3.0, 5.0])
+    cv_obj = cv_factory(potential=potential, current=current)
+
+    data = ecat_module.simulation.cv_data(
+        cv_obj,
+        {"stride": 1, "estimate Cdl": False, "background correction": "t0"},
+    )
+
+    np.testing.assert_allclose(data.i, [0.0, 1.0, 3.0])
+    assert data.metadata["background_correction"] == "start current"
+
+
+def test_cv_data_tangent_background_correction_reuses_cv_tangent_fit(ecat_module, cv_factory):
+    potential = np.linspace(0.0, -1.0, 21)
+    current = 2.5e-6 * potential + 4.0e-6
+    cv_obj = cv_factory(potential=potential, current=current)
+
+    data = ecat_module.simulation.cv_data(
+        cv_obj,
+        {
+            "stride": 1,
+            "estimate Cdl": False,
+            "background correction": "tangent",
+            "tangent potential": -0.5,
+        },
+    )
+
+    np.testing.assert_allclose(data.i, np.zeros_like(current), atol=1e-18)
+    assert data.metadata["background_correction"] == "tangent"
+    assert data.metadata["background_tangent_potential"] == pytest.approx(-0.5)
+    assert data.metadata["background_slope"] == pytest.approx(2.5e-6)
+    assert data.metadata["background_intercept"] == pytest.approx(4.0e-6)
+
+
+def test_cv_data_rejects_unknown_background_correction(ecat_module, cv_factory):
+    cv_obj = cv_factory()
+
+    with pytest.raises(ValueError, match="background correction"):
+        ecat_module.simulation.cv_data(
+            cv_obj,
+            {"estimate Cdl": False, "background correction": "banana"},
+        )
+
+
 def test_cv_data_can_estimate_cdl_from_start_potential_region(ecat_module, cv_factory):
     scan_rate = 0.1
     cdl = 20e-6
@@ -963,6 +1125,31 @@ def test_simulate_cv_fills_cell_defaults_and_expands_single_diffusion(ecat_modul
     assert result.mechanism.mechanism == "E(1):FeII=FeI\nE(1):FeI=Fe0"
 
 
+def test_simulate_cv_expands_default_diffusion_after_stoichiometric_speciation(ecat_module, monkeypatch):
+    sim = ecat_module.simulation
+
+    class Backend:
+        name = "equilibrium-diffusion-backend"
+
+        def simulate(self, input_obj, mechanism_spec, params, options):
+            return input_obj.E, np.zeros_like(input_obj.E), input_obj.t, self
+
+    monkeypatch.setattr(sim, "get_backend", lambda name="electrokitty": Backend())
+    input_obj = sim.SimulatedCVInput(E=np.array([0.0, -0.1]), t=np.array([0.0, 1.0]))
+    params = {
+        "cell": {"T": 298.15, "Ru": 0, "Cdl": 0, "A": 1e-5},
+        "spatial": {},
+        "diffusion": {"D": 1e-9, "CO2": 2e-9},
+        "concentrations": {"bulk": {"CO2": 10.0, "A": 1.0, "B": 0.0}},
+        "kinetics": [{"alpha": 0.5, "k0": 1e-3, "E0": -1.0}],
+        "reactions": {"A=B": {"K": 2.0, "k_exchange": 10.0}},
+    }
+
+    result = sim.simulate_cv(input_obj, "E(1):A=B\nC:A=B", params, options={"plot": False})
+
+    assert result.params["diffusion"] == {"A": 1e-9, "B": 1e-9, "CO2": 2e-9}
+
+
 def test_simulate_cv_preserves_explicit_zero_ru(ecat_module, monkeypatch):
     sim = ecat_module.simulation
 
@@ -1082,6 +1269,753 @@ def test_simulate_cv_uses_shared_kinetic_fallbacks_and_k0_strings(ecat_module, m
     assert any("kinetics.0.k0" in note and "fast" in note for note in result.summary["parameter_fallbacks"])
     assert any("kinetics.1.alpha" in note for note in result.summary["parameter_fallbacks"])
     assert any("kinetics.1.k0" in note for note in result.summary["parameter_fallbacks"])
+
+
+def test_simulate_cv_accepts_keyed_kinetics_by_index_and_reaction_string(ecat_module, monkeypatch):
+    sim = ecat_module.simulation
+
+    class Backend:
+        name = "keyed-kinetics-backend"
+
+        def simulate(self, input_obj, mechanism_spec, params, options):
+            self.adapter = sim._electrokitty_parameters(params, mechanism_spec)
+            self.params = deepcopy(params)
+            return input_obj.E, np.zeros_like(input_obj.E), input_obj.t, self
+
+    backend = Backend()
+    monkeypatch.setattr(sim, "get_backend", lambda name="electrokitty": backend)
+    input_obj = sim.cv_program(0.0, E_low=-0.2, points_per_segment=4)
+    params = _basic_params()
+    params["concentrations"] = {"bulk": {"Ox": 1.0, "Red": 0.0, "Ox2": 1.0, "Red2": 0.0}}
+    params["diffusion"] = {"Ox": 1e-9, "Red": 1e-9, "Ox2": 1e-9, "Red2": 1e-9}
+    params["kinetics"] = {
+        "Ox=Red": {"E0": -0.7, "k0": "fast"},
+        1: {"E0": -1.2, "k0": 2e-3, "alpha": 0.4},
+    }
+
+    result = sim.simulate_cv(input_obj, "E(1):Ox=Red\nE(1):Ox2=Red2", params, options={"plot": False})
+
+    assert result.params["kinetics"][0] == {
+        "E0": pytest.approx(-0.7),
+        "k0": pytest.approx(1e-3),
+        "alpha": pytest.approx(0.5),
+    }
+    assert result.params["kinetics"][1] == {
+        "E0": pytest.approx(-1.2),
+        "k0": pytest.approx(2e-3),
+        "alpha": pytest.approx(0.4),
+    }
+    assert backend.adapter["kin"] == [[0.5, 1e-3, -0.7], [0.4, 2e-3, -1.2]]
+
+
+def test_simulate_cv_accepts_keyed_reactions_and_compiles_equilibrium_rates(ecat_module, monkeypatch):
+    sim = ecat_module.simulation
+
+    class Backend:
+        name = "keyed-reactions-backend"
+
+        def simulate(self, input_obj, mechanism_spec, params, options):
+            self.adapter = sim._electrokitty_parameters(params, mechanism_spec)
+            self.params = deepcopy(params)
+            return input_obj.E, np.zeros_like(input_obj.E), input_obj.t, self
+
+    backend = Backend()
+    monkeypatch.setattr(sim, "get_backend", lambda name="electrokitty": backend)
+    input_obj = sim.cv_program(0.0, E_low=-0.2, points_per_segment=4)
+    params = _basic_params()
+    params["concentrations"] = {
+        "bulk": {"Ox": 1.0, "Red": 0.0, "Sub": 2.0, "Prod": 0.0, "ZnOH": 1.0, "CO2": 10.0, "ZnHCO3": 0.0}
+    }
+    params["diffusion"] = {name: 1e-9 for name in params["concentrations"]["bulk"]}
+    params["kinetics"] = [{"E0": -0.8, "k0": 1e-3, "alpha": 0.5}]
+    params["reactions"] = {
+        "Red + Sub > Ox + Prod": {"k": 2.0},
+        1: {"K": "2 M^-1", "koff": 5.0},
+    }
+    mechanism = "E(1):Ox=Red\nC:Red+Sub>Ox+Prod\nC:ZnOH+CO2=ZnHCO3"
+
+    result = sim.simulate_cv(input_obj, mechanism, params, options={"plot": False})
+
+    assert result.params["reactions"][0] == {"k": pytest.approx(2.0)}
+    assert result.params["reactions"][1]["K"] == pytest.approx(2.0)
+    assert result.params["reactions"][1]["K_unit"] == "M^-1"
+    compiled = result.params["_compiled"]["reactions"]
+    assert compiled[0] == {"k": pytest.approx(2.0)}
+    assert compiled[1]["kb"] == pytest.approx(5.0)
+    assert compiled[1]["kf"] == pytest.approx(0.01)
+    assert backend.adapter["kin"] == [[0.5, 1e-3, -0.8], [2.0], [0.01, 5.0]]
+    derived = result.summary["parameter_model"]["equilibria"][0]
+    assert derived["equilibrium"] == "reactions.1"
+    assert derived["target"] == "reactions.1"
+
+
+def test_reaction_equilibrium_uses_stoichiometry_without_pools(ecat_module, monkeypatch):
+    sim = ecat_module.simulation
+    backend = _CaptureParamsBackend()
+    monkeypatch.setattr(sim, "get_backend", lambda name="electrokitty": backend)
+    input_obj = sim.cv_program(0.0, E_low=-0.2, points_per_segment=4)
+    params = _basic_params()
+    params["concentrations"] = {"bulk": {"A": 10.0, "B": 0.0}}
+    params["diffusion"] = {"A": 1e-9, "B": 1e-9}
+    params["reactions"] = {"A=B": {"K": 4.0, "k_exchange": 10.0}}
+
+    result = sim.simulate_cv(input_obj, "C:A=B", params, options={"plot": False})
+
+    assert result.params["concentrations"]["bulk"]["A"] == pytest.approx(2.0)
+    assert result.params["concentrations"]["bulk"]["B"] == pytest.approx(8.0)
+    report = result.summary["parameter_model"]
+    assert report["equilibrium"]["reaction_rank"] == 1
+    assert report["equilibrium"]["conservation_rank"] == 1
+    assert report["states"]["initial"]["bulk"] == {"A": 10.0, "B": 0.0}
+    assert report["states"]["equilibrated"]["bulk"]["A"] == pytest.approx(2.0)
+
+
+def test_reaction_equilibrium_respects_association_stoichiometry(ecat_module, monkeypatch):
+    sim = ecat_module.simulation
+    monkeypatch.setattr(sim, "get_backend", lambda name="electrokitty": _CaptureParamsBackend())
+    input_obj = sim.cv_program(0.0, E_low=-0.2, points_per_segment=4)
+    params = _basic_params()
+    params["concentrations"] = {"bulk": {"A": 1.0, "B": 2.0, "C": 0.0}}
+    params["diffusion"] = {"A": 1e-9, "B": 1e-9, "C": 1e-9}
+    params["activity"] = {"standard_concentration": 1.0}
+    params["reactions"] = {"A+B=C": {"K": 1.0, "k_exchange": 10.0}}
+
+    result = sim.simulate_cv(input_obj, "C:A+B=C", params, options={"plot": False})
+
+    bulk = result.params["concentrations"]["bulk"]
+    expected_c = 2.0 - np.sqrt(2.0)
+    assert bulk["A"] == pytest.approx(1.0 - expected_c)
+    assert bulk["B"] == pytest.approx(2.0 - expected_c)
+    assert bulk["C"] == pytest.approx(expected_c)
+    assert bulk["A"] + bulk["C"] == pytest.approx(1.0)
+    assert bulk["B"] + bulk["C"] == pytest.approx(2.0)
+
+
+def test_reaction_equilibrium_respects_stoichiometric_coefficients_and_activity(ecat_module, monkeypatch):
+    sim = ecat_module.simulation
+    monkeypatch.setattr(sim, "get_backend", lambda name="electrokitty": _CaptureParamsBackend())
+    input_obj = sim.cv_program(0.0, E_low=-0.2, points_per_segment=4)
+    params = _basic_params()
+    params["concentrations"] = {"bulk": {"A": 10.0, "B": 0.0}}
+    params["diffusion"] = {"A": 1e-9, "B": 1e-9}
+    params["activity"] = {
+        "standard_concentration": 1.0,
+        "gamma": {"bulk": {"A": 0.5, "B": 2.0}},
+    }
+    params["reactions"] = {"2A=B": {"K": 0.4, "k_exchange": 10.0}}
+
+    result = sim.simulate_cv(input_obj, "C:2A=B", params, options={"plot": False})
+
+    bulk = result.params["concentrations"]["bulk"]
+    quotient = (2.0 * bulk["B"]) / (0.5 * bulk["A"]) ** 2
+    assert quotient == pytest.approx(0.4)
+    assert bulk["A"] + 2.0 * bulk["B"] == pytest.approx(10.0)
+
+
+def test_surface_equilibrium_uses_surface_standard_coverage(ecat_module, monkeypatch):
+    sim = ecat_module.simulation
+    monkeypatch.setattr(sim, "get_backend", lambda name="electrokitty": _CaptureParamsBackend())
+    input_obj = sim.cv_program(0.0, E_low=-0.2, points_per_segment=4)
+    params = _basic_params()
+    params["concentrations"] = {"bulk": {}, "surface": {"A": 10.0, "B": 0.0}}
+    params["diffusion"] = {}
+    params["activity"] = {"standard_concentration": 1000.0, "standard_coverage": 2.0}
+    params["reactions"] = {"2A*=B*": {"K": 0.4, "k_exchange": 10.0}}
+
+    result = sim.simulate_cv(input_obj, "C:2A*=B*", params, options={"plot": False})
+
+    surface = result.params["concentrations"]["surface"]
+    quotient = (surface["B"] / 2.0) / (surface["A"] / 2.0) ** 2
+    assert quotient == pytest.approx(0.4)
+    assert surface["A"] + 2.0 * surface["B"] == pytest.approx(10.0)
+
+
+def test_surface_equilibrium_rejects_bulk_concentration_k_units(ecat_module, monkeypatch):
+    sim = ecat_module.simulation
+    monkeypatch.setattr(sim, "get_backend", lambda name="electrokitty": _CaptureParamsBackend())
+    input_obj = sim.cv_program(0.0, E_low=-0.2, points_per_segment=4)
+    params = _basic_params()
+    params["concentrations"] = {"bulk": {}, "surface": {"A": 1.0, "B": 1.0, "C": 0.0}}
+    params["diffusion"] = {}
+    params["reactions"] = {"A*+B*=C*": {"K": "2 M^-1", "k_exchange": 10.0}}
+
+    with pytest.raises(ValueError, match="Unit-bearing K is only supported for bulk reactions"):
+        sim.simulate_cv(input_obj, "C:A*+B*=C*", params, options={"plot": False})
+
+
+@pytest.mark.parametrize("standard", [0.0, -1.0, np.nan, np.inf])
+def test_activity_standard_amounts_must_be_positive_and_finite(ecat_module, standard):
+    sim = ecat_module.simulation
+    input_obj = sim.cv_program(0.0, E_low=-0.2, points_per_segment=4)
+    params = _basic_params()
+    params["activity"] = {"standard_concentration": standard}
+
+    with pytest.raises(ValueError, match="standard_concentration must be positive and finite"):
+        sim.simulate_cv(input_obj, "E", params, options={"plot": False})
+
+
+@pytest.mark.parametrize("reference", [0.0, -1.0, np.nan, np.inf])
+def test_equilibrium_exchange_reference_must_be_positive_and_finite(ecat_module, reference):
+    sim = ecat_module.simulation
+    input_obj = sim.cv_program(0.0, E_low=-0.2, points_per_segment=4)
+    params = _basic_params()
+    params["concentrations"] = {"bulk": {"A": 1.0, "B": 0.0}}
+    params["diffusion"] = {"A": 1e-9, "B": 1e-9}
+    params["reactions"] = {
+        "A=B": {"K": 1.0, "k_exchange": 10.0, "reference_concentration": reference}
+    }
+
+    with pytest.raises(ValueError, match="reference_concentration must be positive and finite"):
+        sim.simulate_cv(input_obj, "C:A=B", params, options={"plot": False})
+
+
+def test_equilibrate_false_keeps_entered_state_but_compiles_dynamic_rates(ecat_module, monkeypatch):
+    sim = ecat_module.simulation
+    monkeypatch.setattr(sim, "get_backend", lambda name="electrokitty": _CaptureParamsBackend())
+    input_obj = sim.cv_program(0.0, E_low=-0.2, points_per_segment=4)
+    params = _basic_params()
+    params["concentrations"] = {"bulk": {"A": 10.0, "B": 0.0}}
+    params["diffusion"] = {"A": 1e-9, "B": 1e-9}
+    params["reactions"] = {"A=B": {"K": 4.0, "k_exchange": 10.0, "equilibrate": False}}
+
+    result = sim.simulate_cv(input_obj, "C:A=B", params, options={"plot": False})
+
+    assert result.params["concentrations"]["bulk"] == {"A": 10.0, "B": 0.0}
+    assert result.params["_compiled"]["reactions"][0]["kf"] > 0
+    assert result.params["_compiled"]["reactions"][0]["kb"] > 0
+
+
+def test_reaction_equilibrium_allows_consistent_dependent_cycle(ecat_module, monkeypatch):
+    sim = ecat_module.simulation
+    monkeypatch.setattr(sim, "get_backend", lambda name="electrokitty": _CaptureParamsBackend())
+    input_obj = sim.cv_program(0.0, E_low=-0.2, points_per_segment=4)
+    params = _basic_params()
+    params["concentrations"] = {"bulk": {"A": 10.0, "B": 0.0, "C": 0.0}}
+    params["diffusion"] = {"A": 1e-9, "B": 1e-9, "C": 1e-9}
+    params["reactions"] = {
+        "A=B": {"K": 2.0, "k_exchange": 10.0},
+        "B=C": {"K": 3.0, "k_exchange": 10.0},
+        "C=A": {"K": 1.0 / 6.0, "k_exchange": 10.0},
+    }
+
+    result = sim.simulate_cv(input_obj, "C:A=B\nC:B=C\nC:C=A", params, options={"plot": False})
+
+    bulk = result.params["concentrations"]["bulk"]
+    assert bulk["A"] == pytest.approx(10.0 / 9.0)
+    assert bulk["B"] == pytest.approx(20.0 / 9.0)
+    assert bulk["C"] == pytest.approx(60.0 / 9.0)
+    assert result.summary["parameter_model"]["equilibrium"]["dependent_reactions"] == 1
+
+
+def test_reaction_equilibrium_rejects_inconsistent_dependent_cycle(ecat_module, monkeypatch):
+    sim = ecat_module.simulation
+    monkeypatch.setattr(sim, "get_backend", lambda name="electrokitty": _CaptureParamsBackend())
+    input_obj = sim.cv_program(0.0, E_low=-0.2, points_per_segment=4)
+    params = _basic_params()
+    params["concentrations"] = {"bulk": {"A": 10.0, "B": 0.0, "C": 0.0}}
+    params["diffusion"] = {"A": 1e-9, "B": 1e-9, "C": 1e-9}
+    params["reactions"] = {
+        "A=B": {"K": 2.0, "k_exchange": 10.0},
+        "B=C": {"K": 3.0, "k_exchange": 10.0},
+        "C=A": {"K": 0.2, "k_exchange": 10.0},
+    }
+
+    with pytest.raises(ValueError, match="inconsistent equilibrium constraints"):
+        sim.simulate_cv(input_obj, "C:A=B\nC:B=C\nC:C=A", params, options={"plot": False})
+
+
+def test_reaction_equilibrium_requires_entered_concentration_for_every_species(ecat_module, monkeypatch):
+    sim = ecat_module.simulation
+    monkeypatch.setattr(sim, "get_backend", lambda name="electrokitty": _CaptureParamsBackend())
+    input_obj = sim.cv_program(0.0, E_low=-0.2, points_per_segment=4)
+    params = _basic_params()
+    params["concentrations"] = {"bulk": {"A": 1.0}}
+    params["diffusion"] = {"A": 1e-9, "B": 1e-9}
+    params["reactions"] = {"A=B": {"K": 1.0, "k_exchange": 10.0}}
+
+    with pytest.raises(ValueError, match="no entered concentration is defined"):
+        sim.simulate_cv(input_obj, "C:A=B", params, options={"plot": False})
+
+
+def test_removed_pool_and_top_level_equilibria_inputs_raise_migration_errors(ecat_module):
+    sim = ecat_module.simulation
+    input_obj = sim.cv_program(0.0, E_low=-0.2, points_per_segment=4)
+    pool_params = _basic_params()
+    pool_params["concentrations"]["pools"] = {"P": {"total": 1.0, "members": ["a", "b"]}}
+    with pytest.raises(ValueError, match="pools are no longer supported"):
+        sim.simulate_cv(input_obj, "E", pool_params, options={"plot": False})
+
+    equilibrium_params = _basic_params()
+    equilibrium_params["equilibria"] = {"a_to_b": {"reaction": "a=b", "K": 1.0}}
+    with pytest.raises(ValueError, match="Put K directly in the matching reactions entry"):
+        sim.simulate_cv(input_obj, "E", equilibrium_params, options={"plot": False})
+
+
+@pytest.mark.parametrize(
+    ("legacy_entry", "message"),
+    [
+        ({"K": 1.0, "k_exchange": 10.0, "pool": False}, "equilibrate=False"),
+        ({"K": 1.0, "k_exchange": 10.0, "mode": "initial"}, "equilibrate"),
+        ({"K": 1.0, "k_exchange_ref": 10.0}, "k_exchange"),
+    ],
+)
+def test_reaction_equilibrium_rejects_removed_legacy_fields(ecat_module, legacy_entry, message):
+    sim = ecat_module.simulation
+    input_obj = sim.cv_program(0.0, E_low=-0.2, points_per_segment=4)
+    params = _basic_params()
+    params["reactions"] = [legacy_entry]
+
+    with pytest.raises(ValueError, match=message):
+        sim.simulate_cv(input_obj, "C:a=b", params, options={"plot": False})
+
+
+def test_zero_incubation_time_leaves_irreversible_chemistry_unchanged(ecat_module, monkeypatch):
+    sim = ecat_module.simulation
+    monkeypatch.setattr(sim, "get_backend", lambda name="electrokitty": _CaptureParamsBackend())
+    input_obj = sim.cv_program(0.0, E_low=-0.2, points_per_segment=4)
+    params = _basic_params()
+    params["concentrations"] = {"bulk": {"A": 10.0, "B": 0.0}}
+    params["diffusion"] = {"A": 1e-9, "B": 1e-9}
+    params["reactions"] = {"A>B": {"k": 0.5}}
+
+    result = sim.simulate_cv(input_obj, "C:A>B", params, options={"plot": False})
+
+    assert result.params["concentrations"]["bulk"] == {"A": 10.0, "B": 0.0}
+    assert result.summary["incubation_time"] == pytest.approx(0.0)
+    assert result.summary["incubation_applied"] is False
+
+
+def test_incubation_time_integrates_irreversible_bulk_chemistry(ecat_module, monkeypatch):
+    sim = ecat_module.simulation
+    monkeypatch.setattr(sim, "get_backend", lambda name="electrokitty": _CaptureParamsBackend())
+    input_obj = sim.cv_program(
+        0.0,
+        E_low=-0.2,
+        points_per_segment=4,
+        incubation_time=2.0,
+    )
+    params = _basic_params()
+    params["concentrations"] = {"bulk": {"A": 10.0, "B": 0.0}}
+    params["diffusion"] = {"A": 1e-9, "B": 1e-9}
+    params["reactions"] = {"A>B": {"k": 0.5}}
+
+    result = sim.simulate_cv(input_obj, "C:A>B", params, options={"plot": False})
+
+    bulk = result.params["concentrations"]["bulk"]
+    expected_a = 10.0 * np.exp(-1.0)
+    assert bulk["A"] == pytest.approx(expected_a, rel=2e-5)
+    assert bulk["B"] == pytest.approx(10.0 - expected_a, rel=2e-5)
+    assert result.summary["incubation_time"] == pytest.approx(2.0)
+    assert result.summary["incubation_applied"] is True
+    report = result.summary["parameter_model"]
+    assert report["states"]["incubated"]["bulk"]["A"] == pytest.approx(expected_a, rel=2e-5)
+
+
+def test_incubation_runs_equilibrate_false_reversible_reaction(ecat_module, monkeypatch):
+    sim = ecat_module.simulation
+    monkeypatch.setattr(sim, "get_backend", lambda name="electrokitty": _CaptureParamsBackend())
+    input_obj = sim.cv_program(0.0, E_low=-0.2, points_per_segment=4, incubation_time=1.0)
+    params = _basic_params()
+    params["concentrations"] = {"bulk": {"A": 10.0, "B": 0.0}}
+    params["diffusion"] = {"A": 1e-9, "B": 1e-9}
+    params["reactions"] = {"A=B": {"K": 4.0, "k_exchange": 1.0, "equilibrate": False}}
+
+    result = sim.simulate_cv(input_obj, "C:A=B", params, options={"plot": False})
+
+    bulk = result.params["concentrations"]["bulk"]
+    assert 0.0 < bulk["B"] < 8.0
+    assert bulk["A"] + bulk["B"] == pytest.approx(10.0)
+
+
+def test_incubation_does_not_run_reaction_without_reactant(ecat_module, monkeypatch):
+    sim = ecat_module.simulation
+    monkeypatch.setattr(sim, "get_backend", lambda name="electrokitty": _CaptureParamsBackend())
+    input_obj = sim.cv_program(0.0, E_low=-0.2, points_per_segment=4, incubation_time=20.0)
+    params = _basic_params()
+    params["concentrations"] = {"bulk": {"A": 1.0, "B": 0.0, "C": 10.0}}
+    params["diffusion"] = {"A": 1e-9, "B": 1e-9, "C": 1e-9}
+    params["reactions"] = {"B+C>A": {"k": 2.0}}
+
+    result = sim.simulate_cv(input_obj, "C:B+C>A", params, options={"plot": False})
+
+    assert result.params["concentrations"]["bulk"] == {"A": 1.0, "B": 0.0, "C": 10.0}
+
+
+def test_incubation_skips_surface_chemistry(ecat_module, monkeypatch):
+    sim = ecat_module.simulation
+    monkeypatch.setattr(sim, "get_backend", lambda name="electrokitty": _CaptureParamsBackend())
+    input_obj = sim.cv_program(0.0, E_low=-0.2, points_per_segment=4, incubation_time=1.0)
+    params = _basic_params()
+    params["concentrations"] = {"bulk": {}, "surface": {"A": 1.0, "B": 0.0}}
+    params["diffusion"] = {}
+    params["reactions"] = {"A*=B*": {"kf": 1.0, "kb": 1.0}}
+
+    result = sim.simulate_cv(input_obj, "C:A*=B*", params, options={"plot": False})
+
+    assert result.params["concentrations"]["surface"] == {"A": 1.0, "B": 0.0}
+    assert result.summary["incubation_applied"] is False
+    incubation = result.summary["parameter_model"]["incubation"]
+    assert incubation["reaction_count"] == 0
+    assert incubation["skipped_reaction_count"] == 1
+
+
+def test_incubation_skips_mixed_phase_chemistry(ecat_module, monkeypatch):
+    sim = ecat_module.simulation
+    monkeypatch.setattr(sim, "get_backend", lambda name="electrokitty": _CaptureParamsBackend())
+    input_obj = sim.cv_program(0.0, E_low=-0.2, points_per_segment=4, incubation_time=1.0)
+    params = _basic_params()
+    params["concentrations"] = {"bulk": {"A": 1.0}, "surface": {"B": 0.0}}
+    params["diffusion"] = {"A": 1e-9}
+    params["reactions"] = {"A>B*": {"k": 1.0}}
+
+    result = sim.simulate_cv(input_obj, "C:A>B*", params, options={"plot": False})
+
+    assert result.params["concentrations"] == {"bulk": {"A": 1.0}, "surface": {"B": 0.0}}
+    assert result.summary["incubation_applied"] is False
+    assert result.summary["parameter_model"]["incubation"]["skipped_reaction_count"] == 1
+
+
+def test_simulated_cv_rerun_does_not_apply_incubation_cumulatively(ecat_module, monkeypatch):
+    sim = ecat_module.simulation
+    monkeypatch.setattr(sim, "get_backend", lambda name="electrokitty": _CaptureParamsBackend())
+    input_obj = sim.cv_program(0.0, E_low=-0.2, points_per_segment=4, incubation_time=2.0)
+    params = _basic_params()
+    params["concentrations"] = {"bulk": {"A": 10.0, "B": 0.0}}
+    params["diffusion"] = {"A": 1e-9, "B": 1e-9}
+    params["reactions"] = {"A>B": {"k": 0.5}}
+    result = sim.simulate_cv(input_obj, "C:A>B", params, options={"plot": False})
+
+    rerun = result.with_param("cell.Ru", 5.0)
+
+    expected_a = 10.0 * np.exp(-1.0)
+    assert result.params["concentrations"]["bulk"]["A"] == pytest.approx(expected_a, rel=2e-5)
+    assert rerun.params["concentrations"]["bulk"]["A"] == pytest.approx(expected_a, rel=2e-5)
+    assert rerun.input_params["concentrations"]["bulk"]["A"] == pytest.approx(10.0)
+
+
+def test_simulated_cv_show_displays_changed_concentration_states(ecat_module, monkeypatch, capsys):
+    sim = ecat_module.simulation
+    monkeypatch.setattr(sim, "get_backend", lambda name="electrokitty": _CaptureParamsBackend())
+    input_obj = sim.cv_program(0.0, E_low=-0.2, points_per_segment=4)
+    params = _basic_params()
+    params["concentrations"] = {"bulk": {"A": 10.0, "B": 0.0}}
+    params["diffusion"] = {"A": 1e-9, "B": 1e-9}
+    params["reactions"] = {"A=B": {"K": 4.0, "k_exchange": 10.0}}
+    result = sim.simulate_cv(input_obj, "C:A=B", params, options={"plot": False})
+
+    result.show({"print setup": False, "print states": True})
+
+    out = capsys.readouterr().out
+    assert "Simulation Concentration States:" in out
+    assert "Entered" in out
+    assert "Equilibrated" in out
+    assert "Incubated" in out
+    assert "A" in out
+    assert "B" in out
+
+
+def test_fit_cv_does_not_apply_incubation_cumulatively(ecat_module, monkeypatch):
+    sim = ecat_module.simulation
+    monkeypatch.setattr(sim, "get_backend", lambda name="electrokitty": _CaptureParamsBackend())
+    input_obj = sim.SimulatedCVInput(
+        E=np.array([0.0, -0.1, 0.0]),
+        t=np.array([0.0, 1.0, 2.0]),
+        i=np.zeros(3),
+        metadata={"scan_rate": 0.1, "incubation_time": 2.0},
+        source="synthetic",
+    )
+    params = _basic_params()
+    params["concentrations"] = {"bulk": {"A": 10.0, "B": 0.0}}
+    params["diffusion"] = {"A": 1e-9, "B": 1e-9}
+    params["reactions"] = {"A>B": {"k": 0.5}}
+
+    fit_result = sim.fit_cv(
+        input_obj,
+        "C:A>B",
+        params,
+        fit=[],
+        options={"plot": False, "print setup": False, "print params": False, "progress": False},
+    )
+
+    expected_a = 10.0 * np.exp(-1.0)
+    assert fit_result.best_params["concentrations"]["bulk"]["A"] == pytest.approx(10.0)
+    assert fit_result.simulation_result.params["concentrations"]["bulk"]["A"] == pytest.approx(expected_a, rel=2e-5)
+
+
+def test_reaction_equilibrium_k_exchange_uses_standard_reference_for_external_species(ecat_module, monkeypatch):
+    sim = ecat_module.simulation
+
+    class Backend:
+        name = "k-exchange-association-backend"
+
+        def simulate(self, input_obj, mechanism_spec, params, options):
+            self.params = deepcopy(params)
+            return input_obj.E, np.zeros_like(input_obj.E), input_obj.t, self
+
+    backend = Backend()
+    monkeypatch.setattr(sim, "get_backend", lambda name="electrokitty": backend)
+    input_obj = sim.cv_program(0.0, E_low=-0.2, points_per_segment=4)
+    params = _basic_params()
+    params["concentrations"] = {
+        "bulk": {"ZnOH": 1.0, "ZnHCO3": 0.0, "ZnOH2": 0.0, "CO2": 20.0, "H2O": 2800.0}
+    }
+    params["diffusion"] = {"ZnOH": 1e-9, "ZnHCO3": 1e-9, "ZnOH2": 1e-9, "CO2": 1e-9, "H2O": 1e-9}
+    params["reactions"] = {
+        "ZnOH+CO2=ZnHCO3": {"K": 1000.0, "k_exchange": 30.0},
+        "ZnHCO3+H2O=ZnOH2": {"K": 2000.0, "k_exchange": 40.0},
+    }
+    mechanism = "C:ZnOH+CO2=ZnHCO3\nC:ZnHCO3+H2O=ZnOH2"
+
+    result = sim.simulate_cv(input_obj, mechanism, params, options={"plot": False})
+
+    compiled = result.params["_compiled"]["reactions"]
+    expected_co2_k_concentration = 1000.0 / 1000.0
+    expected_co2_kb = 30.0 / (expected_co2_k_concentration * 1000.0 + 1.0)
+    expected_hydration_k_concentration = 2000.0 / 1000.0
+    expected_hydration_kb = 40.0 / (expected_hydration_k_concentration * 1000.0 + 1.0)
+    assert compiled[0]["kb"] == pytest.approx(expected_co2_kb)
+    assert compiled[0]["kf"] == pytest.approx(expected_co2_k_concentration * expected_co2_kb)
+    assert compiled[1]["kb"] == pytest.approx(expected_hydration_kb)
+    assert compiled[1]["kf"] == pytest.approx(expected_hydration_k_concentration * expected_hydration_kb)
+    assert compiled[0]["kf"] * 20.0 == pytest.approx(30.0 * 20.0 / 1001.0)
+    assert compiled[1]["kf"] * 2800.0 == pytest.approx(40.0 * 2000.0 * 2.8 / 2001.0)
+    derived = result.summary["parameter_model"]["equilibria"]
+    assert [entry["derived_from"] for entry in derived] == ["K, k_exchange", "K, k_exchange"]
+    assert [entry["external_reference_factor"] for entry in derived] == pytest.approx([1000.0, 1000.0])
+
+
+def test_reaction_equilibrium_k_exchange_preserves_external_concentration_dependence(ecat_module, monkeypatch):
+    sim = ecat_module.simulation
+
+    class Backend:
+        name = "k-exchange-concentration-dependence-backend"
+
+        def simulate(self, input_obj, mechanism_spec, params, options):
+            self.params = deepcopy(params)
+            return input_obj.E, np.zeros_like(input_obj.E), input_obj.t, self
+
+    backend = Backend()
+    monkeypatch.setattr(sim, "get_backend", lambda name="electrokitty": backend)
+    input_obj = sim.cv_program(0.0, E_low=-0.2, points_per_segment=4)
+    mechanism = "C:ZnOH+CO2=ZnHCO3"
+
+    def compiled_for_co2(co2):
+        params = _basic_params()
+        params["concentrations"] = {"bulk": {"ZnOH": 1.0, "ZnHCO3": 0.0, "CO2": co2}}
+        params["diffusion"] = {"ZnOH": 1e-9, "ZnHCO3": 1e-9, "CO2": 1e-9}
+        params["reactions"] = {"ZnOH+CO2=ZnHCO3": {"K": 1000.0, "k_exchange": 30.0}}
+        result = sim.simulate_cv(input_obj, mechanism, params, options={"plot": False})
+        return result.params["_compiled"]["reactions"][0]
+
+    low = compiled_for_co2(20.0)
+    high = compiled_for_co2(200.0)
+
+    assert high["kf"] == pytest.approx(low["kf"])
+    assert high["kf"] * 200.0 == pytest.approx(10.0 * low["kf"] * 20.0)
+
+
+def test_equilibrate_false_keeps_standard_reference_for_k_exchange(ecat_module, monkeypatch):
+    sim = ecat_module.simulation
+
+    class Backend:
+        name = "dynamic-only-exchange-backend"
+
+        def simulate(self, input_obj, mechanism_spec, params, options):
+            self.params = deepcopy(params)
+            return input_obj.E, np.zeros_like(input_obj.E), input_obj.t, self
+
+    monkeypatch.setattr(sim, "get_backend", lambda name="electrokitty": Backend())
+    input_obj = sim.cv_program(0.0, E_low=-0.2, points_per_segment=4)
+    params = _basic_params()
+    params["concentrations"] = {"bulk": {"A": 3.0, "B": 0.0, "X": 5.0}}
+    params["diffusion"] = {"A": 1e-9, "B": 1e-9, "X": 1e-9}
+    params["reactions"] = {
+        "A=B": {"K": 2.0, "k_exchange": 10.0},
+        "B+X=A": {
+            "K": 1000.0,
+            "k_exchange": 60.0,
+            "reference_concentration": 5.0,
+            "equilibrate": False,
+        },
+    }
+    mechanism = "C:A=B\nC:B+X=A"
+
+    result = sim.simulate_cv(input_obj, mechanism, params, options={"plot": False})
+
+    assert result.params["concentrations"]["bulk"]["A"] == pytest.approx(1.0)
+    assert result.params["concentrations"]["bulk"]["B"] == pytest.approx(2.0)
+    compiled = result.params["_compiled"]["reactions"]
+    assert compiled[1]["kb"] == pytest.approx(10.0)
+    assert compiled[1]["kf"] == pytest.approx(10.0)
+    dynamic = result.summary["parameter_model"]["equilibria"][1]
+    assert dynamic["equilibrium"] == "reactions.1"
+    assert dynamic["external_reference_factor"] == pytest.approx(5.0)
+
+
+def test_simulate_cv_prepares_equilibrium_before_backend(ecat_module, monkeypatch):
+    sim = ecat_module.simulation
+
+    class Backend:
+        name = "pre-equilibrium-backend"
+
+        def simulate(self, input_obj, mechanism_spec, params, options):
+            self.mechanism_spec = mechanism_spec
+            self.params = deepcopy(params)
+            return input_obj.E, np.zeros_like(input_obj.E), input_obj.t, self
+
+    backend = Backend()
+    monkeypatch.setattr(sim, "get_backend", lambda name="electrokitty": backend)
+    input_obj = sim.cv_program(0.0, E_low=-0.2, points_per_segment=4)
+    params = _basic_params()
+    params["concentrations"] = {"bulk": {"A": 10.0, "B": 0.0}}
+    params["diffusion"] = {"A": 1e-9, "B": 1e-9}
+    params["reactions"] = {"A=B": {"K": 4.0, "k_exchange": 10.0}}
+
+    result = sim.simulate_cv(input_obj, "C:A=B", params, options={"plot": False})
+
+    assert backend.mechanism_spec.mechanism == "C:A=B"
+    assert result.mechanism.mechanism == "C:A=B"
+    assert backend.params["concentrations"]["bulk"]["A"] == pytest.approx(2.0)
+    assert result.params["concentrations"]["bulk"]["A"] == pytest.approx(2.0)
+    assert result.params["concentrations"]["bulk"]["B"] == pytest.approx(8.0)
+    report = result.summary["parameter_model"]
+    assert report["states"]["initial"]["bulk"]["A"] == pytest.approx(10.0)
+
+
+def test_top_level_pools_are_rejected(ecat_module):
+    sim = ecat_module.simulation
+    input_obj = sim.cv_program(0.0, E_low=-0.2, points_per_segment=4)
+    params = _basic_params()
+    params["pools"] = {"P": {"phase": "bulk", "total": 10.0, "members": ["a", "b"]}}
+
+    with pytest.raises(ValueError, match="pools are no longer supported"):
+        sim.simulate_cv(input_obj, "E", params, options={"plot": False})
+
+
+def test_equilibrium_phase_is_inferred_from_surface_concentrations(ecat_module, monkeypatch):
+    sim = ecat_module.simulation
+
+    class Backend:
+        name = "surface-equilibrium-backend"
+
+        def simulate(self, input_obj, mechanism_spec, params, options):
+            self.params = deepcopy(params)
+            return input_obj.E, np.zeros_like(input_obj.E), input_obj.t, self
+
+    backend = Backend()
+    monkeypatch.setattr(sim, "get_backend", lambda name="electrokitty": backend)
+    input_obj = sim.cv_program(0.0, E_low=-0.2, points_per_segment=4)
+    params = _basic_params()
+    params["concentrations"] = {"surface": {"A": 10.0, "B": 0.0}, "bulk": {}}
+    params["diffusion"] = {}
+    params["reactions"] = [{"K": 4.0, "k_exchange": 10.0}]
+
+    result = sim.simulate_cv(input_obj, "C:A*=B*", params, options={"plot": False})
+
+    assert result.params["concentrations"]["surface"]["A"] == pytest.approx(2.0)
+    assert result.params["concentrations"]["surface"]["B"] == pytest.approx(8.0)
+    assert result.summary["parameter_model"]["equilibrium"]["phases"][0]["phase"] == "surface"
+
+
+def test_mixed_bulk_surface_equilibrium_raises_clear_error(ecat_module, monkeypatch):
+    sim = ecat_module.simulation
+
+    class Backend:
+        name = "mixed-equilibrium-backend"
+
+        def simulate(self, input_obj, mechanism_spec, params, options):
+            raise AssertionError("mixed equilibrium should fail before backend simulation")
+
+    monkeypatch.setattr(sim, "get_backend", lambda name="electrokitty": Backend())
+    input_obj = sim.cv_program(0.0, E_low=-0.2, points_per_segment=4)
+    params = _basic_params()
+    params["concentrations"] = {"bulk": {"A": 1.0}, "surface": {"B": 0.0}}
+    params["diffusion"] = {"A": 1e-9}
+    params["reactions"] = [{"K": 4.0, "k_exchange": 10.0}]
+
+    with pytest.raises(ValueError, match="mixes bulk and surface"):
+        sim.simulate_cv(input_obj, "C:A=B", params, options={"plot": False})
+
+
+def test_parameter_model_does_not_claim_elemental_or_charge_balance(ecat_module, monkeypatch):
+    sim = ecat_module.simulation
+    monkeypatch.setattr(sim, "get_backend", lambda name="electrokitty": _CaptureParamsBackend())
+    input_obj = sim.cv_program(0.0, E_low=-0.2, points_per_segment=4)
+    params = _basic_params()
+    params["concentrations"] = {"bulk": {"A": 1.0, "B": 0.0}}
+    params["diffusion"] = {"A": 1e-9, "B": 1e-9}
+    params["reactions"] = {"A=B": {"K": 1.0, "k_exchange": 10.0}}
+
+    result = sim.simulate_cv(input_obj, "C:A=B", params, options={"plot": False})
+
+    report_text = repr(result.summary["parameter_model"]).lower()
+    assert "element" not in report_text
+    assert "charge balance" not in report_text
+
+
+def test_stoichiometric_equilibrium_solves_coupled_reaction_network(ecat_module, monkeypatch):
+    sim = ecat_module.simulation
+
+    class Backend:
+        name = "coupled-equilibrium-backend"
+
+        def simulate(self, input_obj, mechanism_spec, params, options):
+            self.params = deepcopy(params)
+            return input_obj.E, np.zeros_like(input_obj.E), input_obj.t, self
+
+    backend = Backend()
+    monkeypatch.setattr(sim, "get_backend", lambda name="electrokitty": backend)
+    input_obj = sim.cv_program(0.0, E_low=-0.2, points_per_segment=4)
+    params = _basic_params()
+    params["concentrations"] = {"bulk": {"A": 1.0, "B": 0.0, "C": 1.0, "D": 0.0}}
+    params["diffusion"] = {"A": 1e-9, "B": 1e-9, "C": 1e-9, "D": 1e-9}
+    params["reactions"] = {
+        "A=B": {"K": 1.0, "k_exchange": 10.0},
+        "C=D": {"K": 1.0, "k_exchange": 10.0},
+        "A=C": {"K": 1.0, "k_exchange": 10.0},
+    }
+
+    result = sim.simulate_cv(input_obj, "C:A=B\nC:C=D\nC:A=C", params, options={"plot": False})
+
+    for species in ("A", "B", "C", "D"):
+        assert result.params["concentrations"]["bulk"][species] == pytest.approx(0.5)
+    assert result.summary["parameter_model"]["equilibrium"]["conservation_rank"] == 1
+
+
+def test_stoichiometric_equilibrium_compiles_koff_with_dimensionless_activity(ecat_module, monkeypatch):
+    sim = ecat_module.simulation
+
+    class Backend:
+        name = "activity-backend"
+
+        def simulate(self, input_obj, mechanism_spec, params, options):
+            self.params = deepcopy(params)
+            return input_obj.E, np.zeros_like(input_obj.E), input_obj.t, self
+
+    backend = Backend()
+    monkeypatch.setattr(sim, "get_backend", lambda name="electrokitty": backend)
+    input_obj = sim.cv_program(0.0, E_low=-0.2, points_per_segment=4)
+    params = _basic_params()
+    params["concentrations"] = {"bulk": {"A": 10.0, "B": 0.0}}
+    params["diffusion"] = {"A": 1e-9, "B": 1e-9}
+    params["activity"] = {
+        "standard_concentration": 1000.0,
+        "gamma": {"bulk": {"A": 0.5, "B": 2.0}},
+    }
+    params["reactions"] = {"2A=B": {"K": 4.0, "koff": 2.0}}
+
+    result = sim.simulate_cv(input_obj, "C:2A=B", params, options={"plot": False})
+
+    expected_k_concentration = 4.0 * 0.5**2 / 2.0 / 1000.0
+    expected_a = (-1.0 + np.sqrt(1.0 + 0.04)) / 0.002
+    expected_b = expected_k_concentration * expected_a**2
+    assert result.params["concentrations"]["bulk"]["A"] == pytest.approx(expected_a)
+    assert result.params["concentrations"]["bulk"]["B"] == pytest.approx(expected_b)
+    assert result.params["_compiled"]["reactions"][0]["kb"] == pytest.approx(2.0)
+    assert result.params["_compiled"]["reactions"][0]["kf"] == pytest.approx(expected_k_concentration * 2.0)
+    derived = result.summary["parameter_model"]["equilibria"][0]
+    assert derived["K_concentration"] == pytest.approx(expected_k_concentration)
+    assert derived["target"] == "reactions.0"
 
 
 def test_simulate_cv_check_params_prints_diagnostic_checks(ecat_module, monkeypatch, capsys):
@@ -1313,6 +2247,48 @@ def test_print_params_defaults_to_pretty_and_raw_mode_is_available(ecat_module, 
     assert "{'cell'" in raw
 
 
+def test_species_table_shows_activity_columns_only_when_nonideal(ecat_module):
+    sim = ecat_module.simulation
+    ideal = {
+        "concentrations": {"bulk": {"A": 10.0}},
+        "diffusion": {"A": 1e-9},
+        "activity": {"gamma": {"bulk": {"A": 1.0}}},
+    }
+    nonideal = deepcopy(ideal)
+    nonideal["activity"]["gamma"]["bulk"]["A"] = 0.5
+
+    ideal_species = dict(sim._simulation_param_dataframes(ideal))["species"]
+    nonideal_species = dict(sim._simulation_param_dataframes(nonideal))["species"]
+
+    assert "gamma" not in ideal_species.columns
+    assert "Activity" not in ideal_species.columns
+    assert "gamma" in nonideal_species.columns
+    assert "Activity" in nonideal_species.columns
+    concentration_row = nonideal_species[nonideal_species["Path"] == "concentrations.bulk.A"].iloc[0]
+    assert concentration_row["gamma"] == "0.5"
+    assert concentration_row["Activity"] == "0.005"
+
+
+def test_species_table_uses_only_concentrations_diffusion_and_activity(ecat_module):
+    sim = ecat_module.simulation
+    params = {
+        "concentrations": {
+            "bulk": {"A": 2.0, "B": 8.0},
+        },
+        "diffusion": {"A": 1e-9, "B": 1e-9},
+    }
+
+    species = dict(sim._simulation_param_dataframes(params))["species"]
+
+    assert set(species["Path"]) == {
+        "concentrations.bulk.A",
+        "concentrations.bulk.B",
+        "diffusion.A",
+        "diffusion.B",
+    }
+    assert "Members" not in species.columns
+
+
 def test_fit_param_comparison_sections_keep_diffusion_with_species_and_spatial_in_setup(ecat_module):
     sim = ecat_module.simulation
     initial = {
@@ -1369,6 +2345,31 @@ def test_print_params_compact_combines_species_and_mechanism_tables(ecat_module,
     assert "E⁰" in out
     assert "k₁" in out
     assert "k₋₁" in out
+
+
+def test_fit_spec_accepts_concentration_reaction_k_and_activity_gamma_paths(ecat_module):
+    sim = ecat_module.simulation
+    program = sim.cv_program(0.0, E_low=-0.2, points_per_segment=4)
+    params = _basic_params()
+    params["reactions"] = [{"K": 4.0, "k_exchange": 10.0}]
+    params["activity"] = {"gamma": {"bulk": {"a": 0.8}}}
+
+    spec = sim._normalize_fit_spec(
+        {
+            "vary": ["concentrations.bulk.a", "reactions.0.K", "activity.gamma.bulk.a"],
+            "bounds": "auto",
+            "transform": "auto",
+        },
+        params,
+        program,
+    )
+
+    assert ("concentrations", "bulk", "a") in spec["entries"]
+    assert ("reactions", 0, "K") in spec["entries"]
+    assert ("activity", "gamma", "bulk", "a") in spec["entries"]
+    assert spec["entries"][("concentrations", "bulk", "a")]["transform"] == "log10"
+    assert spec["entries"][("reactions", 0, "K")]["transform"] == "log10"
+    assert spec["entries"][("activity", "gamma", "bulk", "a")]["transform"] == "log10"
 
 
 def test_mechanism_presets_compile_expected_strings(ecat_module):
@@ -1452,6 +2453,82 @@ def test_raw_mechanism_passes_through_but_species_populates_adapter(ecat_module)
 
     assert spec.mechanism == raw
     assert adapter["species_information"] == [[], [1.0, 0.0, 0.0]]
+
+
+def test_electrokitty_adapter_orders_bulk_species_by_mechanism(ecat_module):
+    sim = ecat_module.simulation
+    raw = "\n".join(
+        [
+            "E(1):Co=CoRed",
+            "C:CoRed+ZnOH2>CoH+ZnOH",
+            "C:CoH+ZnOH2>H2+Co+ZnOH",
+            "C:ZnOH2=ZnOH",
+            "C:ZnOH+CO2=ZnHCO3",
+            "C:ZnHCO3+H2O=ZnOH2",
+            "C:Zn+H2O=ZnOH2",
+        ]
+    )
+    mechanism_spec = sim.compile_mechanism(raw)
+    params = {
+        "concentrations": {
+            "bulk": {
+                "Zn": 10.0,
+                "ZnOH2": 3.0,
+                "ZnOH": 5.0,
+                "ZnHCO3": 8.0,
+                "Co": 1.0,
+                "CoRed": 2.0,
+                "CoH": 4.0,
+                "H2": 6.0,
+                "H2O": 9.0,
+                "CO2": 7.0,
+            }
+        },
+        "diffusion": {
+            "Zn": 10e-9,
+            "ZnOH2": 3e-9,
+            "ZnOH": 5e-9,
+            "ZnHCO3": 8e-9,
+            "Co": 1e-9,
+            "CoRed": 2e-9,
+            "CoH": 4e-9,
+            "H2": 6e-9,
+            "H2O": 9e-9,
+            "CO2": 7e-9,
+        },
+        "kinetics": [{"E0": -1.5, "k0": 1e-3, "alpha": 0.5}],
+        "reactions": [{"k": 1.0} for _ in range(6)],
+    }
+
+    adapter = sim._electrokitty_parameters(params, mechanism_spec)
+
+    assert adapter["species_information"] == [
+        [],
+        [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0],
+    ]
+    assert adapter["diffusion_const"] == pytest.approx(
+        [1e-9, 2e-9, 3e-9, 4e-9, 5e-9, 6e-9, 7e-9, 8e-9, 9e-9, 10e-9]
+    )
+
+
+def test_electrokitty_adapter_converts_total_cdl_to_backend_areal_cdl(ecat_module):
+    sim = ecat_module.simulation
+    params = _basic_params()
+    params["cell"] = {"T": 310.0, "Ru": 45.0, "Cdl": 2.5e-6, "A": 5.0e-6}
+
+    adapter = sim._electrokitty_parameters(params, sim.compile_mechanism("E", params))
+
+    assert adapter["cell_const"] == pytest.approx([310.0, 45.0, 0.5, 5.0e-6])
+
+
+def test_electrokitty_adapter_rejects_total_cdl_without_positive_area(ecat_module):
+    sim = ecat_module.simulation
+    params = _basic_params()
+    params["cell"]["Cdl"] = 2.5e-6
+    params["cell"]["A"] = 0.0
+
+    with pytest.raises(ValueError, match="positive cell.A"):
+        sim._electrokitty_parameters(params, sim.compile_mechanism("E", params))
 
 
 def test_species_input_sugar_normalizes_to_concentrations_and_diffusion(ecat_module):
@@ -1793,7 +2870,7 @@ def test_simulation_result_plot_smoke(ecat_module, monkeypatch):
     assert result.axes.lines[0].get_linestyle() == "--"
     assert result.axes.lines[0].get_label() == "Simulation"
     assert result.axes.get_xlabel() == "Potential (V)"
-    assert result.axes.get_ylabel() == "Current (mA)"
+    assert result.axes.get_ylabel() == "Current (A)"
 
 
 def test_simulation_result_plot_uses_ecat_axis_units(ecat_module):
@@ -3722,6 +4799,138 @@ def test_fit_cv_electrokitty_method_passes_options(ecat_module, monkeypatch):
         )
 
 
+def test_native_electrokitty_fit_preserves_entered_state_and_applies_quiet_time(ecat_module, monkeypatch):
+    sim = ecat_module.simulation
+    fake_module = types.ModuleType("electrokitty")
+    fake_module.ElectroKitty = _FakeFittingElectroKitty
+    monkeypatch.setitem(sys.modules, "electrokitty", fake_module)
+    input_obj = sim.SimulatedCVInput(
+        E=np.array([0.1, 0.0, -0.1]),
+        t=np.array([0.0, 1.0, 2.0]),
+        i=np.array([1.0, 2.0, 3.0]),
+        metadata={
+            "kind": "cv_data",
+            "scan_rate": 0.1,
+            "quiet_time": 2.0,
+            "incubation_time": 2.0,
+        },
+        source="synthetic",
+    )
+    params = _basic_params()
+    params["concentrations"] = {"bulk": {"A": 10.0, "B": 0.0}}
+    params["diffusion"] = {"A": 1e-9, "B": 1e-9}
+    params["kinetics"] = []
+    params["reactions"] = {"A>B": {"k": 0.5}}
+
+    result = sim.fit_cv(
+        input_obj,
+        "C:A>B",
+        params,
+        method="electrokitty",
+        options={"plot": False, "print setup": False, "print params": False},
+    )
+
+    expected_a = 10.0 * np.exp(-1.0)
+    assert result.best_params["concentrations"]["bulk"]["A"] == pytest.approx(10.0)
+    assert result.simulation_result.input_params["concentrations"]["bulk"]["A"] == pytest.approx(10.0)
+    assert result.simulation_result.params["concentrations"]["bulk"]["A"] == pytest.approx(expected_a, rel=2e-5)
+    assert result.simulation_result.summary["parameter_model"]["states"]["initial"]["bulk"]["A"] == pytest.approx(10.0)
+    assert result.simulation_result.summary["quiet_time_applied"] is True
+    assert len(result.backend_result.E_generated) > len(input_obj.E)
+    assert len(result.simulation_result.data) == len(input_obj.E)
+
+
+def test_electrokitty_backend_mechanism_expands_stoichiometric_coefficients(ecat_module):
+    sim = ecat_module.simulation
+    params = _basic_params()
+    params["concentrations"] = {
+        "bulk": {"HCO3": 1.0, "H3O": 1.0, "CO2": 0.0, "H2O": 2.0}
+    }
+    params["diffusion"] = {name: 1e-9 for name in params["concentrations"]["bulk"]}
+    params["kinetics"] = []
+    params["reactions"] = [{"kf": 1.0, "kb": 1.0}]
+    mechanism = sim.compile_mechanism("C:HCO3+H3O=CO2+2H2O", params)
+
+    backend_mechanism = sim._electrokitty_backend_mechanism(mechanism)
+    surface, bulk = sim._electrokitty_species_order(mechanism)
+    adapter = sim._electrokitty_parameters(params, mechanism)
+
+    assert mechanism.mechanism == "C:HCO3+H3O=CO2+2H2O"
+    assert backend_mechanism == "C:HCO3+H3O=CO2+H2O+H2O"
+    assert surface == []
+    assert bulk == ["HCO3", "H3O", "CO2", "H2O"]
+    assert adapter["diffusion_const"] == pytest.approx([1e-9] * 4)
+
+
+def test_electrokitty_backend_mechanism_expands_surface_and_multistep_coefficients(ecat_module):
+    sim = ecat_module.simulation
+    mechanism = sim.compile_mechanism("C:2A*=B*\nC:X+3Y=2Z")
+
+    assert sim._electrokitty_backend_mechanism(mechanism) == (
+        "C:A*+A*=B*\nC:X+Y+Y+Y=Z+Z"
+    )
+    assert sim._electrokitty_species_order(mechanism) == (
+        ["A*", "B*"],
+        ["X", "Y", "Z"],
+    )
+
+
+def test_reaction_parameter_keys_normalize_coefficients_and_repeated_species(ecat_module):
+    sim = ecat_module.simulation
+
+    assert sim._reaction_key("2A=B") == sim._reaction_key("A+A=B")
+    params = _basic_params()
+    params["concentrations"] = {"bulk": {"A": 1.0, "B": 0.0}}
+    params["diffusion"] = {"A": 1e-9, "B": 1e-9}
+    params["kinetics"] = []
+    params["reactions"] = {"A+A=B": {"kf": 1.0, "kb": 1.0}}
+
+    prepared = sim._prepare_simulation_params(
+        sim.cv_program(0.0, E_low=-0.2, points_per_segment=4),
+        params,
+        {"plot": False},
+        mechanism="C:2A=B",
+        expand_parameter_model=False,
+    )
+
+    assert prepared["reactions"] == [{"kf": pytest.approx(1.0), "kb": pytest.approx(1.0)}]
+
+
+def test_electrokitty_backend_uses_runtime_parser_order_for_parameter_arrays(ecat_module, monkeypatch):
+    sim = ecat_module.simulation
+
+    class RuntimeParser:
+        def Parse_mechanism(self):
+            return [[[], ["C", "B", "A"]], [[], [], []], [[], [], []], [[], [], []], []]
+
+    class RuntimeOrderedElectroKitty(_FakeElectroKitty):
+        def __init__(self, mechanism):
+            super().__init__(mechanism)
+            self.Parser = RuntimeParser()
+
+    fake_module = types.ModuleType("electrokitty")
+    fake_module.ElectroKitty = RuntimeOrderedElectroKitty
+    monkeypatch.setitem(sys.modules, "electrokitty", fake_module)
+    input_obj = sim.cv_program(0.0, E_low=-0.2, points_per_segment=4)
+    params = _basic_params()
+    params["concentrations"] = {"bulk": {"A": 1.0, "B": 2.0, "C": 3.0}}
+    params["diffusion"] = {"A": 1e-9, "B": 2e-9, "C": 3e-9}
+    params["kinetics"] = []
+    params["reactions"] = [{"k": 1.0}]
+
+    result = sim.simulate_cv(
+        input_obj,
+        "C:2A>B+C",
+        params,
+        options={"plot": False},
+    )
+
+    assert result.mechanism.mechanism == "C:2A>B+C"
+    assert result.backend_result.mechanism == "C:A+A>B+C"
+    assert result.backend_result.created["diffusion_const"] == pytest.approx([3e-9, 2e-9, 1e-9])
+    assert result.backend_result.created["species_information"][1] == pytest.approx([3.0, 2.0, 1.0])
+
+
 def _basic_params():
     return {
         "cell": {"T": 298.15, "Ru": 0, "Cdl": 0, "A": 1e-5},
@@ -3731,6 +4940,14 @@ def _basic_params():
         "kinetics": [{"alpha": 0.5, "k0": 1e-3, "E0": -1.4}],
         "isotherm": [],
     }
+
+
+class _CaptureParamsBackend:
+    name = "capture-params-backend"
+
+    def simulate(self, input_obj, mechanism_spec, params, options):
+        self.params = deepcopy(params)
+        return input_obj.E, np.zeros_like(input_obj.E), input_obj.t, self
 
 
 def _surface_params():
@@ -3743,6 +4960,7 @@ def _surface_params():
 class _FakeElectroKitty:
     def __init__(self, mechanism):
         self.mechanism = mechanism
+        self.Parser = _FakeElectroKittyParser(mechanism)
         self.created = None
         self.E_generated = None
         self.current = None
@@ -3777,6 +4995,23 @@ class _FakeElectroKitty:
     def simulate(self):
         self.current = np.arange(1, len(self.E_generated) + 1, dtype=float)
         return self.E_generated, self.current, self.t
+
+
+class _FakeElectroKittyParser:
+    def __init__(self, mechanism):
+        self.mechanism = mechanism
+
+    def Parse_mechanism(self):
+        surface = []
+        bulk = []
+        for raw_line in str(self.mechanism).splitlines():
+            equation = raw_line.split(":", 1)[1].replace("=", ">").replace("<", ">")
+            for side in equation.split(">"):
+                for species in side.split("+"):
+                    target = surface if species.endswith("*") else bulk
+                    if species not in target:
+                        target.append(species)
+        return [[surface, bulk], [[], [], []], [[], [], []], [[], [], []], []]
 
 
 class _FakeFittingElectroKitty(_FakeElectroKitty):

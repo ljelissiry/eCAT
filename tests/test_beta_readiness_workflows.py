@@ -93,3 +93,27 @@ def test_beta_save_data_exports_csv_with_units(ecat_module, cv_factory, tmp_path
     assert Path(obj.name).name in csv.columns.get_level_values(0)
     assert "Potential (V)" in csv.columns.get_level_values(1)
     assert "Current (A)" in csv.columns.get_level_values(1)
+
+
+def test_beta_save_data_applies_y_unit_only_to_y_columns(
+    ecat_module,
+    cv_factory,
+    tmp_path,
+):
+    obj = cv_factory(name="50mVs_sample_CO2_MeCN_10mM_Fc_run01")
+
+    ecat_module.save_data(
+        [obj],
+        {
+            "folder path": str(tmp_path),
+            "file name": "processed_cv_uA",
+            "y unit": "uA",
+        },
+    )
+
+    csv = pd.read_csv(tmp_path / "processed_cv_uA.csv", header=[0, 1])
+    potential = csv.xs("Potential (V)", axis=1, level=1).iloc[:, 0]
+    current = csv.xs("Current (μA)", axis=1, level=1).iloc[:, 0]
+
+    np.testing.assert_allclose(potential, obj.data["Potential"])
+    np.testing.assert_allclose(current, obj.data["Current"] * 1e6)

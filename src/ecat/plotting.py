@@ -7,7 +7,7 @@ from matplotlib.font_manager import FontProperties
 
 from .utils import *  # noqa: F401,F403
 from .options import *  # noqa: F401,F403
-from .options import _canonical_option_key, _drop_legacy_alias_mirrors
+from .options import _canonical_option_key
 from .results import AnalysisResult
 from ._plot_helpers import (
     _add_directional_arrows,
@@ -29,6 +29,9 @@ def _fit_options_from_analysis_options(options):
         "fit linestyle",
         "fit linewidth",
         "fit alpha",
+        "fit line range",
+        "fit band",
+        "fit band level",
         "legend",
         "return stats",
     ]
@@ -101,15 +104,218 @@ def _attach_scatter_fit_table(data, rows):
         data.attrs["fit table"] = _scatter_fit_table(rows)
 
 
+def _display_table_title(title):
+    if title is None:
+        return None
+    text = str(title).strip()
+    return text or None
+
+
+def _print_table_title(title):
+    text = _display_table_title(title)
+    if text is None:
+        return
+    if text.endswith(":"):
+        print(text)
+    else:
+        print(f"{text}:")
+
+
+def _hide_table_index(styler):
+    try:
+        return styler.hide(axis="index")
+    except TypeError:
+        return styler.hide_index()
+
+
+def _captioned_table_styles(table_styles=None):
+    styles = [
+        {
+            "selector": "caption",
+            "props": [
+                ("caption-side", "top"),
+                ("text-align", "left"),
+                ("font-weight", "600"),
+                ("color", "inherit"),
+                ("margin-bottom", "0.35em"),
+            ],
+        }
+    ]
+    if table_styles is None:
+        styles.extend(
+            [
+                {"selector": "th", "props": [("text-align", "left")]},
+                {"selector": "td", "props": [("text-align", "left")]},
+            ]
+        )
+    else:
+        styles.extend(table_styles)
+    return styles
+
+
+def _can_rich_table_display():
+    if display is None:
+        return False
+    try:
+        from IPython import get_ipython
+
+        if get_ipython() is not None:
+            return True
+    except Exception:
+        pass
+    display_module = getattr(display, "__module__", "")
+    return not str(display_module).startswith("IPython.")
+
+
+def _plain_table_text(table, *, index=True, justify="left"):
+    if hasattr(table, "to_string"):
+        return table.to_string(index=index, justify=justify)
+    return str(table)
+
+
+def _display_table(
+    table,
+    options=None,
+    *,
+    title=None,
+    rich_table=None,
+    plain_table=None,
+    formatters=None,
+    escape=None,
+    index=True,
+    justify="left",
+    table_styles=None,
+    plain_title=True,
+    format_index=False,
+):
+    """Display a DataFrame as a captioned rich table, with plain-text fallback."""
+    options = {} if options is None else dict(options)
+    rich_table = table if rich_table is None else rich_table
+    plain_table = table if plain_table is None else plain_table
+    caption = _display_table_title(title)
+
+    if options.get("pretty print", True) and _can_rich_table_display():
+        try:
+            styled = rich_table.style.format(formatters, escape=escape)
+            if format_index:
+                styled = styled.format_index(escape=escape, axis=0)
+            styled = styled.set_properties(
+                **{
+                    "text-align": "left",
+                    "white-space": "pre-wrap",
+                    "vertical-align": "top",
+                }
+            )
+            styled = styled.set_table_styles(_captioned_table_styles(table_styles))
+            if not index:
+                styled = _hide_table_index(styled)
+            if caption:
+                styled = styled.set_caption(caption)
+            with pd.option_context(
+                "display.max_colwidth", None,
+                "display.max_columns", None,
+                "display.max_rows", None,
+                "display.width", None,
+                "display.expand_frame_repr", False,
+            ):
+                display(styled)
+            return table
+        except Exception:
+            pass
+
+    if plain_title:
+        _print_table_title(caption)
+    with pd.option_context(
+        "display.max_colwidth", None,
+        "display.max_columns", None,
+        "display.max_rows", None,
+        "display.width", None,
+        "display.expand_frame_repr", False,
+    ):
+        print(_plain_table_text(plain_table, index=index, justify=justify))
+    return table
+
+
+def _conditional_analysis_name_column(
+    table,
+    identity_columns,
+    options=None,
+    *,
+    name_column=None,
+):
+    """Show ``Name`` only when visible context does not uniquely identify rows.
+
+    Uniqueness is evaluated after numeric context values are formatted with the
+    configured significant figures. This keeps replicate names visible when two
+    instrument values render as the same scan rate or concentration.
+    """
+    if not isinstance(table, pd.DataFrame):
+        return table
+
+    result = table.copy()
+    lower_columns = {str(column).strip().lower(): column for column in result.columns}
+    if name_column is None:
+        resolved_name = lower_columns.get("name")
+    else:
+        resolved_name = lower_columns.get(str(name_column).strip().lower())
+    if resolved_name is None:
+        return result
+
+    resolved_identity = []
+    for column in identity_columns or []:
+        resolved = lower_columns.get(str(column).strip().lower())
+        if resolved is not None and resolved != resolved_name and resolved not in resolved_identity:
+            resolved_identity.append(resolved)
+
+    sig_figs = int((options or {}).get("sig figs", 4))
+
+    def display_key(value):
+        if isinstance(value, (bool, np.bool_)):
+            return str(bool(value))
+        if isinstance(value, (int, float, np.integer, np.floating)):
+            numeric = float(value)
+            if np.isnan(numeric):
+                return "<missing>"
+            if np.isfinite(numeric):
+                return f"{numeric:.{sig_figs}g}"
+            return str(numeric)
+        try:
+            if pd.isna(value):
+                return "<missing>"
+        except (TypeError, ValueError):
+            pass
+        if isinstance(value, (list, tuple, dict, set, np.ndarray)):
+            return repr(value)
+        return str(value).strip()
+
+    keep_name = len(result) > 1 and not resolved_identity
+    if resolved_identity:
+        identity = pd.DataFrame(
+            {
+                str(column): [display_key(value) for value in result[column]]
+                for column in resolved_identity
+            },
+            index=result.index,
+        )
+        keep_name = bool(identity.duplicated(keep=False).any())
+
+    if not keep_name:
+        return result.drop(columns=[resolved_name])
+
+    if resolved_name != "Name":
+        result = result.rename(columns={resolved_name: "Name"})
+    ordered = ["Name"] + [column for column in result.columns if column != "Name"]
+    return result.loc[:, ordered]
+
+
 def _print_scatter_fit_statistics(title, fit_table):
     if fit_table is None or len(fit_table) == 0:
         return
-    print(f"{title} Fit Statistics:")
-    if display is not None:
-        with pd.option_context("display.max_columns", None):
-            display(fit_table)
-    else:
-        print(fit_table.to_string(index=False))
+    return _display_table(
+        fit_table,
+        title=f"{title} Fit Statistics",
+        index=False,
+    )
 
 
 def _scatterfit_legend_requested(options):
@@ -121,6 +327,225 @@ def _scatterfit_legend_fontsize(options):
     if fontsize in (None, "auto"):
         return _default_legend_fontsize()
     return fontsize
+
+
+def _fit_line_option_value(options):
+    options = {} if options is None else dict(options)
+    return options.get("fit line range", None)
+
+
+def _is_fit_line_range_pair(value):
+    if not isinstance(value, (list, tuple, np.ndarray, pd.Series)) or len(value) != 2:
+        return False
+    lower, upper = list(value)
+    return all(
+        item is None
+        or (
+            isinstance(item, (int, float, np.integer, np.floating))
+            and not isinstance(item, (bool, np.bool_))
+        )
+        for item in (lower, upper)
+    )
+
+
+def _fit_line_label_candidates(label=None, options=None, index=0):
+    options = {} if options is None else dict(options)
+    candidates = []
+    for value in (label, options.get("model label"), options.get("_fit selection label")):
+        if value in (None, ""):
+            continue
+        text = str(value)
+        candidates.append(text)
+        if text.endswith(" Fit"):
+            candidates.append(text[:-4])
+        if text.endswith(" fit"):
+            candidates.append(text[:-4])
+    candidates.extend([str(index), index, "default", "all"])
+
+    deduped = []
+    for candidate in candidates:
+        if candidate not in deduped:
+            deduped.append(candidate)
+    return deduped
+
+
+def _fit_line_range_for_trace(options, *, label=None, index=0):
+    value = _fit_line_option_value(options)
+    if value is None:
+        return None
+
+    if isinstance(value, dict):
+        for candidate in _fit_line_label_candidates(label=label, options=options, index=index):
+            if candidate in value:
+                return value[candidate]
+        return None
+
+    if _is_fit_line_range_pair(value):
+        return value
+
+    if isinstance(value, (list, tuple)) and value and all(_is_fit_line_range_pair(item) for item in value):
+        if index < len(value):
+            return value[index]
+        return value[-1]
+
+    raise ValueError(
+        "'fit line range' must be [x_min, x_max], a dict keyed by fit label, "
+        "or a list of [x_min, x_max] ranges."
+    )
+
+
+def _fit_line_x_values(default_x, options=None, *, label=None, index=0, points=300):
+    default_x = np.asarray(default_x, dtype=float)
+    finite_x = default_x[np.isfinite(default_x)]
+    if len(finite_x) == 0:
+        return default_x
+
+    default_min = float(np.nanmin(finite_x))
+    default_max = float(np.nanmax(finite_x))
+    range_spec = _fit_line_range_for_trace(options, label=label, index=index)
+    if range_spec is None:
+        lower, upper = default_min, default_max
+    else:
+        lower, upper = list(range_spec)
+        lower = default_min if lower is None else float(lower)
+        upper = default_max if upper is None else float(upper)
+
+    if not np.isfinite(lower) or not np.isfinite(upper):
+        raise ValueError("'fit line range' must resolve to finite x bounds.")
+    if upper < lower or (range_spec is not None and upper == lower):
+        raise ValueError("'fit line range' upper bound must be greater than the lower bound.")
+    if upper == lower:
+        return np.full(int(points), lower, dtype=float)
+
+    xscale, _yscale = _resolve_matplotlib_axis_scales(options or {})
+    if str(xscale).lower() == "log" and (lower <= 0 or upper <= 0):
+        if range_spec is None:
+            positive_x = finite_x[finite_x > 0]
+            if len(positive_x) > 0:
+                lower = float(np.nanmin(positive_x))
+                upper = float(np.nanmax(positive_x))
+            else:
+                raise ValueError(
+                    "Cannot draw a default fit line on a logarithmic x-axis because "
+                    "the fitted x values contain no positive points."
+                )
+        else:
+            raise ValueError("'fit line range' bounds must be positive when the plotted x-axis is logarithmic.")
+        if upper <= lower:
+            return np.full(int(points), lower, dtype=float)
+
+    return np.linspace(lower, upper, int(points))
+
+
+def _normalize_fit_band(value):
+    if value in (None, False, ""):
+        return None
+    token = str(value).strip().lower().replace("_", " ").replace("-", " ")
+    if token in {"none", "off", "false", "no", "0"}:
+        return None
+    if token in {"confidence", "ci", "mean", "mean confidence"}:
+        return "confidence"
+    if token in {"prediction", "pi", "predictive"}:
+        return "prediction"
+    if token in {"both", "all"}:
+        return "both"
+    raise ValueError("'fit band' must be None, 'confidence', 'prediction', or 'both'.")
+
+
+def _fit_band_level(options):
+    level = float((options or {}).get("fit band level", 0.95))
+    if not 0 < level < 1:
+        raise ValueError("'fit band level' must be between 0 and 1.")
+    return level
+
+
+def _model_prediction_jacobian(function, x_values, params):
+    x_values = np.asarray(x_values, dtype=float)
+    params = np.asarray(params, dtype=float)
+    jacobian = np.empty((len(x_values), len(params)), dtype=float)
+
+    for idx, value in enumerate(params):
+        step = np.sqrt(np.finfo(float).eps) * max(abs(float(value)), 1.0)
+        hi = params.copy()
+        lo = params.copy()
+        hi[idx] += step
+        lo[idx] -= step
+        with np.errstate(all="ignore"):
+            y_hi = np.asarray(function(x_values, *hi), dtype=float)
+            y_lo = np.asarray(function(x_values, *lo), dtype=float)
+        derivative = (y_hi - y_lo) / (2 * step)
+        if derivative.shape != x_values.shape:
+            derivative = np.broadcast_to(derivative, x_values.shape)
+        jacobian[:, idx] = derivative
+
+    return jacobian
+
+
+def _fit_band_arrays(model_result, x_line, y_line, options=None):
+    band = _normalize_fit_band((options or {}).get("fit band"))
+    if band is None:
+        return []
+
+    model_result = model_result or {}
+    pcov = model_result.get("pcov")
+    function = model_result.get("function")
+    popt = model_result.get("popt")
+    dof = int(model_result.get("dof", 0) or 0)
+    if pcov is None or function is None or popt is None or dof <= 0:
+        return []
+
+    pcov = np.asarray(pcov, dtype=float)
+    popt = np.asarray(popt, dtype=float)
+    if pcov.shape != (len(popt), len(popt)) or not np.all(np.isfinite(pcov)):
+        return []
+
+    x_line = np.asarray(x_line, dtype=float)
+    y_line = np.asarray(y_line, dtype=float)
+    jacobian = _model_prediction_jacobian(function, x_line, popt)
+    mean_variance = np.einsum("ij,jk,ik->i", jacobian, pcov, jacobian)
+    mean_se = np.sqrt(np.maximum(mean_variance, 0))
+    tcrit = float(scipy.stats.t.ppf((1 + _fit_band_level(options)) / 2, dof))
+    if not np.isfinite(tcrit):
+        return []
+
+    bands = []
+    if band in {"prediction", "both"}:
+        residual_variance = float(model_result.get("residual variance", np.nan))
+        if np.isfinite(residual_variance) and residual_variance >= 0:
+            prediction_se = np.sqrt(np.maximum(mean_variance + residual_variance, 0))
+            bands.append({
+                "kind": "prediction",
+                "lower": y_line - tcrit * prediction_se,
+                "upper": y_line + tcrit * prediction_se,
+            })
+    if band in {"confidence", "both"}:
+        bands.append({
+            "kind": "confidence",
+            "lower": y_line - tcrit * mean_se,
+            "upper": y_line + tcrit * mean_se,
+        })
+    return bands
+
+
+def _plot_fit_bands(ax, x_line, y_line, model_result, options=None, *, color=None):
+    bands = _fit_band_arrays(model_result, x_line, y_line, options)
+    if not bands:
+        return []
+
+    artists = []
+    for band in bands:
+        alpha = 0.12 if band["kind"] == "prediction" else 0.20
+        artist = ax.fill_between(
+            x_line,
+            band["lower"],
+            band["upper"],
+            color=color,
+            alpha=alpha,
+            linewidth=0,
+            label=None,
+        )
+        artists.append(artist)
+    return artists
 
 
 def _align_multiline_legend_handles_to_first_line(legend):
@@ -175,6 +600,10 @@ class ScatterFitResult(AnalysisResult):
         figure=None,
         axes=None,
         summary=None,
+        diagnostics=None,
+        warnings=None,
+        units=None,
+        figures=None,
     ):
         super().__init__(
             table=table,
@@ -186,6 +615,10 @@ class ScatterFitResult(AnalysisResult):
             figure=figure,
             axes=axes,
             summary=summary,
+            diagnostics=diagnostics,
+            warnings=warnings,
+            units=units,
+            figures=figures,
         )
 
     def __iter__(self):
@@ -204,9 +637,9 @@ class ScatterFitResult(AnalysisResult):
                 for key, value in self.summary.items():
                     print(f"{key}: {value}")
             if self.table is not None:
-                print(self.table)
+                _display_table(self.table, options, title="Result Table")
             if self.fit_table is not None:
-                print(self.fit_table)
+                _display_table(self.fit_table, options, title="Fit Table")
         if options.get("return", False):
             return self.table
         return None
@@ -618,15 +1051,18 @@ def _apply_matplotlib_axis_scales(ax, options):
     return ax
 
 
-def _multi_scatter_fit_curve(x_values, model_result):
+def _multi_scatter_fit_curve(x_values, model_result, options=None, *, label=None, index=0):
     x_values = np.asarray(x_values, dtype=float)
     if len(x_values) < 2:
         raise ValueError("At least two x values are required for a fit overlay.")
 
-    x_min = float(np.nanmin(x_values))
-    x_max = float(np.nanmax(x_values))
-
-    x_curve = np.linspace(x_min, x_max, 100)
+    x_curve = _fit_line_x_values(
+        x_values,
+        options,
+        label=label,
+        index=index,
+        points=100,
+    )
 
     model_result = model_result or {}
     function = model_result.get("function")
@@ -700,7 +1136,7 @@ def multi_scatterplot(datasets, options=None):
     --------
     >>> e.multi_scatterplot({"Fe only": result_a, "Mg": result_b})
     """
-    options = MultiScatterplotOptions.from_options(options).to_legacy_dict()
+    options = MultiScatterplotOptions.from_options(options).to_options_dict()
     options.setdefault("legend", True)
     plot_fit = bool(options.get("plot fit", True))
     fit_mode = _multi_scatter_fit_mode(options)
@@ -724,6 +1160,7 @@ def multi_scatterplot(datasets, options=None):
     first_x_label = None
     first_y_label = None
     _multi_scatter_fit_series = None
+    fit_line_index = 0
 
     for i, (label, value) in enumerate(dataset_items):
         df, result = _coerce_multi_scatter_dataset(value, options)
@@ -737,7 +1174,7 @@ def multi_scatterplot(datasets, options=None):
             first_y_col = y_cols[0]
             first_y_label = _multi_scatter_axis_label(df, y_cols[0], "y", options)
 
-        trace_label_base = color_spec["plot labels"][i]
+        trace_label_base = color_spec["labels"][i]
         color = color_spec["line colors"][i]
 
         for y_col_i, y_col in enumerate(y_cols):
@@ -814,10 +1251,24 @@ def multi_scatterplot(datasets, options=None):
                 if model_result:
                     if plot_fit:
                         try:
-                            fit_x, fit_y = _multi_scatter_fit_curve(x_values, model_result)
+                            fit_x, fit_y = _multi_scatter_fit_curve(
+                                x_values,
+                                model_result,
+                                options,
+                                label=trace_label,
+                                index=fit_line_index,
+                            )
                         except ValueError as exc:
                             warnings.warn(str(exc))
                         else:
+                            _plot_fit_bands(
+                                ax,
+                                fit_x,
+                                fit_y,
+                                model_result,
+                                options,
+                                color=color,
+                            )
                             ax.plot(
                                 fit_x,
                                 fit_y,
@@ -827,6 +1278,7 @@ def multi_scatterplot(datasets, options=None):
                                 alpha=options.get("fit alpha", 1),
                                 label=f"{trace_label} fit",
                             )
+                            fit_line_index += 1
 
                     for fit_row in series_fit.get("fit_rows", []):
                         fit_row = dict(fit_row)
@@ -955,6 +1407,12 @@ def _single_object_reference_source_display(echem_object, value):
     if root is None:
         return os.path.basename(str(value))
     return _format_reference_display(str(value), root)
+
+
+def _display_folder_path_value(value):
+    if value in (None, "", "."):
+        return ""
+    return _format_path_for_display(value)
 
 
 def _object_info_table(echem_object, options=None):
@@ -1255,6 +1713,13 @@ def pretty_table_column_label(key):
         "ip": "ip",
         "ip0": "ip0",
         "ip0 source": "ip0 Source",
+        "ip0 scan rate": "ip0 Scan Rate",
+        "ip0 sqrt scan rate slope": "ip0 sqrt scan rate slope",
+        "ip0 tangent": "ip0 Tangent",
+        "ilim": "ilim",
+        "ilim/ip0": "ilim/ip0",
+        "ilim source": "ilim Source",
+        "ilim tangent": "ilim Tangent",
         "ir comp resistance": "IR Comp Resistance",
         "ir uncomp resistance": "IR Uncomp Resistance",
         "ir comp percent": "IR Comp Percent",
@@ -1310,14 +1775,28 @@ def _pretty_table_header_html_label(column):
     Returned DataFrames keep plain-text column names; this helper only gives the
     pretty printer the usual electrochemical subscripts/superscripts.
     """
-    key = str(column).strip().lower()
+    text = str(column).strip()
+    if " / " in text:
+        base, unit = text.rsplit(" / ", 1)
+        return f"{_pretty_table_header_html_label(base)} / {_pretty_unit_html_label(unit)}"
+    key = text.lower()
     header_html_map = {
+        "e1/2": "E<sub>1/2</sub>",
+        "ep": "E<sub>p</sub>",
+        "ep/2": "E<sub>p/2</sub>",
         "kobs": "k<sub>obs</sub>",
         "tofmax": "TOF<sub>max</sub>",
         "tof max": "TOF<sub>max</sub>",
         "ip": "i<sub>p</sub>",
         "ip0": "i<sub>p</sub><sup>0</sup>",
         "ip0 source": "i<sub>p</sub><sup>0</sup> Source",
+        "ip0 scan rate": "i<sub>p</sub><sup>0</sup> Scan Rate",
+        "ip0 sqrt scan rate slope": "i<sub>p</sub><sup>0</sup> sqrt(scan rate) slope",
+        "ip0 tangent": "i<sub>p</sub><sup>0</sup> Tangent",
+        "ilim": "i<sub>lim</sub>",
+        "ilim/ip0": "i<sub>lim</sub>/i<sub>p</sub><sup>0</sup>",
+        "ilim source": "i<sub>lim</sub> Source",
+        "ilim tangent": "i<sub>lim</sub> Tangent",
         "reference ep": "Reference E<sub>p</sub>",
         "redox potential": "Redox Potential",
         "redox delta e": "Redox Delta E",
@@ -1325,8 +1804,46 @@ def _pretty_table_header_html_label(column):
         "ecat/2 - e1/2": "E<sub>cat/2</sub> - E<sub>1/2</sub>",
         "r2": "R<sup>2</sup>",
         "fowa fit": "FOWA Fit",
+        "epc": "E<sub>p,c</sub>",
+        "epa": "E<sub>p,a</sub>",
+        "ipc": "i<sub>p,c</sub>",
+        "ipa": "i<sub>p,a</sub>",
+        "|ipc|": "|i<sub>p,c</sub>|",
+        "|ipa|": "|i<sub>p,a</sub>|",
+        "|ipa/ipc|": "|i<sub>p,a</sub>/i<sub>p,c</sub>|",
+        "epc-epc/2": "|E<sub>p,c</sub> - E<sub>p/2,c</sub>|",
+        "epa-epa/2": "|E<sub>p,a</sub> - E<sub>p/2,a</sub>|",
+        "w1/2,c": "W<sub>1/2,c</sub>",
+        "w1/2,a": "W<sub>1/2,a</sub>",
+        "delta ep": "ΔE<sub>p</sub>",
+        "n delta ep": "nΔE<sub>p</sub>",
+        "psi": "ψ",
+        "lambda": "Λ",
+        "gamma": "Γ",
+        "gamma slope": "Γ<sub>slope</sub>",
+        "gamma charge": "Γ<sub>charge</sub>",
+        "q": "Q",
+        "k0": "k<sup>0</sup>",
     }
     return header_html_map.get(key, column)
+
+
+def _pretty_unit_html_label(unit):
+    text = str(unit).strip()
+    replacements = {
+        "⁻¹": "<sup>-1</sup>",
+        "¹ᐟ²": "<sup>1/2</sup>",
+        "²": "<sup>2</sup>",
+        "³": "<sup>3</sup>",
+        "^-1": "<sup>-1</sup>",
+        "^-2": "<sup>-2</sup>",
+        "^1/2": "<sup>1/2</sup>",
+        "^2": "<sup>2</sup>",
+        "^3": "<sup>3</sup>",
+    }
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+    return text
 
 
 def _coerce_display_columns(value):
@@ -1426,10 +1943,20 @@ def _resolve_object_table_columns(requested_columns, available_columns):
 
 
 def _object_table_optional_metadata(obj):
+    electrode_parts = []
+    for label, attr in [
+        ("WE", "working_electrode"),
+        ("CE", "counter_electrode"),
+        ("RE", "reference_electrode"),
+    ]:
+        value = getattr(obj, attr, None)
+        if value not in (None, ""):
+            electrode_parts.append(f"{label}: {value}")
     return {
         "type": getattr(obj, "type", type(obj).__name__),
         "temperature": getattr(obj, "temperature", None),
         "electrode area": getattr(obj, "electrode_area", None),
+        "electrode": "; ".join(electrode_parts) if electrode_parts else None,
         "ir comp resistance": getattr(obj, "ir_comp_resistance", None),
         "ir uncomp resistance": getattr(obj, "ir_uncomp_resistance", None),
         "ir comp percent": getattr(obj, "ir_comp_percent", None),
@@ -1450,7 +1977,7 @@ def build_object_table(object_list, options=None):
         options = {}
 
     group_number = options.get("group number")
-    plot_labels = options.get("plot labels")
+    plot_labels = options.get("labels")
     print_conditions = options.get("print conditions", True)
     condition_keys = options.get("condition keys")
     if isinstance(condition_keys, str):
@@ -1618,7 +2145,7 @@ def build_object_table(object_list, options=None):
             "__row_index__": i,
             "__sort_time__": best_time(echem_object),
             "name": echem_object.name,
-            "subfolder": getattr(echem_object, "folderpath", "."),
+            "subfolder": _display_folder_path_value(getattr(echem_object, "folderpath", ".")),
         }
 
         if plot_labels is not None:
@@ -1709,7 +2236,8 @@ def build_object_table(object_list, options=None):
         unique_folders = list(dict.fromkeys(folder_values))
 
         if len(unique_folders) == 1 and unique_folders[0] not in (".", "", None):
-            print(f"[Folder] {unique_folders[0]}")
+            folder_display = _format_path_for_display(unique_folders[0])
+            print(f"[Folder] `{folder_display}`")
 
         common_parts = []
         for key in ordered_common_keys:
@@ -1792,6 +2320,7 @@ def build_object_table(object_list, options=None):
         "ir comp resistance",
         "ir uncomp resistance",
         "ir comp percent",
+        "electrode",
     }
     for key in different_values.keys():
         if key in auto_excluded_columns:
@@ -1937,14 +2466,14 @@ def build_object_table(object_list, options=None):
     meta = {"inline_reference_columns": inline_reference_columns}
     return display_df, meta
 
-def display_object_table(display_df, options=None):
+def display_object_table(display_df, options=None, *, title=None, plain_title=True):
     if options is None:
         options = {}
 
     col_lookup = {str(c).lower(): c for c in display_df.columns}
     html_formula_columns = [
         col_lookup[name]
-        for name in ("plot label", "gas", "solvent", "compounds")
+        for name in ("plot label", "gas", "solvent", "compounds", "reference label", "electrode")
         if name in col_lookup
     ]
 
@@ -1983,7 +2512,7 @@ def display_object_table(display_df, options=None):
         value_col = metric_lookup["value"]
         for idx, metric in display_df_html[metric_col].items():
             metric_key = str(metric).strip().lower()
-            if metric_key in {"plot label", "gas", "solvent", "compounds"}:
+            if metric_key in {"plot label", "gas", "solvent", "compounds", "reference label", "electrode"}:
                 display_df_html.at[idx, value_col] = _html_formula(
                     display_df_html.at[idx, value_col]
                 )
@@ -2002,38 +2531,19 @@ def display_object_table(display_df, options=None):
     else:
         renamed_value_col = None
 
-    try:
-        formatters = {col: _html_formula for col in renamed_formula_columns}
-        if renamed_value_col is not None:
-            formatters[renamed_value_col] = _html_value
+    formatters = {col: _html_formula for col in renamed_formula_columns}
+    if renamed_value_col is not None:
+        formatters[renamed_value_col] = _html_value
 
-        styled = (
-            display_df_html.style
-            .format(formatters, escape=None)
-            .set_properties(**{
-                "text-align": "left",
-                "white-space": "pre-wrap",
-                "vertical-align": "top",
-            })
-            .set_table_styles([
-                {"selector": "th", "props": [("text-align", "left")]},
-                {"selector": "td", "props": [("text-align", "left")]},
-            ])
-        )
-
-        with pd.option_context(
-            "display.max_colwidth", None,
-            "display.max_columns", None,
-            "display.max_rows", None,
-            "display.width", None,
-            "display.expand_frame_repr", False,
-        ):
-            display(styled)
-    except Exception:
-        if display is not None:
-            display(display_df)
-        else:
-            print(display_df)
+    return _display_table(
+        display_df,
+        options,
+        title=title,
+        rich_table=display_df_html,
+        formatters=formatters,
+        escape=None,
+        plain_title=plain_title,
+    )
     
 def show_objects(object_list, options=None):
     """
@@ -2051,7 +2561,7 @@ def show_objects(object_list, options=None):
         options = {}
 
     group_number = options.get("group number")
-    plot_labels = options.get("plot labels")
+    plot_labels = options.get("labels")
     pretty_print = options.get("pretty print", True)
 
     def _index_label(i):
@@ -2064,8 +2574,8 @@ def show_objects(object_list, options=None):
             inline_reference_columns = []
 
         for i, echem_object in enumerate(objects):
-            subfolder = getattr(echem_object, "folderpath", ".")
-            prefix = subfolder + " / " if subfolder not in (".", "", None) else ""
+            subfolder = _display_folder_path_value(getattr(echem_object, "folderpath", "."))
+            prefix = f"`{subfolder}` / " if subfolder else ""
             ref_text = _reference_inline_text(
                 echem_object,
                 objects,
@@ -2220,7 +2730,7 @@ def multimultiplot(echem_groups,options=None):
     --------
     >>> e.multimultiplot(groups, {"legend mode": "discrete"})
     """
-    options = MultiMultiplotOptions.from_options(options).to_legacy_dict()
+    options = MultiMultiplotOptions.from_options(options).to_options_dict()
 
     groups = []
     two_dim = False
@@ -2358,14 +2868,22 @@ def _sample_hex_colors_from_cmap(cmap, n):
     return [mpl.colors.to_hex(cmap(x)) for x in xs]
 
 
+_DEFAULT_TRACE_COLORS = [
+    "black",
+    "tab:blue",
+    "tab:red",
+    "tab:green",
+    "tab:orange",
+    "tab:purple",
+]
+
+
 def _get_discrete_colors(n, options):
     colors = list(options.get("colors", []) or [])
-    default_colors = list(options.get("default colors", []) or [])
     fallback_cmap_name = options.get("default discrete colormap", "tab20")
 
-    # If explicit colors were not given, start from defaults
     if len(colors) == 0:
-        colors = default_colors.copy()
+        colors = _DEFAULT_TRACE_COLORS.copy()
 
     if n <= len(colors):
         return colors[:n]
@@ -2455,7 +2973,7 @@ def _resolve_gradient_scale(gradient_by, options):
     if gradient_by == "scan rate":
         return "log"
     if gradient_by == "concentration":
-        return "sqrt"
+        return "log"
     return "linear"
 
 def _build_gradient_norm(values, gradient_by, options):
@@ -2477,7 +2995,7 @@ def _build_gradient_norm(values, gradient_by, options):
 
     if scale == "log":
         positive = values[values > 0]
-        if len(positive) == 0:
+        if len(positive) == 0 or len(positive) != len(values):
             return mpl.colors.Normalize(vmin=vmin, vmax=vmax), "linear"
         return mpl.colors.LogNorm(
             vmin=float(np.nanmin(positive)),
@@ -2490,14 +3008,17 @@ def _build_gradient_norm(values, gradient_by, options):
     return mpl.colors.Normalize(vmin=vmin, vmax=vmax), "linear"
 
 
-def _format_gradient_tick_value(value, unit):
+def _format_gradient_tick_value(value, unit, raw_value=None, sig_figs=4):
+    if raw_value not in (None, "") and np.isclose(float(value), 0.0):
+        return str(raw_value).strip()
     scaled, scaled_unit = scale_value(float(value), unit, selected_unit="auto")
+    scaled = round_sigfigs(float(scaled), sig_figs)
     if isinstance(scaled_unit, str) and scaled_unit.startswith("u"):
         scaled_unit = "μ" + scaled_unit[1:]
     return f"{scaled:g} {scaled_unit}".strip()
 
 
-def _build_gradient_ticks(values, unit, options, tick_positions=None):
+def _build_gradient_ticks(values, unit, options, tick_positions=None, raw_values=None):
     values = np.asarray(values, dtype=float)
     if len(values) == 0:
         return [], [], [], []
@@ -2506,6 +3027,7 @@ def _build_gradient_ticks(values, unit, options, tick_positions=None):
         tick_positions = list(values)
     else:
         tick_positions = list(np.asarray(tick_positions, dtype=float))
+    raw_values = [None] * len(values) if raw_values is None else list(raw_values)
 
     tick_mode = options.get("colorbar tick labels", "endpoints")
 
@@ -2514,10 +3036,28 @@ def _build_gradient_ticks(values, unit, options, tick_positions=None):
     if tick_mode == "none":
         pass
     elif tick_mode == "all":
-        all_ticklabels = [_format_gradient_tick_value(v, unit) for v in values]
+        all_ticklabels = [
+            _format_gradient_tick_value(
+                v,
+                unit,
+                raw_value=raw,
+                sig_figs=options.get("sig figs", 4),
+            )
+            for v, raw in zip(values, raw_values)
+        ]
     else:
-        all_ticklabels[0] = _format_gradient_tick_value(values[0], unit)
-        all_ticklabels[-1] = _format_gradient_tick_value(values[-1], unit)
+        all_ticklabels[0] = _format_gradient_tick_value(
+            values[0],
+            unit,
+            raw_value=raw_values[0],
+            sig_figs=options.get("sig figs", 4),
+        )
+        all_ticklabels[-1] = _format_gradient_tick_value(
+            values[-1],
+            unit,
+            raw_value=raw_values[-1],
+            sig_figs=options.get("sig figs", 4),
+        )
 
     if len(tick_positions) == 1:
         endpoint_ticks = [tick_positions[0]]
@@ -2648,26 +3188,80 @@ def _infer_concentration_legend_unit(concentration_strings):
     # Mixed or unrecognized concentration styles: default to molarity base
     return "M"
 
+def _concentration_entry_unit(concentration):
+    try:
+        _value, unit = parse_concentration_value_and_unit(str(concentration))
+        return unit
+    except Exception:
+        return ""
+
+
+def _object_concentration_gradient_entries(obj):
+    entries = []
+    occurrence_counts = {}
+
+    normal_pairs = [
+        (compound, concentration, False)
+        for compound, concentration in zip(
+            list(getattr(obj, "compounds", []) or []),
+            list(getattr(obj, "concentrations", []) or []),
+        )
+    ]
+    zero_pairs = [
+        (compound, concentration, True)
+        for compound, concentration in zip(
+            list(getattr(obj, "zero_concentration_compounds", []) or []),
+            list(getattr(obj, "zero_concentrations", []) or []),
+        )
+    ]
+
+    for compound, concentration, is_zero_absent in normal_pairs + zero_pairs:
+        try:
+            value = float(concentration_to_float(concentration))
+        except Exception:
+            continue
+
+        unit = _concentration_entry_unit(concentration)
+        occurrence_key = (str(compound), unit)
+        occurrence = occurrence_counts.get(occurrence_key, 0)
+        occurrence_counts[occurrence_key] = occurrence + 1
+
+        entries.append({
+            "compound": compound,
+            "concentration": concentration,
+            "value": value,
+            "unit": unit,
+            "occurrence": occurrence,
+            "target": (str(compound), unit, occurrence),
+            "is_zero_absent": is_zero_absent,
+        })
+
+    return entries
+
+
 def _detect_concentration_gradient_groups(echem_list, options):
     candidates = []
-    max_len = max((len(getattr(obj, "compounds", None) or []) for obj in echem_list), default=0)
+    entries_by_object = [
+        _object_concentration_gradient_entries(obj)
+        for obj in echem_list
+    ]
+    target_keys = []
+    for entries in entries_by_object:
+        for entry in entries:
+            if entry.get("is_zero_absent") or entry.get("value", 0) <= 0:
+                continue
+            if entry["target"] not in target_keys:
+                target_keys.append(entry["target"])
 
-    for conc_idx in range(max_len):
+    for target in target_keys:
         buckets = {}
 
-        for idx, obj in enumerate(echem_list):
-            compounds = list(getattr(obj, "compounds", []) or [])
-            concentrations = list(getattr(obj, "concentrations", []) or [])
-
-            if conc_idx >= len(compounds) or conc_idx >= len(concentrations):
+        for idx, (obj, entries) in enumerate(zip(echem_list, entries_by_object)):
+            target_entries = [entry for entry in entries if entry["target"] == target]
+            if not target_entries:
                 continue
-
-            species = compounds[conc_idx]
-            conc_str = concentrations[conc_idx]
-
-            try:
-                value = float(concentration_to_float(conc_str))
-            except Exception:
+            entry = target_entries[0]
+            if entry.get("is_zero_absent") or entry.get("value", 0) <= 0:
                 continue
 
             stats = obj.txt_stats(options).copy()
@@ -2675,25 +3269,28 @@ def _detect_concentration_gradient_groups(echem_list, options):
                 stats.pop(key, None)
 
             remaining_pairs = []
-            for j, (compound, conc) in enumerate(zip(compounds, concentrations)):
-                if j == conc_idx:
+            for other in entries:
+                if other["target"] == target or other.get("is_zero_absent"):
                     continue
-                remaining_pairs.append((compound, conc))
+                remaining_pairs.append((other["compound"], other["concentration"]))
 
             signature = (
-                conc_idx,
-                species,
+                target,
+                entry["compound"],
                 _to_hashable(stats),
                 _to_hashable(remaining_pairs),
             )
-            buckets.setdefault(signature, []).append((idx, value))
+            buckets.setdefault(signature, []).append((idx, entry["value"], entry["concentration"]))
 
         for signature, items in buckets.items():
             if len(items) < 2:
                 continue
 
-            indices = [i for i, _ in items]
-            values = np.array([v for _, v in items], dtype=float)
+            indices = [i for i, _value, _concentration in items]
+            values = np.array([value for _i, value, _concentration in items], dtype=float)
+            raw_concentration_strings = [
+                concentration for _i, _value, concentration in items
+            ]
 
             if len(np.unique(values)) < 2:
                 continue
@@ -2701,16 +3298,17 @@ def _detect_concentration_gradient_groups(echem_list, options):
             order = np.argsort(values)
             indices = [indices[i] for i in order]
             values = values[order]
+            raw_concentration_strings = [
+                raw_concentration_strings[i] for i in order
+            ]
 
             species = signature[1]
-            raw_concentration_strings = [
-                echem_list[i].concentrations[conc_idx] for i in indices
-            ]
             legend_unit = _infer_concentration_legend_unit(raw_concentration_strings)
 
             candidates.append({
                 "indices": indices,
                 "values": values,
+                "raw concentration strings": raw_concentration_strings,
                 "gradient by": "concentration",
                 "gradient species": species,
                 "legend title": species,
@@ -2776,7 +3374,7 @@ def _resolve_multiplot_color_spec(echem_list, labels, options):
         palette = _get_discrete_colors(n, options)
         return {
             "line colors": palette,
-            "plot labels": plot_labels,
+            "labels": plot_labels,
             "gradient groups": [],
             "discrete indices": list(range(n)),
         }
@@ -2827,6 +3425,7 @@ def _resolve_multiplot_color_spec(echem_list, labels, options):
             group.get("legend unit", ""),
             options,
             tick_positions=mapped_values,
+            raw_values=group.get("raw concentration strings"),
         )
 
         group["cmap"] = cmap
@@ -2860,7 +3459,7 @@ def _resolve_multiplot_color_spec(echem_list, labels, options):
 
     return {
         "line colors": line_colors,
-        "plot labels": plot_labels,
+        "labels": plot_labels,
         "gradient groups": legend_gradient_groups if legend_mode == "colorbar" else [],
         "discrete indices": discrete_indices,
     }
@@ -3100,14 +3699,115 @@ def _legend_sample_length_axes(ax, options, legend_fs, layout_cache=None):
     return float(sample_length)
 
 
-def _show_gradient_context_line(context_line, prev_line_label=None, previous_entry_type=None):
+def _show_gradient_context_line(
+    context_line,
+    prev_line_label=None,
+    previous_entry_type=None,
+    *,
+    full_context_line=None,
+    gradient_species=None,
+):
     if context_line in ("", None):
         return False
     if previous_entry_type != "line" or prev_line_label in ("", None):
         return True
-    return (
-        _plain_formula_text(context_line).strip().lower()
-        != _plain_formula_text(prev_line_label).strip().lower()
+    return not _gradient_context_redundant_with_previous_line(
+        context_line,
+        prev_line_label,
+        full_context_line=full_context_line,
+        gradient_species=gradient_species,
+    )
+
+
+def _plain_label_parts_for_context_compare(label):
+    parts = [
+        _plain_formula_text(part).strip().lower()
+        for part in _split_label_parts(label)
+    ]
+    return [part for part in parts if part]
+
+
+def _plain_disambiguator_parts_for_context_compare(label):
+    parts = [
+        _plain_formula_text(part).strip().lower()
+        for part in _split_label_disambiguator_parts(label)
+    ]
+    return [part for part in parts if part]
+
+
+def _plain_slash_parts_for_context_compare(label):
+    return [
+        _plain_formula_text(part).strip().lower()
+        for part in str(label).split("/")
+        if _plain_formula_text(part).strip()
+    ]
+
+
+def _previous_extra_context_part_covered_by_full_context(extra_part, full_context_parts, gradient_species):
+    gradient_plain = _plain_formula_text(gradient_species or "").strip().lower()
+    if not gradient_plain:
+        return False
+
+    for full_part in full_context_parts:
+        if extra_part == full_part:
+            return True
+
+        slash_parts = _plain_slash_parts_for_context_compare(full_part)
+        if len(slash_parts) < 2:
+            continue
+        if not any(gradient_plain in part for part in slash_parts):
+            continue
+
+        non_gradient_parts = [
+            part for part in slash_parts
+            if gradient_plain not in part
+        ]
+        if extra_part in non_gradient_parts:
+            return True
+
+    return False
+
+
+def _gradient_context_redundant_with_previous_line(
+    context_line,
+    prev_line_label,
+    *,
+    full_context_line=None,
+    gradient_species=None,
+):
+    context_plain = _plain_formula_text(context_line).strip().lower()
+    prev_plain = _plain_formula_text(prev_line_label).strip().lower()
+    if context_plain == prev_plain:
+        return True
+
+    context_parts = _plain_label_parts_for_context_compare(context_line)
+    prev_parts = set(_plain_label_parts_for_context_compare(prev_line_label))
+    if not context_parts or not all(part in prev_parts for part in context_parts):
+        return False
+
+    context_disambig = _plain_disambiguator_parts_for_context_compare(context_line)
+    prev_disambig = set(_plain_disambiguator_parts_for_context_compare(prev_line_label))
+    if context_disambig and not all(part in prev_disambig for part in context_disambig):
+        return False
+
+    extra_prev_parts = [part for part in prev_parts if part not in set(context_parts)]
+    if not extra_prev_parts:
+        return True
+
+    if full_context_line in ("", None):
+        return False
+
+    full_context_parts = _plain_label_parts_for_context_compare(full_context_line)
+    if not full_context_parts:
+        return False
+
+    return all(
+        _previous_extra_context_part_covered_by_full_context(
+            part,
+            full_context_parts,
+            gradient_species,
+        )
+        for part in extra_prev_parts
     )
 
 
@@ -3136,6 +3836,8 @@ def _estimate_custom_legend_panel_width(ax, entries, options, legend_fs, layout_
             context_line,
             prev_line_label,
             entry.get("previous entry type"),
+            full_context_line=group.get("legend full context line"),
+            gradient_species=group.get("gradient species"),
         )
 
         if show_context:
@@ -3275,6 +3977,8 @@ def _estimate_custom_panel_size(ax, color_spec, options, legend_fs, layout_cache
                 context_line,
                 prev_line_label,
                 entry.get("previous entry type"),
+                full_context_line=group.get("legend full context line"),
+                gradient_species=group.get("gradient species"),
             )
 
             has_endpoint_text = any(
@@ -3510,7 +4214,7 @@ def _legend_fontsize_from_color_spec(color_spec, default_size=None, min_size=6, 
     if max_size is None:
         max_size = default_size
     visible_labels = [
-        lbl for lbl in color_spec.get("plot labels", [])
+        lbl for lbl in color_spec.get("labels", [])
         if lbl not in (None, "", "_nolegend_")
     ]
 
@@ -3719,6 +4423,8 @@ def _draw_multiplot_legend_and_colorbars(ax, color_spec, options, legend_fs):
             context_line,
             prev_line_label,
             entry.get("previous entry type"),
+            full_context_line=group.get("legend full context line"),
+            gradient_species=group.get("gradient species"),
         )
 
         # Gentler scaling than linear in n_items
@@ -3801,6 +4507,8 @@ def _draw_multiplot_legend_and_colorbars(ax, color_spec, options, legend_fs):
             context_line,
             prev_line_label,
             entry.get("previous entry type"),
+            full_context_line=entry["group"].get("legend full context line"),
+            gradient_species=entry["group"].get("gradient species"),
         )
 
         if show_context:
@@ -3892,6 +4600,8 @@ def _draw_multiplot_legend_and_colorbars(ax, color_spec, options, legend_fs):
                 context_line,
                 prev_line_label,
                 entry.get("previous entry type"),
+                full_context_line=group.get("legend full context line"),
+                gradient_species=group.get("gradient species"),
             )
 
             if not show_context:
@@ -3921,6 +4631,8 @@ def _draw_multiplot_legend_and_colorbars(ax, color_spec, options, legend_fs):
                 context_line,
                 prev_line_label,
                 entry.get("previous entry type"),
+                full_context_line=group.get("legend full context line"),
+                gradient_species=group.get("gradient species"),
             )
 
             if not show_context:
@@ -4236,6 +4948,17 @@ def _attach_gradient_legend_text(color_spec, labels, label_alterations=None, use
         group_title_fmt = format_chemical_formulas(group_title_raw) if group_title_raw else ""
         group_title_plain = _plain_formula_text(group_title_fmt).lower().strip()
 
+        common_disambiguator_parts = _ordered_common_disambiguator_parts(group_labels)
+
+        full_context_line = ", ".join(common_parts)
+        if common_disambiguator_parts:
+            disambiguator = ", ".join(common_disambiguator_parts)
+            if full_context_line:
+                full_context_line = f"{full_context_line} ({disambiguator})"
+            else:
+                full_context_line = f"({disambiguator})"
+        group["legend full context line"] = full_context_line
+
         # Remove the varying delta species if it appears in the common context
         filtered_parts = []
         for part in common_parts:
@@ -4245,7 +4968,6 @@ def _attach_gradient_legend_text(color_spec, labels, label_alterations=None, use
             filtered_parts.append(part)
 
         context_line = ", ".join(filtered_parts)
-        common_disambiguator_parts = _ordered_common_disambiguator_parts(group_labels)
         if common_disambiguator_parts:
             disambiguator = ", ".join(common_disambiguator_parts)
             if context_line:
@@ -4381,8 +5103,6 @@ def _resolve_multiplot_labels_title_subtitle(echem_list, options):
 
     # ---------- labels ----------
     user_labels = options.get("labels")
-    if user_labels is None:
-        user_labels = options.get("plot labels")
 
     if (
         user_labels is None
@@ -4768,13 +5488,13 @@ def _prepare_multiplot_style(echem_list, options):
         subtitle_fs = _resolve_subtitle_fontsize(subtitle)
 
     color_spec = _resolve_multiplot_color_spec(echem_list, display_labels, options)
+    user_labels_explicit = options.get("labels") is not None
+
     color_spec = _attach_gradient_legend_text(
         color_spec,
         display_labels,
         label_alterations=label_alterations,
-        user_labels_explicit=(
-            options.get("labels") is not None or options.get("plot labels") is not None
-        ),
+        user_labels_explicit=user_labels_explicit,
     )
 
     return {
@@ -4842,7 +5562,7 @@ def _plot_multiplot_series(echem_list, options, series_getter):
             x,
             y + options.get("offset", 0) * i,
             color=color_spec["line colors"][i],
-            label=color_spec["plot labels"][i],
+            label=color_spec["labels"][i],
         )
         _add_directional_arrows(ax, options, x, y, line_color=line.get_color())
         plots.append((line.figure, ax))
@@ -4859,30 +5579,28 @@ def _plot_options_from_mapping(options):
             routed[option_key] = options[option_key]
         elif field.name in options:
             routed[field.name] = options[field.name]
-    return PlotOptions.from_options(routed).to_legacy_dict()
+    return PlotOptions.from_options(routed).to_options_dict()
 
 
 def _multiplot_options_from_mapping(options):
     routed = {}
-    canonical_option_keys = {_canonical_option_key(key) for key in options}
     for field in fields(MultiplotOptions):
         option_key = field.name.replace("_", " ")
-        if field.name == "plot_labels" and (
-            "labels" in routed or "labels" in options or "labels" in canonical_option_keys
-        ):
-            continue
         if option_key in options:
             routed[option_key] = options[option_key]
         elif field.name in options:
             routed[field.name] = options[field.name]
-    return MultiplotOptions.from_options(routed).to_legacy_dict()
+    return MultiplotOptions.from_options(routed).to_options_dict()
+
+
+def _is_simulated_cv_object(echem_object):
+    return echem_object.__class__.__name__ == "SimulatedCV" and hasattr(echem_object, "backend_result")
 
 
 def _coerce_multiplot_options(options):
     internal_flags = {}
     public_options = options
     if isinstance(options, dict):
-        is_legacy_option_dict = any(str(key).startswith("_") for key in options)
         internal_flags = {
             key: value
             for key, value in options.items()
@@ -4893,12 +5611,20 @@ def _coerce_multiplot_options(options):
             for key, value in options.items()
             if not str(key).startswith("_")
         }
-        if is_legacy_option_dict:
-            public_options = _drop_legacy_alias_mirrors(public_options)
-
-    coerced = MultiplotOptions.from_options(public_options).to_legacy_dict()
+    coerced = MultiplotOptions.from_options(public_options).to_options_dict()
     coerced.update(internal_flags)
     return coerced
+
+
+def _resolve_multiplot_offsets(offset, trace_count):
+    if isinstance(offset, list):
+        if len(offset) != trace_count:
+            raise OptionError(
+                "'offset' must contain one value per trace: "
+                f"expected {trace_count}, received {len(offset)}."
+            )
+        return [float(value) for value in offset]
+    return [float(offset) * index for index in range(trace_count)]
 
 
 def multiplot(echem_list, options=None):
@@ -4949,15 +5675,16 @@ def multiplot(echem_list, options=None):
 
     style = _prepare_multiplot_style(echem_list, options)
     color_spec = style["color spec"]
+    trace_offsets = _resolve_multiplot_offsets(options.get("offset", 0), len(echem_list))
 
     for i, echem_object in enumerate(echem_list):
         plot_options = options.copy()
         plot_options['legend'] = False
         plot_options["segment color mode"] = "off"
         plot_options["scale bar"] = False
-        plot_options["offset"] *= i
+        plot_options["offset"] = trace_offsets[i]
         plot_options["color"] = color_spec["line colors"][i]
-        plot_options["label"] = color_spec["plot labels"][i]
+        plot_options["label"] = color_spec["labels"][i]
         plot_options["label alterations"] = None
         if ip0_axis:
             if ip0_values is not None:
@@ -4973,13 +5700,17 @@ def multiplot(echem_list, options=None):
             plot_options["y unit"] = None
             plot_options["ylabel"] = "$i / i_p^0$"
 
-        echem_object.plot(_plot_options_from_mapping(plot_options))
+        trace_options = _plot_options_from_mapping(plot_options)
+        simulation_linestyle = options.get("simulation linestyle")
+        if simulation_linestyle is not None and _is_simulated_cv_object(echem_object):
+            trace_options["linestyle"] = simulation_linestyle
+        echem_object.plot(trace_options)
 
     _finish_multiplot_style(echem_list, options, style)
 
     if options.get("print"):
         print_options = options.copy()
-        print_options["plot labels"] = style["display labels"]
+        print_options["labels"] = style["display labels"]
         show_objects(echem_list, print_options)
 
     return style["ax"]

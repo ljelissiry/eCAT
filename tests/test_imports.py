@@ -1,6 +1,6 @@
 def test_module_import_smoke(ecat_module):
     assert ecat_module.__name__ == "ecat"
-    assert ecat_module.__version__ == "0.1.0b3"
+    assert ecat_module.__version__
     assert hasattr(ecat_module, "ImportOptions")
     assert hasattr(ecat_module, "PlotOptions")
     assert hasattr(ecat_module, "echem")
@@ -17,7 +17,7 @@ def test_module_import_smoke(ecat_module):
 def test_package_import_smoke():
     import ecat
 
-    assert ecat.__version__ == "0.1.0b3"
+    assert ecat.__version__
     assert hasattr(ecat, "echem")
     assert hasattr(ecat, "cv")
     assert hasattr(ecat, "get_data")

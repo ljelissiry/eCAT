@@ -10,12 +10,31 @@ import re
 import threading
 from urllib.parse import unquote_to_bytes
 import webbrowser
-from werkzeug.serving import make_server
 
-from .callbacks import register_callbacks
-from .callbacks import handle_default_load
 from .config import AppConfig
-from .layout import create_layout
+
+
+_ECAT_APP_INSTALL_MESSAGE = (
+    "The eCAT app requires optional app dependencies. Install them with "
+    '`python -m pip install "ecat[app]"`. For a source checkout, use '
+    '`python -m pip install -e ".[app]"`.'
+)
+
+
+def _require_app_dependencies():
+    missing = []
+    for module_name, display_name in (
+        ("dash", "dash"),
+        ("dash_ag_grid", "dash-ag-grid"),
+    ):
+        try:
+            __import__(module_name)
+        except ModuleNotFoundError:
+            missing.append(display_name)
+    if missing:
+        raise RuntimeError(
+            f"{_ECAT_APP_INSTALL_MESSAGE} Missing: {', '.join(missing)}."
+        )
 
 
 def _plot_download_dir(env=None) -> Path:
@@ -112,13 +131,12 @@ def _register_plot_save_route(app, config: AppConfig):
 
 
 def create_app(config: AppConfig | None = None):
-    try:
-        from dash import Dash
-    except ModuleNotFoundError as exc:
-        raise RuntimeError(
-            "The eCAT app requires Dash. Reinstall or upgrade eCAT with "
-            '`python -m pip install --upgrade "git+https://github.com/ljelissiry/eCAT.git@v0.1.0b3"`.'
-        ) from exc
+    _require_app_dependencies()
+
+    from dash import Dash
+
+    from .callbacks import handle_default_load, register_callbacks
+    from .layout import create_layout
 
     config = config or AppConfig.from_env()
     app = Dash(__name__, title="eCAT Workbench")
@@ -151,6 +169,8 @@ def _open_browser_later(url: str, enabled: bool = True, delay: float = 1.0):
 
 
 def _make_server(host: str, port: int, server):
+    from werkzeug.serving import make_server
+
     return make_server(host, int(port), server)
 
 
@@ -159,7 +179,8 @@ def _load_webview():
         import webview
     except ModuleNotFoundError as exc:
         raise RuntimeError(
-            "The eCAT app window requires pywebview. Reinstall or upgrade eCAT, "
+            "The native eCAT app window requires pywebview from the optional app "
+            "dependencies. Install them with `python -m pip install \"ecat[app]\"`, "
             "or run `ecat-app --browser` to use the browser fallback."
         ) from exc
     return webview
@@ -232,10 +253,16 @@ def main(argv=None):
         os.environ.pop("ECAT_APP_ALLOW_CODE_EXECUTION", None)
         os.environ.pop("ECAT_BROWSER_ALLOW_CODE_EXECUTION", None)
 
-    app = create_app(config)
+    try:
+        app = create_app(config)
+    except RuntimeError as exc:
+        raise SystemExit(str(exc)) from None
     selected_port = args.port if args.port is not None else (8050 if args.browser else 0)
     if not args.browser:
-        _run_window_app(app, args.host, selected_port, title=args.title, width=args.width, height=args.height)
+        try:
+            _run_window_app(app, args.host, selected_port, title=args.title, width=args.width, height=args.height)
+        except RuntimeError as exc:
+            raise SystemExit(str(exc)) from None
         return None
     url = f"http://{args.host}:{selected_port}/"
     _open_browser_later(

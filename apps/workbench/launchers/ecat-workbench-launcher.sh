@@ -2,7 +2,7 @@
 
 set -u
 
-# Install command for source checkouts: pip install -e .
+# Install command for source checkouts: pip install -e ".[app]"
 
 LAUNCHER_DIR="$(cd "$(dirname "$0")" && pwd)"
 LOG_FILE="${TMPDIR:-/tmp}/ecat-workbench-launch.log"
@@ -32,11 +32,11 @@ install_failure_message() {
     print -r -- "Install or update the app dependencies from the eCAT repository folder:"
     print -r -- ""
     print -r -- "cd \"$REPO_ROOT\""
-    print -r -- "python3 -m pip install -e ."
+    print -r -- "python3 -m pip install -e \".[app]\""
   else
     print -r -- "Install or update the app dependencies from the eCAT repository folder:"
     print -r -- ""
-    print -r -- "python3 -m pip install -e ."
+    print -r -- "python3 -m pip install -e \".[app]\""
   fi
   print -r -- ""
   print -r -- "If you use a specific Python, set ECAT_PYTHON to that interpreter."
@@ -117,15 +117,6 @@ fi
 log "Launcher directory: $LAUNCHER_DIR"
 log "Matplotlib config: $MPLCONFIGDIR"
 
-run_installed_command
-installed_status=$?
-if [ "$installed_status" -eq 0 ]; then
-  exit 0
-fi
-if [ "$installed_status" -ne 127 ]; then
-  log "Installed ecat-app failed with status $installed_status."
-fi
-
 REPO_ROOT="$(find_repo_root || true)"
 if [ -n "$REPO_ROOT" ]; then
   log "Repository root: $REPO_ROOT"
@@ -137,6 +128,15 @@ if [ -n "$REPO_ROOT" ]; then
   log "Repository launcher failed with status $repo_status."
 else
   log "Could not find repository root."
+fi
+
+run_installed_command
+installed_status=$?
+if [ "$installed_status" -eq 0 ]; then
+  exit 0
+fi
+if [ "$installed_status" -ne 127 ]; then
+  log "Installed ecat-app failed with status $installed_status."
 fi
 
 install_failure_message >> "$LOG_FILE"

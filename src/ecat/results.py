@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+import math
 
 import pandas as pd
 
@@ -36,6 +37,7 @@ class AnalysisResult(dict):
         axes=None,
         figures=None,
         analysis=None,
+        display_table_formatter=None,
     ):
         super().__init__({} if values is None else dict(values))
         self.table = table
@@ -53,6 +55,7 @@ class AnalysisResult(dict):
         self.figure = figure
         self.axes = axes
         self.figures = [] if figures is None else figures
+        self.display_table_formatter = display_table_formatter
 
     @staticmethod
     def _units_from_table(table):
@@ -73,14 +76,48 @@ class AnalysisResult(dict):
         options = {} if options is None else dict(options)
         if self.summary:
             for key, value in self.summary.items():
-                print(f"{key}: {value}")
+                print(f"{key}: {self._format_summary_value(key, value, options)}")
         if self.table is not None:
-            print(self.table)
+            try:
+                from .plotting import _display_table
+
+                display_table = self._display_table_for_options(self.table, options)
+                _display_table(
+                    self.table,
+                    options,
+                    title="Result Table",
+                    rich_table=display_table,
+                    plain_table=display_table,
+                )
+            except Exception:
+                print(self.table)
         if self.fit_table is not None:
-            print(self.fit_table)
+            try:
+                from .plotting import _display_table
+
+                _display_table(self.fit_table, options, title="Fit Table")
+            except Exception:
+                print(self.fit_table)
         if options.get("return", False):
             return self.table
         return None
+
+    def _display_table_for_options(self, table, options):
+        formatter = getattr(self, "display_table_formatter", None)
+        if callable(formatter):
+            return formatter(table, options)
+        return table
+
+    def _format_summary_value(self, key, value, options):
+        try:
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                numeric = float(value)
+                if math.isfinite(numeric):
+                    sig_figs = int(options.get("sig figs", 4))
+                    return f"{numeric:.{sig_figs}g}"
+        except (TypeError, ValueError):
+            pass
+        return value
 
     def to_dataframe(self, kind="table"):
         """Return one of the tabular payloads by name."""
@@ -189,6 +226,7 @@ def analysis_result_from_table(
     figure=None,
     diagnostics=None,
     warnings=None,
+    display_table_formatter=None,
 ):
     """Build a table-like AnalysisResult from a former DataFrame return."""
     summary_data = {"analysis": analysis}
@@ -207,6 +245,7 @@ def analysis_result_from_table(
         axes=axes,
         figure=figure,
         analysis=analysis,
+        display_table_formatter=display_table_formatter,
     )
 
 

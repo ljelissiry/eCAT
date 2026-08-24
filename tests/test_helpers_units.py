@@ -8,6 +8,36 @@ def test_count_segments_detects_direction_change(ecat_module):
     assert ecat_module.count_segments(x_values) == 2
 
 
+def test_savgol_noise_window_none_disables_smoothing(ecat_module):
+    signal = np.array([0.0, 1.0, 0.0, 1.0, 0.0], dtype=float)
+
+    smoothed, meta = ecat_module._savgol_apply(
+        signal,
+        {"noise window": None, "noise polyorder": "auto"},
+    )
+
+    np.testing.assert_allclose(smoothed, signal)
+    assert meta["window"] is None
+    assert meta["polyorder"] is None
+
+
+def test_find_extrema_guess_uses_local_prominence_metadata(ecat_module):
+    x = np.linspace(-1.0, 1.0, 801)
+    signal = -1e-7 * np.exp(-((x + 0.05) / 0.025) ** 2)
+    distant_region = x > 0.35
+    signal[distant_region] += 8e-7 * np.sin(120 * (x[distant_region] - 0.35))
+
+    _extrema, _smoothed, _prom_map, meta = ecat_module._find_extrema_indices(
+        signal,
+        {"noise window": 5, "noise polyorder": 2, "guess potential": -0.05},
+        x=x,
+    )
+
+    assert meta["prominence mode"] == "guess local"
+    assert meta["prominence window fraction"] == pytest.approx(0.2)
+    assert meta["prominence window"] == pytest.approx([-0.25, 0.15])
+
+
 def test_concentration_to_float_converts_prefixed_molar_units(ecat_module):
     assert ecat_module.concentration_to_float("250uM") == pytest.approx(250e-6)
     assert ecat_module.concentration_to_float("2mM") == pytest.approx(2e-3)
@@ -24,6 +54,51 @@ def test_get_conversion_factor_and_scale_axis(ecat_module):
 
     assert scale_factor == pytest.approx(1e6)
     assert unit == "μA"
+
+
+def test_scale_axis_auto_requires_readable_scaled_range(ecat_module):
+    scale_factor, unit = ecat_module.scale_axis(np.array([0.0, 0.16]), "V")
+    assert scale_factor == pytest.approx(1e3)
+    assert unit == "mV"
+
+    scale_factor, unit = ecat_module.scale_axis(np.array([0.0, -1.474]), "V")
+    assert scale_factor == pytest.approx(1.0)
+    assert unit == "V"
+
+    scale_factor, unit = ecat_module.scale_axis(np.array([0.0, 2.5e-3]), "A")
+    assert scale_factor == pytest.approx(1e3)
+    assert unit == "mA"
+
+    scale_factor, unit = ecat_module.scale_axis(np.array([0.0, 1.2]), "A")
+    assert scale_factor == pytest.approx(1.0)
+    assert unit == "A"
+
+
+def test_scale_axis_explicit_unit_can_exceed_readable_auto_range(ecat_module):
+    scale_factor, unit = ecat_module.scale_axis(
+        np.array([0.0, -1.474]),
+        "V",
+        selected_unit="mV",
+    )
+
+    assert scale_factor == pytest.approx(1e3)
+    assert unit == "mV"
+
+
+def test_scale_axis_respects_already_prefixed_current_units(ecat_module):
+    scale_factor, unit = ecat_module.scale_axis(np.array([0.0, 35.2]), "μA")
+
+    assert scale_factor == pytest.approx(1.0)
+    assert unit == "μA"
+
+    explicit_scale, explicit_unit = ecat_module.scale_axis(
+        np.array([0.0, 35.2]),
+        "μA",
+        selected_unit="uA",
+    )
+
+    assert explicit_scale == pytest.approx(1.0)
+    assert explicit_unit == "μA"
 
 
 def test_pressure_units_are_recognized_and_convert_when_requested(ecat_module):
@@ -74,6 +149,16 @@ def test_current_density_auto_scales_current_numerator(ecat_module):
 
     assert scale_factor == pytest.approx(1e6)
     assert unit == "μA/cm$^2$"
+
+
+def test_current_density_auto_requires_readable_scaled_range(ecat_module):
+    scale_factor, unit = ecat_module.scale_axis(
+        np.array([0.0, 1.2]),
+        "A/cm$^2$",
+    )
+
+    assert scale_factor == pytest.approx(1.0)
+    assert unit == "A/cm$^2$"
 
 
 @pytest.mark.parametrize("selected_unit", ["mm", "mm^2", "/mm^2"])

@@ -145,6 +145,47 @@ def test_get_data_from_excel_public_name_reads_manifest_workbook(
     assert imported[0].name == cv_obj.name
 
 
+def test_get_data_from_excel_manifest_canonicalizes_user_edited_units(
+    ecat_module,
+    cv_factory,
+    tmp_path,
+):
+    from openpyxl import load_workbook
+
+    cv_obj = cv_factory(name="100mVs_MeCN_CO2_1mMFe")
+    ecat_module.save_data(
+        [cv_obj],
+        {
+            "format": "xlsx",
+            "folder path": str(tmp_path),
+            "file name": "edited_units_roundtrip",
+        },
+    )
+
+    path = tmp_path / "edited_units_roundtrip.xlsx"
+    workbook = load_workbook(path)
+    sheet = workbook["cv"]
+    current_col = None
+    for idx in range(1, sheet.max_column + 1):
+        if sheet.cell(row=2, column=idx).value == "Current":
+            current_col = idx
+            break
+    assert current_col is not None
+
+    sheet.cell(row=3, column=current_col).value = "uA"
+    for row in range(4, sheet.max_row + 1):
+        value = sheet.cell(row=row, column=current_col).value
+        if value is not None:
+            sheet.cell(row=row, column=current_col).value = float(value) * 1e6
+    workbook.save(path)
+
+    imported = ecat_module.get_data_from_excel(path, {"print": False})
+
+    np.testing.assert_allclose(imported[0].data["Current"], cv_obj.data["Current"])
+    assert imported[0].units["Current"] == "A"
+    assert imported[0].parse_result.raw_metadata["original_units"]["Current"] == "uA"
+
+
 def test_xlsx_data_columns_default_includes_raw_and_referenced_potential(
     ecat_module,
     cv_factory,
@@ -239,3 +280,47 @@ def test_xlsx_metadata_columns_can_request_blank_reference_columns(
         if col in manifest.columns
     ]
     assert manifest.loc[0, "Reference Source"] in ("", np.nan) or pd.isna(manifest.loc[0, "Reference Source"])
+
+
+def test_xlsx_roundtrip_preserves_cv_filter_provenance(
+    ecat_module,
+    cv_factory,
+    tmp_path,
+):
+    cv_obj = cv_factory(name="100mVs_MeCN_CO2_1mMFe")
+    filtered = cv_obj.filter(
+        {
+            "method": "gaussian",
+            "sigma": 1.25,
+            "print": False,
+        }
+    )
+
+    ecat_module.save_data(
+        [filtered],
+        {
+            "format": "xlsx",
+            "folder path": str(tmp_path),
+            "file name": "filtered_roundtrip",
+        },
+    )
+
+    path = tmp_path / "filtered_roundtrip.xlsx"
+    manifest = pd.read_excel(path, sheet_name="manifest")
+    imported = ecat_module.get_data_from_excel(path, {"print": False})[0]
+
+    assert manifest.loc[0, "Filter"] == "gaussian (sigma=1.25)"
+    assert "Processing History" in manifest.columns
+    assert imported.filter_metadata == {
+        "method": "gaussian",
+        "column": "Current",
+        "sigma": 1.25,
+    }
+    assert imported.processing_history == [
+        {
+            "operation": "filter",
+            "method": "gaussian",
+            "column": "Current",
+            "sigma": 1.25,
+        }
+    ]

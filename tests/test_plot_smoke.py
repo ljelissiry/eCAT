@@ -57,14 +57,56 @@ def test_cv_plot_smoke_with_agg_backend(cv_factory):
     plt.close(fig)
 
 
-def test_cv_plot_with_animate_option_still_returns_axes(cv_factory):
+def test_cv_plot_defaults_to_current_vs_potential_with_extra_time_column(ecat_module, blank_echem_factory):
+    obj = blank_echem_factory(ecat_module.cv)
+    obj.name = "CV_with_time"
+    obj.type = "Cyclic Voltammetry"
+    obj.num_x_cols = 2
+    obj.data = pd.DataFrame(
+        {
+            "Time": [0.0, 1.0, 2.0],
+            "Potential/V": [0.2, 0.0, -0.2],
+            "Current/A": [1e-6, 2e-6, 3e-6],
+        }
+    )
+    obj.units = {"Time": "s", "Potential/V": "V", "Current/A": "A"}
+
+    ax = obj.plot({"legend": False, "title": False, "plot convention": "IUPAC"})
+
+    np.testing.assert_allclose(ax.lines[0].get_xdata(), [0.2, 0.0, -0.2])
+    np.testing.assert_allclose(ax.lines[0].get_ydata(), [1.0, 2.0, 3.0])
+    assert ax.get_xlabel() == "Potential/V (V)"
+    assert ax.get_ylabel() == "Current/A (μA)"
+
+
+def test_cv_plot_program_generates_time_from_scan_rate_and_quiet_time(ecat_module, blank_echem_factory):
+    obj = blank_echem_factory(ecat_module.cv)
+    obj.name = "CV_program"
+    obj.type = "Cyclic Voltammetry"
+    obj.num_x_cols = 1
+    obj.scan_rate = 0.1
+    obj.quiet_time = 2.0
+    obj.data = pd.DataFrame(
+        {
+            "Potential": [0.2, 0.0, -0.2],
+            "Current": [1e-6, 2e-6, 3e-6],
+        }
+    )
+    obj.units = {"Potential": "V", "Current": "A"}
+
+    ax = obj.plot_program({"legend": False, "title": False})
+
+    np.testing.assert_allclose(ax.lines[0].get_xdata(), [-2.0, 0.0, 2.0, 4.0])
+    np.testing.assert_allclose(ax.lines[0].get_ydata(), [0.2, 0.2, 0.0, -0.2])
+    assert ax.get_xlabel() == "Time (s)"
+    assert ax.get_ylabel() == "Potential (V)"
+
+
+def test_cv_plot_rejects_retired_animate_option(ecat_module, cv_factory):
     obj = cv_factory()
 
-    ax = obj.plot({"animate": True, "legend": False, "title": False})
-
-    assert hasattr(ax, "figure")
-    assert len(ax.lines) == 1
-    plt.close(ax.figure)
+    with pytest.raises(ecat_module.OptionError, match="Unknown option 'animate'"):
+        obj.plot({"animate": True, "legend": False, "title": False})
 
 
 def test_cv_plot_defaults_to_new_figure(cv_factory):
@@ -123,14 +165,11 @@ def test_cv_plot_respects_explicit_new_plot_false(cv_factory):
     plt.close(existing_fig)
 
 
-def test_multiplot_with_animate_option_still_returns_axes(ecat_module, cv_factory):
+def test_multiplot_rejects_retired_animate_option(ecat_module, cv_factory):
     objs = _plot_cv_triplet(cv_factory)
 
-    ax = ecat_module.multiplot(objs, {"animate": True, "legend": False, "title": False})
-
-    assert hasattr(ax, "figure")
-    assert len(ax.lines) == len(objs)
-    plt.close(ax.figure)
+    with pytest.raises(ecat_module.OptionError, match="Unknown option 'animate'"):
+        ecat_module.multiplot(objs, {"animate": True, "legend": False, "title": False})
 
 
 def test_plotting_style_can_restore_matplotlib_defaults(ecat_module):
@@ -450,6 +489,33 @@ def test_directional_arrows_default_to_trace_color(cv_factory):
     plt.close(ax.figure)
 
 
+def test_directional_arrows_use_default_smoothed_derivative(cv_factory):
+    potential = np.linspace(-1.0, 1.0, 21)
+    current = potential.copy()
+    current[9] += 0.5
+    obj = cv_factory(
+        name="100mVs_noisy_direction_run01",
+        potential=potential,
+        current=current,
+    )
+
+    ax = obj.plot(
+        {
+            "legend": False,
+            "title": False,
+            "directional arrows": {"potential": 0.0},
+        }
+    )
+
+    arrows = [art for art in ax.texts if isinstance(art, Annotation)]
+    assert len(arrows) == 1
+    anchor_x, anchor_y = arrows[0].get_position()
+    tip_x, tip_y = arrows[0].xy
+    assert tip_x > anchor_x
+    assert tip_y > anchor_y
+    plt.close(ax.figure)
+
+
 def test_directional_arrows_apply_to_all_matching_segments_when_segment_omitted(cv_factory):
     obj = _multi_segment_cv(cv_factory, n_segments=3)
 
@@ -523,7 +589,7 @@ def test_adaptive_legend_fontsize_is_capped_by_active_profile(ecat_module):
 
     legend_fs, _legend_loc, legend_outside = ecat_module._resolve_adaptive_legend_layout(
         ax,
-        {"plot labels": ["Trace 1"], "gradient groups": []},
+        {"labels": ["Trace 1"], "gradient groups": []},
         {"legend loc": "best", "legend fontsize": "auto", "legend outside": False},
     )
 
@@ -539,7 +605,7 @@ def test_default_legend_fontsize_falls_back_to_axis_label_size(ecat_module, monk
     with mpl.rc_context({"axes.labelsize": 13, "legend.fontsize": 7}):
         assert ecat_module._default_legend_fontsize() == pytest.approx(13)
         assert ecat_module._legend_fontsize(["short"]) == pytest.approx(13)
-        assert ecat_module._legend_fontsize_from_color_spec({"plot labels": ["short"]}) == pytest.approx(13)
+        assert ecat_module._legend_fontsize_from_color_spec({"labels": ["short"]}) == pytest.approx(13)
         assert ecat_module._legend_font_candidates() == [13, 11, 9, 7]
 
 
@@ -1206,7 +1272,7 @@ def test_cv_plot_default_title_matches_multiplot_auto_style(cv_factory):
 
 def test_cv_plot_reference_axis_label_uses_compact_redox_mathtext(cv_factory):
     obj = cv_factory()
-    obj.potential_shift({"shift guess": 0.0, "shift label": "Fc/Fc+"})
+    obj.potential_shift({"reference offset": 0.0, "reference label": "Fc/Fc+"})
 
     ax = obj.plot({"legend": False, "title": False})
 
@@ -1237,7 +1303,7 @@ def test_cv_plot_false_title_remains_untitled(cv_factory):
 
 
 def test_cv_current_density_is_plot_time_y_axis_view(cv_factory):
-    obj = cv_factory(options={"electrode area": 2.0, "current density": True})
+    obj = cv_factory(options={"electrode area": 2.0})
 
     assert "Current Density" not in " ".join(str(col) for col in obj.data.columns)
 
@@ -1307,6 +1373,28 @@ def test_multiplot_returns_axes_and_draws_all_curves(ecat_module, cv_factory):
     assert len(ax.lines) == 3
     assert fig._suptitle is None
     plt.close(fig)
+
+
+def test_multiplot_accepts_public_colors_option(ecat_module, cv_factory):
+    objects = _plot_cv_triplet(cv_factory)
+
+    ax = ecat_module.multiplot(
+        objects,
+        {
+            "print": False,
+            "title": False,
+            "legend": False,
+            "color mode": "discrete",
+            "colors": ["tab:red", "tab:green", "tab:blue"],
+        },
+    )
+
+    assert [line.get_color() for line in ax.lines[:3]] == [
+        "tab:red",
+        "tab:green",
+        "tab:blue",
+    ]
+    plt.close(ax.figure)
 
 
 def test_multiplot_draws_custom_subtitle(ecat_module, cv_factory):
@@ -1701,7 +1789,7 @@ def test_normalize_current_shared_ip0_print_collapses_repeated_rows(
     printed = capsys.readouterr().out
     assert "Current Normalization:" in printed
     assert "CVs: 2" in printed
-    assert "ip0: 2e-06 A" in printed
+    assert "ip0: 2.000e-06 A" in printed
     assert "Source: manual ip0" in printed
     assert "50mVs_sample_CO2_MeCN_10mM_Fc_run01" not in printed
     assert "100mVs_sample_N2_DMF_5mM_Fc_run01" not in printed
@@ -1728,6 +1816,131 @@ def test_normalize_current_plot_all_shows_normalized_multiplot(ecat_module, cv_f
     np.testing.assert_allclose(ax.lines[0].get_ydata(), normalized[0].y().to_numpy())
     np.testing.assert_allclose(ax.lines[1].get_ydata(), normalized[1].y().to_numpy())
     plt.close(fig)
+
+
+def test_normalize_current_plot_all_adds_shared_reference_diagnostic(
+    ecat_module,
+    cv_factory,
+):
+    objects = _plot_cv_triplet(cv_factory)[:2]
+    ref = cv_factory(name="100mVs_reference_run01")
+    calls = []
+
+    def fake_peak_current(options=None):
+        opts = options.to_options_dict() if hasattr(options, "to_options_dict") else dict(options or {})
+        calls.append(opts)
+        return {"ip": 2e-6, "tangent line": [0.0, 0.0], "tangent start": 0}
+
+    ref.peak_current = fake_peak_current
+    plt.close("all")
+
+    normalized = ecat_module.normalize_current(
+        objects,
+        {
+            "reference cv": ref,
+            "segment": 1,
+            "print": False,
+            "plot all": True,
+            "plot reference diagnostic": True,
+            "legend": False,
+            "title": False,
+        },
+    )
+
+    try:
+        assert len(normalized) == 2
+        assert len(plt.get_fignums()) == 2
+        diagnostic_calls = [call for call in calls if call.get("plot")]
+        assert len(diagnostic_calls) == 1
+        assert diagnostic_calls[0]["plot all"] is True
+        assert diagnostic_calls[0]["plot cv"] is False
+        assert diagnostic_calls[0]["new plot"] is False
+        figures = [plt.figure(num) for num in plt.get_fignums()]
+        assert len(figures[0].axes[0].lines) == 1
+        assert figures[-1].axes[0].get_ylabel() == "$i / i_p^0$"
+    finally:
+        plt.close("all")
+
+
+def test_normalize_current_plot_all_puts_multiple_reference_cvs_on_one_diagnostic_plot(
+    ecat_module,
+    cv_factory,
+):
+    objects = _plot_cv_triplet(cv_factory)[:2]
+    refs = [
+        cv_factory(name="100mVs_reference_a_run01"),
+        cv_factory(name="100mVs_reference_b_run01"),
+    ]
+    calls = []
+
+    for idx, ref in enumerate(refs):
+        def fake_peak_current(options=None, *, idx=idx):
+            opts = options.to_options_dict() if hasattr(options, "to_options_dict") else dict(options or {})
+            opts["reference idx"] = idx
+            calls.append(opts)
+            return {"ip": (idx + 1) * 2e-6, "tangent line": [0.0, 0.0], "tangent start": 0}
+
+        ref.peak_current = fake_peak_current
+
+    plt.close("all")
+
+    ecat_module.normalize_current(
+        objects,
+        {
+            "reference cvs": refs,
+            "segment": 1,
+            "print": False,
+            "plot all": True,
+            "plot reference diagnostic": True,
+            "legend": False,
+            "title": False,
+        },
+    )
+
+    try:
+        assert len(plt.get_fignums()) == 2
+        diagnostic_calls = [call for call in calls if call.get("plot")]
+        assert [call["reference idx"] for call in diagnostic_calls] == [0, 1]
+        figures = [plt.figure(num) for num in plt.get_fignums()]
+        assert len(figures[0].axes[0].lines) == 2
+        assert figures[-1].axes[0].get_ylabel() == "$i / i_p^0$"
+    finally:
+        plt.close("all")
+
+
+def test_normalize_current_plot_reference_diagnostic_defaults_off(
+    ecat_module,
+    cv_factory,
+):
+    objects = _plot_cv_triplet(cv_factory)[:2]
+    ref = cv_factory(name="100mVs_reference_run01")
+    calls = []
+
+    def fake_peak_current(options=None):
+        opts = options.to_options_dict() if hasattr(options, "to_options_dict") else dict(options or {})
+        calls.append(opts)
+        return {"ip": 2e-6, "tangent line": [0.0, 0.0], "tangent start": 0}
+
+    ref.peak_current = fake_peak_current
+    plt.close("all")
+
+    ecat_module.normalize_current(
+        objects,
+        {
+            "reference cv": ref,
+            "print": False,
+            "plot all": True,
+            "legend": False,
+            "title": False,
+        },
+    )
+
+    try:
+        assert len(plt.get_fignums()) == 1
+        assert not any(call.get("plot") for call in calls)
+        assert plt.gca().get_ylabel() == "$i / i_p^0$"
+    finally:
+        plt.close("all")
 
 
 def test_ip0_and_reference_cv_conflict_is_explicit(ecat_module, cv_factory):
@@ -1831,7 +2044,7 @@ def _minimal_cp(ecat_module, name, gas):
     return obj
 
 
-def test_multiplot_accepts_plot_labels_alias(ecat_module, cv_factory):
+def test_multiplot_accepts_explicit_labels(ecat_module, cv_factory):
     objects = _plot_cv_triplet(cv_factory)[:2]
 
     ax = ecat_module.multiplot(
@@ -1840,7 +2053,7 @@ def test_multiplot_accepts_plot_labels_alias(ecat_module, cv_factory):
             "print": False,
             "title": False,
             "legend": True,
-            "plot labels": ["Ar", "CO$_2$"],
+            "labels": ["Ar", "CO$_2$"],
         },
     )
 
@@ -1855,7 +2068,7 @@ def test_multiplot_auto_labels_dpv_by_differing_metadata(ecat_module):
     ]
     options = ecat_module.MultiplotOptions.from_options(
         {"print": False, "title": False, "legend": True}
-    ).to_legacy_dict()
+    ).to_options_dict()
 
     style = ecat_module._prepare_multiplot_style(objects, options)
 
@@ -1870,7 +2083,7 @@ def test_multiplot_auto_labels_ca_and_cp_by_differing_metadata(ecat_module):
     ]
     options = ecat_module.MultiplotOptions.from_options(
         {"print": False, "title": False, "legend": True}
-    ).to_legacy_dict()
+    ).to_options_dict()
 
     for objects in cases:
         style = ecat_module._prepare_multiplot_style(objects, options)
@@ -1921,7 +2134,7 @@ def test_multiplot_deduplicate_labels_true_uses_scan_window_only_when_segments_m
     objects[2].segments = 3
     options = ecat_module.MultiplotOptions.from_options(
         {"print": False, "title": False, "legend": True, "deduplicate labels": True}
-    ).to_legacy_dict()
+    ).to_options_dict()
 
     style = ecat_module._prepare_multiplot_style(objects, options)
 
@@ -1949,7 +2162,7 @@ def test_multiplot_deduplicate_labels_true_uses_segments_when_segments_differ(
     objects[2].segments = 3
     options = ecat_module.MultiplotOptions.from_options(
         {"print": False, "title": False, "legend": True, "deduplicate labels": True}
-    ).to_legacy_dict()
+    ).to_options_dict()
 
     style = ecat_module._prepare_multiplot_style(objects, options)
 
@@ -1977,7 +2190,7 @@ def test_multiplot_deduplicate_labels_falls_back_to_replicate_numbering(
     objects[2].segments = 3
     options = ecat_module.MultiplotOptions.from_options(
         {"print": False, "title": False, "legend": True, "deduplicate labels": True}
-    ).to_legacy_dict()
+    ).to_options_dict()
 
     style = ecat_module._prepare_multiplot_style(objects, options)
 
@@ -2007,7 +2220,7 @@ def test_multiplot_deduplicate_labels_accepts_field_list(ecat_module, cv_factory
             "legend": True,
             "deduplicate labels": ["segments"],
         }
-    ).to_legacy_dict()
+    ).to_options_dict()
 
     style = ecat_module._prepare_multiplot_style(objects, options)
 
@@ -2029,7 +2242,7 @@ def test_multiplot_duplicate_labels_warn_by_default(ecat_module, cv_factory, cap
     objects[2].min_E, objects[2].max_E = -2, 1
     options = ecat_module.MultiplotOptions.from_options(
         {"print": False, "title": False, "legend": True}
-    ).to_legacy_dict()
+    ).to_options_dict()
 
     style = ecat_module._prepare_multiplot_style(objects, options)
     captured = capsys.readouterr()
@@ -2057,7 +2270,7 @@ def test_multiplot_duplicate_label_warning_is_suppressed_by_explicit_false(
             "legend": True,
             "deduplicate labels": False,
         }
-    ).to_legacy_dict()
+    ).to_options_dict()
 
     style = ecat_module._prepare_multiplot_style(objects, options)
     captured = capsys.readouterr()
@@ -2086,7 +2299,7 @@ def test_multiplot_duplicate_label_warning_is_not_emitted_when_deduplicated(
             "legend": True,
             "deduplicate labels": True,
         }
-    ).to_legacy_dict()
+    ).to_options_dict()
 
     style = ecat_module._prepare_multiplot_style(objects, options)
     captured = capsys.readouterr()
@@ -2114,7 +2327,7 @@ def test_multiplot_deduplicate_labels_string_modes_are_invalid_fields(
             "legend": True,
             "deduplicate labels": deduplicate_field,
         }
-    ).to_legacy_dict()
+    ).to_options_dict()
 
     style = ecat_module._prepare_multiplot_style(objects, options)
     captured = capsys.readouterr()
@@ -2142,7 +2355,7 @@ def test_multiplot_deduplicate_labels_invalid_field_prints_valid_options(
             "legend": True,
             "deduplicate labels": "not a stat",
         }
-    ).to_legacy_dict()
+    ).to_options_dict()
 
     style = ecat_module._prepare_multiplot_style(objects, options)
     captured = capsys.readouterr()
@@ -2172,7 +2385,7 @@ def test_multiplot_min_gradient_entries_controls_auto_colorbar_threshold(
             "legend mode": "auto",
             "min gradient entries": 4,
         },
-    ).to_legacy_dict()
+    ).to_options_dict()
     high_threshold = ecat_module._prepare_multiplot_style(
         objects,
         high_options,
@@ -2190,7 +2403,7 @@ def test_multiplot_min_gradient_entries_controls_auto_colorbar_threshold(
             "legend mode": "auto",
             "min gradient entries": 3,
         },
-    ).to_legacy_dict()
+    ).to_options_dict()
     threshold_met = ecat_module._prepare_multiplot_style(
         objects,
         met_options,
@@ -2223,7 +2436,7 @@ def test_multiplot_min_gradient_entries_applies_per_detected_colorbar_group(
             "legend mode": "colorbar",
             "min gradient entries": 3,
         },
-    ).to_legacy_dict()
+    ).to_options_dict()
 
     color_spec = ecat_module._prepare_multiplot_style(objects, options)["color spec"]
 
@@ -2251,7 +2464,7 @@ def test_multiplot_scan_rate_gradient_does_not_merge_different_segment_counts(
             "legend mode": "colorbar",
             "min gradient entries": 3,
         },
-    ).to_legacy_dict()
+    ).to_options_dict()
 
     color_spec = ecat_module._prepare_multiplot_style(objects, options)["color spec"]
 
@@ -2282,12 +2495,104 @@ def test_multiplot_min_gradient_entries_applies_per_concentration_colorbar_group
             "legend mode": "colorbar",
             "min gradient entries": 3,
         },
-    ).to_legacy_dict()
+    ).to_options_dict()
 
     color_spec = ecat_module._prepare_multiplot_style(objects, options)["color spec"]
 
     assert [group["indices"] for group in color_spec["gradient groups"]] == [[2, 3, 4]]
     assert color_spec["discrete indices"] == [0, 1]
+
+
+@pytest.mark.parametrize(
+    ("names", "legend_unit"),
+    [
+        (
+            [
+                "100mVs_sample_CO2_MeCN_1mMPhOH_10mMFc_run01",
+                "100mVs_sample_CO2_MeCN_4mMPhOH_10mMFc_run02",
+                "100mVs_sample_CO2_MeCN_9mMPhOH_10mMFc_run03",
+            ],
+            "M",
+        ),
+        (
+            [
+                "100mVs_sample_MeCN_1%CO2_10mMFc_run01",
+                "100mVs_sample_MeCN_4%CO2_10mMFc_run02",
+                "100mVs_sample_MeCN_9%CO2_10mMFc_run03",
+            ],
+            "%",
+        ),
+        (
+            [
+                "100mVs_sample_CO2_MeCN_1equivPhOH_10mMFc_run01",
+                "100mVs_sample_CO2_MeCN_4equivPhOH_10mMFc_run02",
+                "100mVs_sample_CO2_MeCN_9equivPhOH_10mMFc_run03",
+            ],
+            "equiv",
+        ),
+    ],
+)
+def test_multiplot_concentration_gradient_auto_scale_defaults_to_log(
+    ecat_module,
+    cv_factory,
+    names,
+    legend_unit,
+):
+    objects = [cv_factory(name=name) for name in names]
+    options = ecat_module.MultiplotOptions.from_options(
+        {
+            "print": False,
+            "title": False,
+            "legend": True,
+            "gradient by": "concentration",
+            "legend mode": "colorbar",
+            "min gradient entries": 3,
+        },
+    ).to_options_dict()
+
+    color_spec = ecat_module._prepare_multiplot_style(objects, options)["color spec"]
+
+    assert len(color_spec["gradient groups"]) == 1
+    group = color_spec["gradient groups"][0]
+    assert group["legend unit"] == legend_unit
+    assert group["resolved scale"] == "log"
+    assert isinstance(group["norm"], mpl.colors.LogNorm)
+
+
+def test_multiplot_zero_concentration_species_is_absent_label_and_not_gradient_endpoint(
+    ecat_module,
+    cv_factory,
+):
+    objects = [
+        cv_factory(name="100mVs_sample_CO2_MeCN_0mM_HCO3_run01"),
+        cv_factory(name="100mVs_sample_CO2_MeCN_0.1mM_HCO3_run02"),
+        cv_factory(name="100mVs_sample_CO2_MeCN_1mM_HCO3_run03"),
+        cv_factory(name="100mVs_sample_CO2_MeCN_10mM_HCO3_run04"),
+    ]
+    options = ecat_module.MultiplotOptions.from_options(
+        {
+            "print": False,
+            "title": False,
+            "legend": True,
+            "gradient by": "concentration",
+            "legend mode": "colorbar",
+            "min gradient entries": 3,
+        },
+    ).to_options_dict()
+
+    style = ecat_module._prepare_multiplot_style(objects, options)
+    color_spec = style["color spec"]
+
+    assert objects[0].compounds == []
+    assert objects[0].zero_concentration_compounds == ["HCO3"]
+    assert style["display labels"][0] == "Background"
+    assert len(color_spec["gradient groups"]) == 1
+    group = color_spec["gradient groups"][0]
+    assert group["indices"] == [1, 2, 3]
+    np.testing.assert_allclose(group["values"], [1e-4, 1e-3, 1e-2])
+    assert group["resolved scale"] == "log"
+    assert isinstance(group["norm"], mpl.colors.LogNorm)
+    assert group["endpoint ticklabels"] == ["+100 μM HCO$_3$", "+10 mM HCO$_3$"]
 
 
 def test_multiplot_auto_gradient_keeps_scan_rate_and_concentration_groups(
@@ -2316,7 +2621,7 @@ def test_multiplot_auto_gradient_keeps_scan_rate_and_concentration_groups(
             "color mode": "auto",
             "min gradient entries": 3,
         },
-    ).to_legacy_dict()
+    ).to_options_dict()
 
     color_spec = ecat_module._prepare_multiplot_style(objects, options)["color spec"]
 
@@ -2328,6 +2633,47 @@ def test_multiplot_auto_gradient_keeps_scan_rate_and_concentration_groups(
         ("concentration", "PhOH", [4, 5, 6, 7]),
     ]
     assert color_spec["discrete indices"] == []
+
+
+def test_multiplot_scan_rate_colorbar_labels_respect_sig_figs(
+    ecat_module,
+    cv_factory,
+):
+    objects = [
+        cv_factory(name=f"100mVs_scan_rate_rounding_run{index:02d}")
+        for index in range(1, 5)
+    ]
+    for obj, scan_rate in zip(
+        objects,
+        [0.0249997, 0.0499994, 0.0999988, 0.499999],
+    ):
+        obj.scan_rate = scan_rate
+
+    options = ecat_module.MultiplotOptions.from_options(
+        {
+            "print": False,
+            "title": False,
+            "legend": True,
+            "gradient by": "scan rate",
+            "legend mode": "colorbar",
+            "colorbar tick labels": "all",
+            "sig figs": 3,
+        },
+    ).to_options_dict()
+
+    color_spec = ecat_module._prepare_multiplot_style(objects, options)["color spec"]
+    group = color_spec["gradient groups"][0]
+
+    assert group["ticklabels"] == [
+        "25 mV/s",
+        "50 mV/s",
+        "100 mV/s",
+        "500 mV/s",
+    ]
+    np.testing.assert_allclose(
+        group["values"],
+        [0.0249997, 0.0499994, 0.0999988, 0.499999],
+    )
 
 
 def test_multiplot_min_gradient_entries_counts_distinct_gradient_values(
@@ -2349,7 +2695,7 @@ def test_multiplot_min_gradient_entries_counts_distinct_gradient_values(
             "legend mode": "colorbar",
             "min gradient entries": 3,
         },
-    ).to_legacy_dict()
+    ).to_options_dict()
 
     color_spec = ecat_module._prepare_multiplot_style(objects, options)["color spec"]
 
@@ -2371,7 +2717,7 @@ def test_multiplot_min_gradient_entries_applies_to_explicit_gradient_mode(
             "legend mode": "colorbar",
             "min gradient entries": 4,
         },
-    ).to_legacy_dict()
+    ).to_options_dict()
 
     color_spec = ecat_module._prepare_multiplot_style(objects, options)["color spec"]
 
@@ -2522,6 +2868,34 @@ def test_multiplot_gradient_context_keeps_only_common_disambiguator_parts(ecat_m
     )
 
 
+def test_multiplot_gradient_context_hides_when_previous_line_contains_context(ecat_module):
+    assert not ecat_module._show_gradient_context_line(
+        "1 mM Zn(cyclen), 2.8 M H2O",
+        "Ar, 1 mM Zn(cyclen), 2.8 M H2O",
+        "line",
+        full_context_line="Ar/CO2, 1 mM Zn(cyclen), 2.8 M H2O",
+        gradient_species="CO2",
+    )
+
+
+def test_multiplot_gradient_context_keeps_when_previous_extra_part_is_not_group_context(ecat_module):
+    assert ecat_module._show_gradient_context_line(
+        "1 mM Zn(cyclen), 2.8 M H2O",
+        "Ar, 1 mM Zn(cyclen), 2.8 M H2O",
+        "line",
+        full_context_line="CO2, 1 mM Zn(cyclen), 2.8 M H2O",
+        gradient_species="CO2",
+    )
+
+
+def test_multiplot_gradient_context_keeps_distinct_gas_context(ecat_module):
+    assert ecat_module._show_gradient_context_line(
+        "Ar, 2.8 M H2O",
+        "CO2, 2.8 M H2O",
+        "line",
+    )
+
+
 def test_multiplot_stacked_colorbars_keep_context_after_matching_discrete_line(ecat_module):
     fig, ax = plt.subplots()
     for idx, label in enumerate([
@@ -2605,7 +2979,7 @@ def test_multiplot_colorbar_legend_text_stays_inside_panel_for_long_labels(ecat_
                 "legend context line": "CO2, 3 mM [Fc], 1 mM [Co], 2.8 M H2O",
             }
         ],
-        "plot labels": ["Background"],
+        "labels": ["Background"],
     }
     options = {
         "legend mode": "colorbar",
@@ -2667,7 +3041,7 @@ def test_multiplot_discrete_legend_can_be_placed_outside(ecat_module, cv_factory
 
 def test_multiplot_auto_legend_sample_length_scales_with_font_and_tick(ecat_module):
     fig, ax = plt.subplots()
-    defaults = ecat_module.MultiplotOptions.from_options({}).to_legacy_dict()
+    defaults = ecat_module.MultiplotOptions.from_options({}).to_options_dict()
     options = {
         "legend sample length": defaults["legend sample length"],
         "colorbar tick length": 5,
@@ -2770,7 +3144,7 @@ def test_multiplot_custom_legend_auto_font_uses_uncapped_panel_height(ecat_modul
                 "legend context line": "Concentration",
             }
         ],
-        "plot labels": [f"Trace {idx}" for idx in range(24)],
+        "labels": [f"Trace {idx}" for idx in range(24)],
     }
     options = {
         "legend mode": "colorbar",
@@ -2918,7 +3292,7 @@ def test_attach_gradient_legend_text_prefers_explicit_plot_labels(ecat_module):
                 "gradient by": "concentration",
             }
         ],
-        "plot labels": ["_nolegend_", "_nolegend_", "_nolegend_"],
+        "labels": ["_nolegend_", "_nolegend_", "_nolegend_"],
     }
     labels = ["0 mM", "100 mM", "2.8 M"]
 
@@ -3087,3 +3461,77 @@ def test_multimultiplot_handles_mixed_named_groups_without_crashing(
 
     for fig in figures:
         plt.close(fig)
+
+
+def test_analysis_display_omits_name_when_context_is_unique(ecat_module):
+    table = pd.DataFrame(
+        {
+            "name": ["25mVs_A", "50mVs_A"],
+            "scan rate / V s^-1": [0.025, 0.050],
+            "value": [1.0, 2.0],
+        }
+    )
+
+    display = ecat_module._conditional_analysis_name_column(
+        table,
+        ["scan rate / V s^-1"],
+        {"sig figs": 4},
+    )
+
+    assert display.columns.tolist() == ["scan rate / V s^-1", "value"]
+
+
+def test_analysis_display_adds_name_first_when_context_repeats(ecat_module):
+    table = pd.DataFrame(
+        {
+            "name": ["25mVs_A", "25mVs_B", "50mVs_A"],
+            "scan rate / V s^-1": [0.025, 0.025, 0.050],
+            "value": [1.0, 1.1, 2.0],
+        }
+    )
+
+    display = ecat_module._conditional_analysis_name_column(
+        table,
+        ["scan rate / V s^-1"],
+        {"sig figs": 4},
+    )
+
+    assert display.columns.tolist() == ["Name", "scan rate / V s^-1", "value"]
+    assert display["Name"].tolist() == ["25mVs_A", "25mVs_B", "50mVs_A"]
+
+
+def test_analysis_display_detects_duplicates_after_sig_fig_formatting(ecat_module):
+    table = pd.DataFrame(
+        {
+            "Name": ["rounded_A", "rounded_B"],
+            "Scan Rate": [0.0249997, 0.025],
+            "Value": [1.0, 2.0],
+        }
+    )
+
+    display = ecat_module._conditional_analysis_name_column(
+        table,
+        ["Scan Rate"],
+        {"sig figs": 3},
+    )
+
+    assert display.columns[0] == "Name"
+
+
+def test_analysis_display_uses_all_visible_context_columns(ecat_module):
+    table = pd.DataFrame(
+        {
+            "Name": ["condition_A", "condition_B"],
+            "Scan Rate": [0.1, 0.1],
+            "Concentration": [1.0, 2.0],
+            "Value": [1.0, 2.0],
+        }
+    )
+
+    display = ecat_module._conditional_analysis_name_column(
+        table,
+        ["Scan Rate", "Concentration"],
+        {"sig figs": 4},
+    )
+
+    assert "Name" not in display.columns

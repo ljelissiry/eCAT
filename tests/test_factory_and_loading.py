@@ -40,6 +40,104 @@ def test_factory_loading_sets_common_cv_metadata(ecat_module, fixtures_dir):
     assert obj.segments == 2
 
 
+def test_cv_current_remains_default_y_axis_with_time_and_cycle_columns(
+    ecat_module,
+    fixtures_dir,
+):
+    obj = ecat_module.echem.from_file(
+        str(fixtures_dir / "ch_cv.txt"),
+        {"print": False},
+    )
+    obj.data["Time"] = list(range(len(obj.data)))
+    obj.data["Cycle"] = 1
+
+    y = obj.y()
+    x = obj.x()
+    _, segment_y = obj.analysis_segment_data({"segment": 1})
+    _, expected_segment_y = obj._select_segments(x, obj.data["Current"], 1)
+
+    assert y.name == "Current"
+    assert y.tolist() == pytest.approx(obj.data["Current"].tolist())
+    assert segment_y.tolist() == pytest.approx(expected_segment_y.tolist())
+
+
+def test_from_file_invert_current_applies_once_after_promotion(ecat_module, fixtures_dir):
+    filepath = str(fixtures_dir / "ch_cv.txt")
+
+    baseline = ecat_module.echem.from_file(filepath, {"print": False})
+    inverted = ecat_module.echem.from_file(filepath, {"print": False, "invert current": True})
+
+    assert inverted.options["invert current"] is True
+    assert inverted.data["Current"].to_numpy() == pytest.approx(
+        -baseline.data["Current"].to_numpy()
+    )
+
+
+def test_from_file_accepts_import_options_for_invert_current(ecat_module, fixtures_dir):
+    filepath = str(fixtures_dir / "ch_cv.txt")
+
+    baseline = ecat_module.echem.from_file(filepath, ecat_module.ImportOptions(print=False))
+    inverted = ecat_module.echem.from_file(
+        filepath,
+        ecat_module.ImportOptions(print=False, invert_current=True),
+    )
+
+    assert inverted.data["Current"].to_numpy() == pytest.approx(
+        -baseline.data["Current"].to_numpy()
+    )
+
+
+def test_from_file_stores_current_in_si_and_rejects_import_time_current_conversion(
+    ecat_module,
+    fixtures_dir,
+):
+    filepath = str(fixtures_dir / "ch_cv.txt")
+
+    obj = ecat_module.echem.from_file(
+        filepath,
+        {"print": False, "electrode area": 0.5},
+    )
+
+    assert obj.units["Current"] == "A"
+    assert "Current Density" not in obj.data.columns
+    assert obj.data.attrs["units"]["Current"] == "A"
+    assert obj.electrode_area == pytest.approx(0.5)
+
+    density = obj.y({"y axis": "current density"})
+
+    assert density.name == "Current Density"
+    assert density.to_numpy() == pytest.approx(obj.data["Current"].to_numpy() / 0.5)
+
+    with pytest.raises(ecat_module.OptionError, match="stores imported current in SI units"):
+        ecat_module.echem.from_file(filepath, {"print": False, "convert current": "uA"})
+
+    with pytest.raises(ecat_module.OptionError, match="not an import option"):
+        ecat_module.echem.from_file(filepath, {"print": False, "current density": True})
+
+
+def test_from_file_import_metadata_options_fill_missing_values(
+    ecat_module,
+    fixtures_dir,
+):
+    obj = ecat_module.echem.from_file(
+        str(fixtures_dir / "generic_header_units.txt"),
+        {
+            "print": False,
+            "scan rate": 0.123,
+            "temperature": 310,
+            "gas": "CO2",
+            "solvent": "MeCN",
+            "electrode area": 0.25,
+        },
+    )
+
+    assert obj.scan_rate == pytest.approx(0.123)
+    assert obj.temperature == pytest.approx(310)
+    assert obj.gas == "CO2"
+    assert obj.solvent == "MeCN"
+    assert obj.electrode_area == pytest.approx(0.25)
+
+
 @pytest.mark.parametrize(
     ("options", "expected_area"),
     [
@@ -124,6 +222,31 @@ def test_get_data_derives_electrode_area_from_diameter_when_area_is_omitted(
 
     assert len(objects) == 1
     assert objects[0].electrode_area == pytest.approx(0.0706858347)
+
+
+def test_get_data_invert_current_applies_once_after_promotion(
+    ecat_module,
+    fixtures_dir,
+    tmp_path,
+):
+    (tmp_path / "ch_cv.txt").write_text(
+        (fixtures_dir / "ch_cv.txt").read_text(encoding="ISO-8859-1"),
+        encoding="ISO-8859-1",
+    )
+
+    base_options = {
+        "folder path": str(tmp_path),
+        "recursive search": False,
+        "print": False,
+        "reference mode": "none",
+    }
+    baseline = ecat_module.get_data(base_options)[0]
+    inverted = ecat_module.get_data({**base_options, "invert current": True})[0]
+
+    assert inverted.options["invert current"] is True
+    assert inverted.data["Current"].to_numpy() == pytest.approx(
+        -baseline.data["Current"].to_numpy()
+    )
 
 
 def test_get_data_root_files_store_empty_folderpath(
@@ -246,7 +369,7 @@ def test_get_data_warns_and_skips_files_that_cannot_be_converted(
     captured = capsys.readouterr()
 
     assert [Path(obj.filepath).name for obj in objects] == ["good_ch_cv.txt"]
-    assert "Warning: could not convert bad_export.txt" in captured.out
+    assert "Warning: could not convert `bad_export.txt`" in captured.out
     assert "unsupported parser shape" in captured.out
 
 
@@ -276,5 +399,5 @@ def test_get_data_returns_empty_list_when_no_files_convert(
     captured = capsys.readouterr()
 
     assert objects == []
-    assert "Warning: could not convert bad_export.txt" in captured.out
-    assert "No .txt files could be converted into eCAT objects." in captured.out
+    assert "Warning: could not convert `bad_export.txt`" in captured.out
+    assert "No supported text files could be converted into eCAT objects." in captured.out

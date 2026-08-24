@@ -111,8 +111,9 @@ def test_plateau_current_uses_peak_current_without_fowa_only_options(ecat_module
         },
     )
 
-    assert result.table["ilim source"].iloc[0] == "peak_current"
-    assert result.table["formula mode"].iloc[0] == "normalized"
+    assert result.summary["ilim source"] == "peak_current"
+    assert result.summary["formula mode"] == "normalized"
+    assert result.diagnostics["plateau details"]["ilim source"].iloc[0] == "peak_current"
 
 
 def test_plateau_current_passes_per_cv_potential_options(ecat_module):
@@ -354,6 +355,86 @@ def test_fowa_redox_mode_defaults_to_half_wave(ecat_module):
     assert ecat_module.FOWAOptions.from_options({}).redox_mode == "half wave"
 
 
+def test_fowa_x_axis_label_reflects_half_wave_reference_and_n(ecat_module):
+    label = ecat_module._format_fowa_x_axis_label(
+        [{"redox mode": "half wave", "catalyst electrons": 2}],
+        {"catalyst electrons": 2, "turnover electrons": 4},
+    )
+
+    assert r"\frac{nF}{RT}" in label
+    assert r"E_{1/2}" in label
+    assert "turn" not in label
+
+
+def test_fowa_x_axis_label_reflects_manual_and_half_peak_references(ecat_module):
+    manual_label = ecat_module._format_fowa_x_axis_label(
+        [{"redox mode": "manual", "catalyst electrons": 1}],
+        {"catalyst electrons": 1},
+    )
+    half_peak_label = ecat_module._format_fowa_x_axis_label(
+        [{"redox mode": "half peak", "catalyst electrons": 1}],
+        {"catalyst electrons": 1},
+    )
+    mixed_label = ecat_module._format_fowa_x_axis_label(
+        [
+            {"redox mode": "half wave", "catalyst electrons": 1},
+            {"redox mode": "manual", "catalyst electrons": 1},
+        ],
+        {"catalyst electrons": 1},
+    )
+
+    assert r"E_{\mathrm{redox}}" in manual_label
+    assert r"E_{p/2}" in half_peak_label
+    assert r"E_{\mathrm{ref}}" in mixed_label
+
+
+def test_fowa_plot_xlabel_uses_dynamic_reference_label(
+    ecat_module,
+    blank_echem_factory,
+    monkeypatch,
+):
+    cv_obj = _synthetic_fowa_cv(
+        ecat_module,
+        blank_echem_factory,
+        "100mVs_cat_run01",
+        1.0,
+    )
+    monkeypatch.setattr(
+        ecat_module,
+        "build_object_table",
+        lambda object_list, options=None: (
+            pd.DataFrame({"Name": [obj.name for obj in object_list]}),
+            {},
+        ),
+    )
+
+    plt.close("all")
+    with pytest.warns(UserWarning, match="non-positive slope"):
+        ecat_module.fowa(
+            [cv_obj],
+            {
+                "plot": True,
+                "print": False,
+                "non-catalytic current": 1e-6,
+                "redox potential": 0.0,
+                "redox mode": "manual",
+                "background correction": None,
+                "fit range": [0.1, 0.3],
+                "min fit points": 5,
+                "min r2": 0,
+                "ecat shift warning threshold": False,
+                "n_cat": 2,
+                "n_turn": 4,
+            },
+        )
+
+    xlabel = plt.gca().get_xlabel()
+    assert r"\frac{nF}{RT}" in xlabel
+    assert r"E_{\mathrm{redox}}" in xlabel
+    assert "turn" not in xlabel
+    plt.close("all")
+
+
 @pytest.mark.parametrize("redox_mode", [None, "half wave", "half peak"])
 def test_fowa_options_require_manual_mode_for_redox_potential(ecat_module, redox_mode):
     options = {"redox potential": -1.46}
@@ -462,6 +543,170 @@ def test_fowa_accepts_manual_wave_range(
     assert table.attrs["shared_summary"]["Wave Range"] == expected
 
 
+def test_fowa_accepts_plural_per_cv_wave_ranges(
+    ecat_module,
+    blank_echem_factory,
+    monkeypatch,
+):
+    cvs = [
+        _synthetic_fowa_cv(ecat_module, blank_echem_factory, "100mVs_cat_run01", 1.0),
+        _synthetic_fowa_cv(ecat_module, blank_echem_factory, "100mVs_cat_run02", 1.2),
+    ]
+    wave_ranges = [[-0.05, 0.08], [-0.02, 0.1]]
+
+    def fail_auto_wave(*args, **kwargs):
+        raise AssertionError("per-CV manual wave ranges should bypass automatic wave detection")
+
+    monkeypatch.setattr(ecat_module, "_auto_fowa_wave_bounds", fail_auto_wave)
+    monkeypatch.setattr(
+        ecat_module,
+        "build_object_table",
+        lambda object_list, options=None: (
+            pd.DataFrame({"Name": [obj.name for obj in object_list]}),
+            {},
+        ),
+    )
+
+    with pytest.warns(UserWarning, match="non-positive slope"):
+        table = _analysis_table(ecat_module.fowa(
+            cvs,
+            {
+                "plot": False,
+                "print": False,
+                "non-catalytic current": 1e-6,
+                "redox mode": "manual",
+                "redox potentials": [0.0, 0.01],
+                "background correction": None,
+                "wave ranges": wave_ranges,
+                "fit range": [0.1, 0.5],
+                "min fit points": 5,
+                "min r2": 0,
+                "ecat shift warning threshold": False,
+            },
+        ))
+
+    full = table.attrs["full_results_df"]
+    expected = []
+    for cv_obj, (lo, hi) in zip(cvs, wave_ranges):
+        potential = cv_obj.x()
+        selected = potential[(potential >= lo) & (potential <= hi)]
+        expected.append(f"[{selected.iloc[0]:.6g}, {selected.iloc[-1]:.6g}]")
+
+    assert full["Wave Range"].tolist() == expected
+
+
+def test_fowa_fit_false_returns_transformed_data_without_regression(
+    ecat_module,
+    blank_echem_factory,
+    monkeypatch,
+):
+    cv_obj = _synthetic_fowa_cv(
+        ecat_module,
+        blank_echem_factory,
+        "100mVs_cat_run01",
+        1.0,
+    )
+    monkeypatch.setattr(
+        ecat_module,
+        "build_object_table",
+        lambda object_list, options=None: (
+            pd.DataFrame({"Name": [obj.name for obj in object_list]}),
+            {},
+        ),
+    )
+
+    result = ecat_module.fowa(
+        [cv_obj],
+        {
+            "plot": True,
+            "print": False,
+            "fit": False,
+            "non-catalytic current": 1e-6,
+            "redox mode": "manual",
+            "redox potential": 0.0,
+            "background correction": None,
+            "wave range": [-0.05, 0.08],
+            "ecat shift warning threshold": False,
+        },
+    )
+
+    full = result.diagnostics["full results"]
+    plot_data = result.diagnostics["plot data"][0]
+
+    assert full.loc[0, "Status"] == "not fit"
+    assert pd.isna(full.loc[0, "Slope"])
+    assert pd.isna(full.loc[0, "Intercept"])
+    assert pd.isna(full.loc[0, "R2"])
+    assert pd.isna(full.loc[0, "kobs"])
+    assert plot_data["x fowa"].size > 0
+    assert plot_data["y fowa"].size > 0
+    assert plot_data["x fit"].size == 0
+    assert plot_data["y fit"].size == 0
+    assert plt.gca().lines
+    assert all(line.get_linestyle() != "--" for line in plt.gca().lines)
+
+
+def test_fowa_fit_true_warns_and_skips_only_cv_with_unusable_fit_region(
+    ecat_module,
+    blank_echem_factory,
+    monkeypatch,
+):
+    cvs = [
+        _synthetic_fowa_cv(ecat_module, blank_echem_factory, "100mVs_cat_run01", 1.0),
+        _synthetic_fowa_cv(ecat_module, blank_echem_factory, "100mVs_cat_run02", 1.2),
+        _synthetic_fowa_cv(ecat_module, blank_echem_factory, "100mVs_cat_run03", 1.4),
+    ]
+    original_resolver = ecat_module._resolve_fowa_fit_mask
+    call_count = 0
+
+    def second_fit_has_no_points(*args, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 2:
+            x_fowa = np.asarray(kwargs["x_fowa"], dtype=float)
+            return np.zeros_like(x_fowa, dtype=bool), "x_fowa", {}
+        return original_resolver(*args, **kwargs)
+
+    monkeypatch.setattr(ecat_module, "_resolve_fowa_fit_mask", second_fit_has_no_points)
+    monkeypatch.setattr(
+        ecat_module,
+        "build_object_table",
+        lambda object_list, options=None: (
+            pd.DataFrame({"Name": [obj.name for obj in object_list]}),
+            {},
+        ),
+    )
+
+    with pytest.warns(UserWarning, match="Only 0 points.*fit skipped"):
+        result = ecat_module.fowa(
+            cvs,
+            {
+                "plot": False,
+                "print": False,
+                "fit": True,
+                "non-catalytic current": 1e-6,
+                "redox mode": "manual",
+                "redox potentials": [0.0, 0.01, 0.02],
+                "background correction": None,
+                "wave range": [-0.05, 0.08],
+                "fit range": [0.1, 0.5],
+                "min fit points": 5,
+                "min r2": 0,
+                "ecat shift warning threshold": False,
+            },
+        )
+
+    full = result.diagnostics["full results"]
+
+    assert len(full) == 3
+    assert full.loc[1, "Status"] == "fit skipped"
+    assert pd.isna(full.loc[1, "kobs"])
+    assert np.isfinite(full.loc[0, "kobs"])
+    assert np.isfinite(full.loc[2, "kobs"])
+    assert result.diagnostics["plot data"][1]["x fowa"].size > 0
+    assert result.diagnostics["plot data"][1]["x fit"].size == 0
+
+
 def test_fowa_manual_redox_still_reports_ecat_half_shift(
     ecat_module,
     blank_echem_factory,
@@ -518,7 +763,7 @@ def test_fowa_accepts_colorbar_height_alias(ecat_module):
     )
 
     assert options.colorbar_height_scale == pytest.approx(0.42)
-    assert options.to_legacy_dict()["colorbar height scale"] == pytest.approx(0.42)
+    assert options.to_options_dict()["colorbar height scale"] == pytest.approx(0.42)
 
 
 def test_fowa_half_peak_redox_ignores_scatter_plot_options(ecat_module):
@@ -594,7 +839,7 @@ def test_fowa_prints_by_default_after_multiplot_defaults(
         )
 
     captured = capsys.readouterr()
-    assert "### FOWA Summary ###" in captured.out
+    assert "FOWA Parameters:" in captured.out
 
 
 def test_fowa_summary_display_table_is_vertical(ecat_module):
@@ -602,16 +847,77 @@ def test_fowa_summary_display_table_is_vertical(ecat_module):
         {
             "Reference CV": "blank_cv",
             "ip0 Source": "manual (1e-06)",
+            "Catalyst Electrons": 2,
+            "Turnover Electrons": 3,
+            "Sigma": 1,
             "Segment": 1,
         }
     )
 
-    assert list(table.columns) == ["Field", "Value"]
+    assert list(table.columns) == ["Parameter", "Symbol", "Value"]
     assert table.to_dict("records") == [
-        {"Field": "Reference CV", "Value": "blank_cv"},
-        {"Field": "ip0 Source", "Value": "manual (1e-06)"},
-        {"Field": "Segment", "Value": "1"},
+        {"Parameter": "Reference CV", "Symbol": "", "Value": "blank_cv"},
+        {"Parameter": "ip0 Source", "Symbol": "", "Value": "manual (1e-06)"},
+        {"Parameter": "Catalyst Electrons", "Symbol": "n", "Value": "2"},
+        {"Parameter": "Turnover Electrons", "Symbol": "n'", "Value": "3"},
+        {"Parameter": "Sigma", "Symbol": "σ", "Value": "1"},
+        {"Parameter": "Segment", "Symbol": "", "Value": "1"},
     ]
+
+
+def test_fowa_data_omits_name_for_unique_visible_context(ecat_module, monkeypatch):
+    objects = [type("Obj", (), {"name": name})() for name in ("25mVs", "50mVs")]
+    monkeypatch.setattr(
+        ecat_module,
+        "build_object_table",
+        lambda object_list, options=None: (
+            pd.DataFrame(
+                {
+                    "Name": [obj.name for obj in object_list],
+                    "Scan Rate": [0.025, 0.05],
+                }
+            ),
+            {},
+        ),
+    )
+
+    table = ecat_module._fowa_summary_table(
+        objects,
+        [{"kobs": 1.0}, {"kobs": 2.0}],
+        [{}, {}],
+        [None, None],
+        {"sig figs": 4},
+    )
+
+    assert "Name" not in table.columns
+    assert "Scan Rate" in table.columns
+
+
+def test_fowa_data_adds_name_for_duplicate_visible_context(ecat_module, monkeypatch):
+    objects = [type("Obj", (), {"name": name})() for name in ("replicate 1", "replicate 2")]
+    monkeypatch.setattr(
+        ecat_module,
+        "build_object_table",
+        lambda object_list, options=None: (
+            pd.DataFrame(
+                {
+                    "Name": [obj.name for obj in object_list],
+                    "Scan Rate": [0.025, 0.025],
+                }
+            ),
+            {},
+        ),
+    )
+
+    table = ecat_module._fowa_summary_table(
+        objects,
+        [{"kobs": 1.0}, {"kobs": 1.1}],
+        [{}, {}],
+        [None, None],
+        {"sig figs": 4},
+    )
+
+    assert table.columns[0] == "Name"
 
 
 def test_fowa_summary_pretty_print_uses_styled_dataframe(ecat_module, monkeypatch):
@@ -631,7 +937,7 @@ def test_fowa_summary_pretty_print_uses_styled_dataframe(ecat_module, monkeypatc
         {"pretty print": True},
     )
 
-    assert list(table.columns) == ["Field", "Value"]
+    assert list(table.columns) == ["Parameter", "Symbol", "Value"]
     rendered = displayed["object"].to_html()
     assert "i<sub>p</sub><sup>0</sup> Source" in rendered
     assert "Reference E<sub>p</sub>" in rendered
@@ -684,13 +990,14 @@ def test_fowa_summary_plain_print_uses_dataframe_text(ecat_module, monkeypatch, 
     )
 
     output = capsys.readouterr().out
-    assert "Field" in output
+    assert "Parameter" in output
+    assert "Symbol" in output
     assert "Value" in output
     assert "Segment" in output
     assert "Fit Range" in output
     assert table.to_dict("records") == [
-        {"Field": "Segment", "Value": "1"},
-        {"Field": "Fit Range", "Value": "[0.1, 0.5]"},
+        {"Parameter": "Segment", "Symbol": "", "Value": "1"},
+        {"Parameter": "Fit Range", "Symbol": "", "Value": "[0.1, 0.5]"},
     ]
 
 
@@ -707,8 +1014,9 @@ def test_fowa_kobs_equation_can_skip_resolved_n_substitution(ecat_module, monkey
     )
 
     output = capsys.readouterr().out
-    assert "k_obs = (m * 0.4463 * n_ref / n_cat^sigma)^2" in output
-    assert "n_ref = 2" in output
+    assert "k_obs = (m * 0.4463 * n / n'^sigma)^2" in output
+    assert "n = 2 (n_cat, catalyst redox-wave electron count)" not in output
+    assert "n' = 3 (n_turn, turnover electron count)" not in output
     assert "m * 0.4463 * 2 / 3^2" not in output
 
 
@@ -947,6 +1255,56 @@ def test_fowa_applies_per_cv_tangent_and_redox_potentials(
     assert full_results["Background Tangent Potential"].tolist() == pytest.approx([-0.1, -0.05])
 
 
+def test_fowa_print_accepts_per_cv_manual_ip0_values(
+    ecat_module,
+    blank_echem_factory,
+    monkeypatch,
+    capsys,
+):
+    cvs = [
+        _synthetic_fowa_cv(ecat_module, blank_echem_factory, "100mVs_cat_run01", 1.0),
+        _synthetic_fowa_cv(ecat_module, blank_echem_factory, "100mVs_cat_run02", 1.2),
+    ]
+    monkeypatch.setattr(
+        ecat_module,
+        "build_object_table",
+        lambda object_list, options=None: (
+            pd.DataFrame({"Name": [obj.name for obj in object_list]}),
+            {},
+        ),
+    )
+
+    with pytest.warns(UserWarning, match="non-positive slope"):
+        result = ecat_module.fowa(
+            cvs,
+            {
+                "plot": False,
+                "print": True,
+                "print all": True,
+                "pretty print": False,
+                "non-catalytic current": [1e-6, 2e-6],
+                "redox mode": "manual",
+                "redox potentials": [0.0, 0.01],
+                "background correction": None,
+                "fit range": [[0.1, 0.3], [0.3, 0.5]],
+                "min fit points": 5,
+                "min r2": 0,
+                "ecat shift warning threshold": False,
+            },
+        )
+
+    printed = capsys.readouterr().out
+    assert "manual (per CV)" in printed
+    assert "FOWA Parameters:" in printed
+    assert "FOWA Summary:" in printed
+    assert "FOWA Data:" in printed
+    assert printed.index("FOWA Parameters:") < printed.index("FOWA Summary:")
+    assert printed.index("FOWA Summary:") < printed.index("FOWA Data:")
+    assert "### FOWA 0:" not in printed
+    full_results = result.table.attrs["full_results_df"]
+    assert full_results["ip0"].tolist() == pytest.approx([1e-6, 2e-6])
+
+
 def test_fowa_transformed_plot_respects_multiplot_legend_toggle(
     ecat_module,
     blank_echem_factory,
@@ -1149,7 +1507,7 @@ def test_fowa_plot_all_current_diagnostic_y_axis_preserves_current_axis(
             {
                 "plot": False,
                 "plot all": True,
-                "diagnostic y axis": "current",
+                "y axis": "Current",
                 "legend": False,
                 "title": False,
                 "print": False,
@@ -1379,7 +1737,7 @@ def test_fowa_plot_all_multiplot_lines_are_full_cvs_and_only_traces_in_legend(
                 "legend": True,
                 "title": False,
                 "print": False,
-                "plot labels": ["Trace A", "Trace B"],
+                "labels": ["Trace A", "Trace B"],
                 "non-catalytic current": 1e-6,
                 "redox potential": 0.0,
                 "redox mode": "manual",
@@ -1430,7 +1788,7 @@ def test_fowa_plot_all_shows_multiplot_legend_by_default(
                 "plot all": True,
                 "title": False,
                 "print": False,
-                "plot labels": ["Trace A", "Trace B"],
+                "labels": ["Trace A", "Trace B"],
                 "non-catalytic current": 1e-6,
                 "redox potential": 0.0,
                 "redox mode": "manual",
@@ -1759,7 +2117,7 @@ def test_multiplot_bool_title_and_subtitle_resolve_to_auto_text(ecat_module, cv_
     cvs = [cv_factory(name="100mVs_A_CO2_MeCN_10mM_Fc"), cv_factory(name="200mVs_B_CO2_MeCN_10mM_Fc")]
     options = ecat_module.MultiplotOptions.from_options(
         {"title": True, "subtitle": True}
-    ).to_legacy_dict()
+    ).to_options_dict()
 
     _labels, title, subtitle, _shared, _similarities = (
         ecat_module._resolve_multiplot_labels_title_subtitle(cvs, options)
@@ -1798,7 +2156,7 @@ def test_fowa_transformed_plot_uses_user_plot_labels_not_filename_fallback(
                 "legend": True,
                 "title": False,
                 "print": False,
-                "plot labels": ["Trace A", "Trace B"],
+                "labels": ["Trace A", "Trace B"],
                 "non-catalytic current": 1e-6,
                 "redox potential": 0.0,
                 "redox mode": "manual",
@@ -1878,6 +2236,100 @@ def test_fowa_transformed_plot_labels_ignore_reference_cv_when_finding_shared_te
     plt.close("all")
 
 
+def test_fowa_transformed_plot_generated_colorbar_labels_use_concentration_delta(
+    ecat_module,
+    blank_echem_factory,
+    monkeypatch,
+):
+    labels_and_metadata = [
+        ("100mVs_Ar", "Ar", [], [], "Ar"),
+        (
+            "100mVs_Ar_CO2_5pctCO2",
+            "Ar/CO2",
+            ["CO2"],
+            ["5 %"],
+            "Ar/CO2, 5 % CO2",
+        ),
+        (
+            "100mVs_Ar_CO2_10pctCO2",
+            "Ar/CO2",
+            ["CO2"],
+            ["10 %"],
+            "Ar/CO2, 10 % CO2",
+        ),
+        (
+            "100mVs_Ar_CO2_20pctCO2",
+            "Ar/CO2",
+            ["CO2"],
+            ["20 %"],
+            "Ar/CO2, 20 % CO2",
+        ),
+    ]
+    cvs = []
+    for name, gas, compounds, concentrations, _label in labels_and_metadata:
+        cv_obj = _synthetic_fowa_cv(ecat_module, blank_echem_factory, name, 1.0)
+        cv_obj.gas = gas
+        cv_obj.compounds = compounds
+        cv_obj.concentrations = concentrations
+        cvs.append(cv_obj)
+
+    plot_data = []
+    for cv_obj, (_name, _gas, _compounds, _concentrations, label) in zip(
+        cvs,
+        labels_and_metadata,
+    ):
+        plot_data.append({
+            "cat cv": cv_obj,
+            "x fowa": np.array([0.1, 0.2, 0.3]),
+            "y fowa": np.array([1.0, 1.2, 1.4]),
+            "x fit": np.array([0.1, 0.2]),
+            "y fit": np.array([1.0, 1.2]),
+            # Default FOWA should not pass generated labels back through the
+            # explicit-label path; multiplot should infer from CV metadata.
+            "plot label": f"generated {label}",
+        })
+
+    captured_color_specs = []
+    original_prepare = ecat_module._prepare_multiplot_style
+
+    def capture_prepare(objects, options):
+        style = original_prepare(objects, options)
+        captured_color_specs.append(style["color spec"])
+        return style
+
+    monkeypatch.setattr(ecat_module, "_prepare_multiplot_style", capture_prepare)
+    monkeypatch.setattr(
+        ecat_module,
+        "_draw_multiplot_legend_and_colorbars",
+        lambda *args, **kwargs: None,
+    )
+
+    ecat_module._plot_fowa_transformed(
+        plot_data,
+        pd.DataFrame({"Slope": [1.0] * len(cvs), "Intercept": [0.0] * len(cvs)}),
+        {
+            "legend": True,
+            "legend mode": "colorbar",
+            "min gradient entries": 3,
+            "title": False,
+            "print": False,
+            "plot fit": False,
+        },
+    )
+
+    assert captured_color_specs
+    gradient_groups = captured_color_specs[0]["gradient groups"]
+    assert len(gradient_groups) == 1
+    assert gradient_groups[0]["indices"] == [1, 2, 3]
+    assert gradient_groups[0]["endpoint ticklabels"] == [
+        "+5% CO$_2$",
+        "+20% CO$_2$",
+    ]
+    assert "Ar/CO2" not in "".join(gradient_groups[0]["endpoint ticklabels"])
+
+    plt.close("all")
+
+
 def test_fowa_transformed_plot_formats_formula_plot_labels(
     ecat_module,
     blank_echem_factory,
@@ -1905,7 +2357,7 @@ def test_fowa_transformed_plot_formats_formula_plot_labels(
                 "legend": True,
                 "title": False,
                 "print": False,
-                "plot labels": ["10 mM CO2", "20 mM CO2"],
+                "labels": ["10 mM CO2", "20 mM CO2"],
                 "non-catalytic current": 1e-6,
                 "redox potential": 0.0,
                 "redox mode": "manual",
@@ -1953,7 +2405,7 @@ def test_fowa_transformed_plot_shows_multiplot_legend_by_default(
                 "plot all": False,
                 "title": False,
                 "print": False,
-                "plot labels": ["Trace A", "Trace B"],
+                "labels": ["Trace A", "Trace B"],
                 "non-catalytic current": 1e-6,
                 "redox potential": 0.0,
                 "redox mode": "manual",

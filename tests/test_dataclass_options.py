@@ -16,6 +16,23 @@ def test_peak_potential_rejects_peak_current_only_option(ecat_module):
         ecat_module.PeakPotentialOptions.from_options({"tangent range": "auto"})
 
 
+def test_peak_potential_peak_kind_defaults_to_both(ecat_module):
+    assert ecat_module.PeakPotentialOptions.from_options({}).peak_kind == "both"
+
+
+def test_peak_potential_accepts_infer_peak_kind(ecat_module):
+    assert ecat_module.PeakPotentialOptions.from_options({"peak kind": "infer"}).peak_kind == "infer"
+
+
+def test_peak_potential_accepts_noise_window_none(ecat_module):
+    assert ecat_module.PeakPotentialOptions.from_options({"noise window": None}).noise_window is None
+
+
+def test_peak_potential_rejects_auto_peak_kind(ecat_module):
+    with pytest.raises(ecat_module.OptionError, match="peak kind.*both.*infer.*max.*min"):
+        ecat_module.PeakPotentialOptions.from_options({"peak kind": "auto"})
+
+
 def test_cv_option_value_validation(ecat_module):
     with pytest.raises(ecat_module.OptionError, match="odd integer"):
         ecat_module.PeakCurrentOptions.from_options({"noise window": 4})
@@ -27,12 +44,12 @@ def test_cv_option_value_validation(ecat_module):
 
 def test_trumpet_segments_override_default_segment(ecat_module):
     opts = ecat_module.TrumpetAnalysisOptions.from_options({"segments": [1, 2]})
-    legacy = opts.to_legacy_dict()
+    resolved = opts.to_options_dict()
 
     assert opts.segment is None
     assert opts.segments == [1, 2]
-    assert legacy["segment"] == 1
-    assert legacy["segments"] is None
+    assert resolved["segment"] == 1
+    assert resolved["segments"] is None
 
 
 def test_trumpet_segments_must_be_consecutive_pair(ecat_module):
@@ -57,19 +74,19 @@ def test_fowa_accepts_multiplot_style_legend_options(ecat_module):
         }
     )
 
-    legacy = opts.to_legacy_dict()
+    resolved = opts.to_options_dict()
 
     assert opts.legend_loc == "lower left"
     assert opts.legend_mode == "colorbar"
     assert opts.legend_outside is True
-    assert legacy["legend loc"] == "lower left"
-    assert legacy["legend mode"] == "colorbar"
-    assert legacy["legend outside"] is True
+    assert resolved["legend loc"] == "lower left"
+    assert resolved["legend mode"] == "colorbar"
+    assert resolved["legend outside"] is True
 
 
 def test_legend_mode_auto_is_default_and_colorbar_alias(ecat_module):
-    multiplot_defaults = ecat_module.MultiplotOptions.from_options({}).to_legacy_dict()
-    fowa_defaults = ecat_module.FOWAOptions.from_options({}).to_legacy_dict()
+    multiplot_defaults = ecat_module.MultiplotOptions.from_options({}).to_options_dict()
+    fowa_defaults = ecat_module.FOWAOptions.from_options({}).to_options_dict()
 
     assert multiplot_defaults["legend mode"] == "auto"
     assert fowa_defaults["legend mode"] == "auto"
@@ -87,19 +104,19 @@ def test_fowa_accepts_fit_plot_options(ecat_module):
         }
     )
 
-    legacy = opts.to_legacy_dict()
+    resolved = opts.to_options_dict()
 
     assert opts.plot_fit is False
-    assert legacy["plot fit"] is False
-    assert legacy["fit color"] == "tab:green"
-    assert legacy["fit linestyle"] == ":"
+    assert resolved["plot fit"] is False
+    assert resolved["fit color"] == "tab:green"
+    assert resolved["fit linestyle"] == ":"
 
 
 def test_fit_rate_accepts_print_all_as_common_verbosity_option(ecat_module):
     opts = ecat_module.FitRateOptions.from_options({"print all": True})
 
     assert opts.print_all is True
-    assert opts.to_legacy_dict()["print all"] is True
+    assert opts.to_options_dict()["print all"] is True
 
 
 def test_scatter_fit_options_reject_removed_fit_equation_option(ecat_module):
@@ -134,13 +151,13 @@ def test_peak_current_routes_plot_axis_fields_to_peak_potential(ecat_module):
     )
 
     routed = opts.for_peak_potential()
-    legacy = routed.to_legacy_dict()
+    resolved = routed.to_options_dict()
 
     assert routed.y_axis == "i/ip0"
-    assert legacy["y axis"] == "i/ip0"
-    assert legacy["y unit"] is None
-    assert legacy["ylabel"] == "$i / i_p^0$"
-    assert legacy["new plot"] is False
+    assert resolved["y axis"] == "i/ip0"
+    assert resolved["y unit"] is None
+    assert resolved["ylabel"] == "$i / i_p^0$"
+    assert resolved["new plot"] is False
 
 
 def test_peak_potential_accepts_derivative_plot_option(ecat_module):
@@ -149,7 +166,7 @@ def test_peak_potential_accepts_derivative_plot_option(ecat_module):
     )
 
     assert opts.derivative == 1
-    assert opts.to_legacy_dict()["derivative"] == 1
+    assert opts.to_options_dict()["derivative"] == 1
 
 
 def test_defaults_precedence_and_reset(ecat_module, tmp_path):

@@ -682,7 +682,6 @@ def test_browser_multi_cv_options_filter_sevcik_unsupported_fit_options():
         x_axis="scan rate",
         fit_model="power",
         toggles=["fit", "plot_fit", "plot_all"],
-        sevcik_mode="heterogeneous",
     )
 
     assert options == {
@@ -690,7 +689,6 @@ def test_browser_multi_cv_options_filter_sevcik_unsupported_fit_options():
         "plot all": True,
         "segments": [1, 2],
         "guess potential": -0.2,
-        "scan dependence": 1.0,
     }
 
 
@@ -1973,6 +1971,16 @@ def test_browser_double_click_launchers_exist(repo_root):
         / "Resources"
         / "ecat-logo.icns"
     )
+    bundled_launcher = (
+        repo_root
+        / "apps"
+        / "workbench"
+        / "launchers"
+        / "eCAT Workbench.app"
+        / "Contents"
+        / "Resources"
+        / "ecat-workbench-launcher.sh"
+    )
     accent_logo = repo_root / "apps" / "workbench" / "src" / "ecat_app" / "assets" / "ecat-logo_2_accent.svg"
     app_icon_source = repo_root / "apps" / "workbench" / "src" / "ecat_app" / "assets" / "ecat-logo-app-icon.svg"
 
@@ -1981,6 +1989,7 @@ def test_browser_double_click_launchers_exist(repo_root):
     assert shared_launcher.exists()
     assert app_launcher.exists()
     assert app_launcher_source.exists()
+    assert bundled_launcher.exists()
     assert not legacy_spaced_app_launcher.exists()
     assert plist.exists()
     shared_text = shared_launcher.read_text()
@@ -1993,7 +2002,7 @@ def test_browser_double_click_launchers_exist(repo_root):
     assert "display alert" in shared_text
     assert "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" in shared_text
     assert "/Library/Frameworks/Python.framework/Versions" in shared_text
-    assert "pip install -e ." in shared_text
+    assert 'pip install -e ".[app]"' in shared_text
     assert "cd \\\"$REPO_ROOT\\\"" in shared_text
     assert "eCAT repository folder" in shared_text
     assert "ecat-workbench-launcher.sh" in command_launcher.read_text()
@@ -2007,6 +2016,8 @@ def test_browser_double_click_launchers_exist(repo_root):
     app_source_text = app_launcher_source.read_text()
     assert "_NSGetExecutablePath" in app_source_text
     assert "ecat-workbench-launcher.sh" in app_source_text
+    assert "bundled_script_path" in app_source_text
+    assert "access(source_script_path, X_OK)" in app_source_text
     assert "ECAT_LAUNCHER_ENTRY" in app_source_text
     assert "/bin/zsh" in app_source_text
     windows_text = windows_launcher.read_text()
@@ -2017,7 +2028,7 @@ def test_browser_double_click_launchers_exist(repo_root):
     assert "py -3" in windows_text
     assert "ecat-workbench-launch.log" in windows_text
     assert "System.Windows.MessageBox" in windows_text
-    assert "python -m pip install -e ." in windows_text
+    assert 'python -m pip install -e ".[app]"' in windows_text
     assert 'cd /d "%REPO_ROOT%"' in windows_text
     assert "eCAT repository folder" in windows_text
     assert "eCAT Workbench" in plist_text
@@ -2229,7 +2240,7 @@ def test_browser_default_source_points_to_fe_phoh_data(repo_root):
     assert workflow.source_kind == "local_path"
     assert workflow.source_path.endswith("examples/data/fe_phoh_cv")
     assert workflow.recursive is True
-    assert workflow.import_options["sort keys"] == ["timestamp"]
+    assert workflow.import_options["sort keys"] == ["subfolder", "timestamp"]
     assert [option["value"] for option in example_folder_options()] == [
         "fe_phoh_cv",
         "chrono_ca",
@@ -2258,7 +2269,7 @@ def test_browser_default_fe_phoh_multiscan_sorts_after_main_series(repo_root):
     assert names[7].startswith("MeCN_CO2_0.1MTBAPF6_3mMFc_1mMFe-tpyPY2Me_-1.2_to_1V")
 
 
-def test_browser_local_path_loading_reports_txt_file_status(fixtures_dir, tmp_path):
+def test_browser_local_path_loading_reports_supported_text_file_status(fixtures_dir, tmp_path):
     from ecat_app.adapters import load_local_path
 
     _copy_fixture(fixtures_dir, tmp_path, "ch_cv.txt")
@@ -2266,7 +2277,23 @@ def test_browser_local_path_loading_reports_txt_file_status(fixtures_dir, tmp_pa
 
     result = load_local_path(tmp_path, recursive=True)
 
-    assert result.status == "2 .txt files found."
+    assert result.status == "2 supported text files found."
+
+
+def test_browser_local_path_loading_discovers_eclab_mpt(fixtures_dir, tmp_path):
+    from ecat_app.adapters import load_local_path
+
+    destination = tmp_path / "eclab_cv.mpt"
+    destination.write_text(
+        (fixtures_dir / "eclab_cv.txt").read_text(encoding="ISO-8859-1"),
+        encoding="ISO-8859-1",
+    )
+
+    result = load_local_path(tmp_path, recursive=False)
+
+    assert result.status == "1 supported text file found."
+    assert len(result.objects) == 1
+    assert type(result.objects[0]).__name__ == "cv"
 
 
 def test_browser_callback_state_includes_import_status(fixtures_dir, tmp_path):
@@ -2278,7 +2305,7 @@ def test_browser_callback_state_includes_import_status(fixtures_dir, tmp_path):
 
     state = handle_local_path_load(str(tmp_path), recursive=True, registry=registry)
 
-    assert state["status"] == "1 .txt file found."
+    assert state["status"] == "1 supported text file found."
 
 
 def test_browser_import_returns_default_multiplot(fixtures_dir, tmp_path):
@@ -2666,14 +2693,16 @@ def test_browser_model_mechanism_detail_edits_refresh_parameter_rows():
     assert any(row["path"] == "concentrations.bulk.A" for row in updated["parameters"])
 
 
-def test_browser_model_simulate_button_is_gated_by_mechanism_parse():
-    from ecat_app.callbacks import model_simulate_gate
+def test_browser_model_simulate_button_is_gated_by_mechanism_parse(monkeypatch):
+    import ecat_app.callbacks as callbacks
 
-    assert model_simulate_gate({"mechanism_valid": False}) == (
+    monkeypatch.setattr(callbacks, "simulation_backend_available", lambda: True)
+
+    assert callbacks.model_simulate_gate({"mechanism_valid": False}) == (
         True,
         "Choose a valid mechanism before simulating.",
     )
-    assert model_simulate_gate({"mechanism_valid": True}) == (False, "")
+    assert callbacks.model_simulate_gate({"mechanism_valid": True}) == (False, "")
 
 
 def test_browser_model_builds_simulation_params_from_tables():
@@ -2803,7 +2832,7 @@ def test_browser_multi_cv_analysis_equations_and_labeled_inputs():
 
     fowa = multi_analysis_equation_content("fowa")
     tafel = multi_analysis_equation_content("tafel_analysis")
-    sevcik = multi_analysis_equation_content("sevcik_analysis", "heterogeneous")
+    sevcik = multi_analysis_equation_content("sevcik_analysis")
     none = multi_analysis_equation_content("none")
 
     assert "k" in repr(fowa)
@@ -2814,7 +2843,7 @@ def test_browser_multi_cv_analysis_equations_and_labeled_inputs():
     assert "exp" in repr(tafel)
     assert "i" in repr(sevcik)
     assert "ν" in repr(sevcik)
-    assert "1/2" not in repr(sevcik)
+    assert "1/2" in repr(sevcik)
     assert none == ""
 
 
@@ -3475,9 +3504,10 @@ def test_browser_model_fit_request_uses_existing_simulation_state():
 
     fit_state = build_model_fit_state(model_options, "multiple")
 
-    assert fit_state["fit_requested"] is True
+    assert fit_state["fit_requested"] is False
     assert fit_state["fit_mode"] == "multiple"
-    assert fit_state["fit_result"]["status"] == "placeholder"
+    assert fit_state["fit_result"]["status"] == "blocked"
+    assert "group-fitting" in fit_state["fit_result"]["message"]
     assert fit_state["simulation_result"] == {"status": "placeholder"}
 
 
@@ -3496,7 +3526,7 @@ def test_browser_model_fit_request_preserves_edited_parameter_rows():
 
     assert fit_state["fit_requested"] is True
     assert fit_state["parameters"] == edited_rows
-    assert fit_state["fit_result"]["message"] == "Fit request captured. The simulator/fitter engine is not wired yet."
+    assert fit_state["fit_result"] == {"status": "pending", "message": "Fit request ready."}
 
 
 def test_browser_model_fit_single_cv_selection_checks_compatibility(cv_factory):
@@ -3515,7 +3545,7 @@ def test_browser_model_fit_single_cv_selection_checks_compatibility(cv_factory):
     fit_state = build_model_fit_state(model_options, "single", fit_cv_index=0, objects=[cv_obj])
 
     assert fit_state["fit_cv_index"] == 0
-    assert fit_state["fit_result"]["status"] == "placeholder"
+    assert fit_state["fit_result"]["status"] == "pending"
     assert "Scan-rate mismatch" in fit_state["fit_result"]["message"]
 
     blocked = build_model_fit_state(model_options, "single", fit_cv_index=2, objects=[cv_obj])
@@ -3629,7 +3659,14 @@ def test_browser_model_settings_grids_auto_height_to_row_count():
 def test_browser_model_labeled_inputs_keep_units_in_input_row():
     css = Path("apps/workbench/src/ecat_app/assets/app.css").read_text()
 
-    assert "grid-template-columns: minmax(118px, 0.9fr) minmax(96px, 1fr) minmax(44px, auto);" in css
+    field_row_block = css[css.index(".ecat-model-field-row"):css.index(".ecat-model-field-label")]
+    assert "grid-template-columns: minmax(0, 0.9fr) minmax(84px, 1fr) minmax(max-content, auto);" in field_row_block
+    assert "min-width: 0;" in field_row_block
+    label_block = css[css.index(".ecat-model-field-label"):css.index(".ecat-model-field-unit")]
+    assert "min-width: 0;" in label_block
+    assert "overflow-wrap: anywhere;" in label_block
+    actions_block = css[css.index(".ecat-model-program-actions"):css.index(".ecat-model-program-actions button")]
+    assert "grid-template-columns: repeat(auto-fit, minmax(128px, 1fr));" in actions_block
     assert "justify-self: end;" in css[css.index(".ecat-model-field-unit"):css.index(".ecat-model-float-input")]
     assert ".ecat-app" in css
     assert "user-select: text;" in css[css.index(".ecat-app"):css.index(".ecat-status")]
@@ -3755,6 +3792,8 @@ def test_browser_dash_layout_contains_expected_tabs():
     assert "Load Folder" in rendered
     assert "ecat-select-folder" not in rendered
     assert "Search Subfolders" in rendered
+    assert "ecat-import-invert-current" not in rendered
+    assert "Invert current" not in rendered
     assert "ecat-folder-pick-store" not in rendered
     assert "ecat-upload" in rendered
     assert "ecat-object-table" in rendered
@@ -3808,9 +3847,13 @@ def test_browser_dash_layout_contains_expected_tabs():
     assert "ecat-about-button" in rendered
     assert "ecat-about-panel" in rendered
     assert "About eCAT Workbench" in rendered
-    assert "ecat 0.1.0b3" in rendered
+    import ecat
+
+    assert f"ecat {ecat.__version__}" in rendered
     assert "Luke Elissiry" in rendered
     assert "MIT License" in rendered
+    assert "ElectroKitty" in rendered
+    assert "BSD 3-Clause" in rendered
     assert "https://github.com/ljelissiry/eCAT" in rendered
     assert "ecat-brand" not in rendered
     assert "ecat-main-panel-card" in rendered
@@ -3874,6 +3917,9 @@ def test_browser_dash_layout_contains_expected_tabs():
     assert "ecat-plot-custom-title-wrap" in rendered
     assert "ecat-plot-convention" in rendered
     assert "Convention" in rendered
+    assert "ecat-plot-invert-y-axis" in rendered
+    assert "Invert y axis" in rendered
+    assert rendered.index("ecat-plot-convention") < rendered.index("ecat-plot-invert-y-axis")
     assert rendered.index("Labels") < rendered.index("Axis Labels") < rendered.index("Title") < rendered.index("Legend") < rendered.index("Display")
     assert "IUPAC" in rendered
     assert "value='IUPAC'" in rendered
@@ -3965,9 +4011,7 @@ def test_browser_dash_layout_contains_expected_tabs():
     assert "ecat-multi-analysis-options" in rendered
     assert "ecat-multi-option-row" in rendered
     assert "ecat-sevcik-options" in rendered
-    assert "ecat-sevcik-mode" in rendered
-    assert "Homogeneous" in rendered
-    assert "Heterogeneous" in rendered
+    assert "ecat-sevcik-mode" not in rendered
     assert "htmlFor='ecat-multi-segments'" in rendered
     assert "htmlFor='ecat-fowa-redox-potential'" in rendered
     assert "htmlFor='ecat-tafel-tof-max'" in rendered
@@ -4052,7 +4096,8 @@ def test_browser_dash_layout_contains_expected_tabs():
     assert "ecat-model-mechanism-preset" in rendered
     assert "Square Scheme" in rendered
     assert "ecat-model-mechanism-custom" in rendered
-    assert "Enter one reaction per line using eCAT/ElectroKitty mechanism text." in rendered
+    assert "Enter one eCAT reaction per line." in rendered
+    assert "2A or repeated terms such as A+A" in rendered
     assert "Example: E(1):Fe2=Fe1, then C:Fe1>Fe0 on the next line." in rendered
     assert "ecat-model-mechanism-status" in rendered
     assert "ecat-model-formatted-equations" in rendered
@@ -4446,6 +4491,7 @@ def test_browser_plot_controls_map_to_ecat_options():
         title_mode="manual",
         convention="IUPAC",
         custom_title="My plot",
+        invert_y_axis_values=["invert_y_axis"],
         display_values=["grid"],
         gradient_values=["gradients"],
         colorbar_values=["colorbar", "deduplicate"],
@@ -4469,6 +4515,7 @@ def test_browser_plot_controls_map_to_ecat_options():
         "title": "My plot",
         "plot style": "line+markers",
         "plot convention": "IUPAC",
+        "invert y axis": True,
         "grid": True,
         "deduplicate labels": True,
         "potential window": [-0.2, 0.4],
@@ -4744,6 +4791,27 @@ def test_browser_column_picker_keeps_trigger_compact_and_makes_menu_taller(repo_
     assert "[data-radix-popper-content-wrapper] .dash-dropdown-menu" in css
     assert "[data-radix-popper-content-wrapper] .dash-dropdown-content" in css
     assert "[data-radix-popper-content-wrapper] .dash-dropdown-options" in css
+    modern_menu_block = css[
+        css.index("[data-radix-popper-content-wrapper] .dash-dropdown-menu"):
+        css.index(".Select-menu,", css.index("[data-radix-popper-content-wrapper] .dash-dropdown-menu"))
+    ]
+    assert "display: flex !important" in modern_menu_block
+    assert "flex-direction: column !important" in modern_menu_block
+    assert "align-items: stretch !important" in modern_menu_block
+    assert "width: 100% !important" in modern_menu_block
+    assert ".dash-dropdown-option" in css
+    assert "[data-radix-popper-content-wrapper] [role=\"option\"]" in css
+    assert ".Select-option" in css
+    assert ".VirtualizedSelectOption" in css
+    assert "flex: 0 0 auto !important" in css
+    option_block_start = css.index("\n[data-radix-popper-content-wrapper] .dash-dropdown-option,")
+    compact_option_block = css[
+        option_block_start:
+        css.index(".Select-menu,", option_block_start)
+    ]
+    assert "min-height: 36px !important" in compact_option_block
+    assert "padding: 7px 12px !important" in compact_option_block
+    assert "line-height: 1.25 !important" in compact_option_block
     assert ".dash-dropdown-content" in css
     assert ".dash-dropdown-options" in css
     assert "flex-direction: column !important" in css
@@ -4754,6 +4822,36 @@ def test_browser_column_picker_keeps_trigger_compact_and_makes_menu_taller(repo_
     assert "flex-direction: column;" in css
     assert "align-items: center" in css
     assert "width: 100%;" in css
+
+
+def test_browser_layout_changes_notify_dropdown_positioners(repo_root):
+    assets = repo_root / "apps" / "workbench" / "src" / "ecat_app" / "assets"
+    zoom_script = (assets / "zoom-controls.js").read_text()
+    sidebar_script = (assets / "sidebar-resize.js").read_text()
+    dropdown_script = (assets / "dropdown-position.js").read_text()
+
+    assert "ecat:layout-resized" in zoom_script
+    assert "window.dispatchEvent(new Event(\"resize\"));" in zoom_script
+    assert "window.requestAnimationFrame" in zoom_script
+    assert "ecat:layout-resized" in sidebar_script
+    assert "window.dispatchEvent(new Event(\"resize\"));" in sidebar_script
+    assert "[data-radix-popper-content-wrapper]" in dropdown_script
+    assert ".dash-dropdown" in dropdown_script
+    assert ".Select" in dropdown_script
+    assert "positionDropdowns" in dropdown_script
+    assert "coordinateScaleForWrapper" in dropdown_script
+    assert "wrapper.closest(\".ecat-workspace\")" in dropdown_script
+    assert "left / scale" in dropdown_script
+    assert "top / scale" in dropdown_script
+    assert "anchorRect.width / scale" in dropdown_script
+    assert "lastInteractedDropdownRoot" in dropdown_script
+    assert "rememberDropdownRoot" in dropdown_script
+    assert "document.addEventListener(\"pointerdown\", handleDropdownInteraction, true)" in dropdown_script
+    assert "document.addEventListener(\"focusin\", handleDropdownInteraction, true)" in dropdown_script
+    assert "setImportantStyle(wrapper, \"position\", \"fixed\")" in dropdown_script
+    assert "setImportantStyle(wrapper, \"transform\", \"none\")" in dropdown_script
+    assert "element.style.setProperty(property, value, \"important\")" in dropdown_script
+    assert "document.addEventListener(\"ecat:layout-resized\", schedulePositioning)" in dropdown_script
 
 
 def test_browser_plot_action_script_handles_copy_and_save(repo_root):
@@ -4929,6 +5027,27 @@ def test_browser_about_panel_toggles():
     assert toggle_about_state(None, True) == (True, "About")
     assert toggle_about_state(1, True) == (False, "X")
     assert toggle_about_state(2, False) == (True, "About")
+
+
+def test_readme_credits_optional_electrokitty_backend():
+    readme = (Path(__file__).resolve().parents[1] / "README.md").read_text()
+
+    assert "ElectroKitty" in readme
+    assert "BSD 3-Clause" in readme
+    assert "Ožbej Vodeb" in readme
+
+
+def test_third_party_notices_include_electrokitty_license(repo_root):
+    notices = (repo_root / "THIRD_PARTY_NOTICES.md").read_text()
+
+    assert "ElectroKitty" in notices
+    assert "BSD 3-Clause License" in notices
+    assert "Copyright (c) 2024, Ožbej Vodeb" in notices
+    assert "RedrumKid/ElectroKitty" in notices
+    assert "d1c5f37b442321f8b5bcf48fd9fd76cdd69daef4" in notices
+    assert "1.0.11.5" in notices
+    assert "Neither the name of the copyright holder" in notices
+    assert "dash-ag-grid" in notices
 
 
 def test_browser_import_controls_use_placeholders_without_reference_defaults():

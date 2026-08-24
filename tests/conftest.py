@@ -44,6 +44,7 @@ def ecat_module(repo_root):
         parsers,
         plotting,
         reference,
+        reversibility,
         utils,
     )
 
@@ -55,6 +56,7 @@ def ecat_module(repo_root):
         plotting,
         analysis_cv,
         analysis_batch,
+        reversibility,
         collection,
         reference,
         io,
@@ -123,6 +125,8 @@ def _blank_echem_object(ecat_module, cls):
     obj.reference_mode = "none"
     obj.reference_source_file = None
     obj.reference_failure_message = None
+    obj.zero_concentration_compounds = []
+    obj.zero_concentrations = []
     obj.folderpath = "."
     return obj
 

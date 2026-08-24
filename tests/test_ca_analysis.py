@@ -43,6 +43,24 @@ def test_ca_charge_can_resolve_target_from_moles_and_electrons(
     assert result.axes is None
 
 
+def test_ca_charge_prints_tidy_table(ecat_module, blank_echem_factory, capsys):
+    obj = blank_echem_factory(ecat_module.ca)
+    obj.type = "Chronoamperometry"
+    obj.data = pd.DataFrame({"Time": [0.0, 1.0, 2.0], "Current": [0.0, 0.5, 1.0]})
+    obj.units = {"Time": "s", "Current": "A"}
+    obj.num_x_cols = 1
+
+    result = obj.charge({"plot": False, "print": True, "pretty print": False})
+
+    printed = capsys.readouterr().out
+    assert result.table["Metric"].tolist() == ["Final Charge"]
+    assert "Charge:" in printed
+    assert "Metric" in printed
+    assert "Value" in printed
+    assert "Final Charge" in printed
+    assert "Final charge:" not in printed
+
+
 def test_ca_time_at_charge_uses_target_options_and_can_plot_ca(
     ecat_module,
     blank_echem_factory,
@@ -65,7 +83,7 @@ def test_ca_time_at_charge_uses_target_options_and_can_plot_ca(
     assert result["time"] == pytest.approx(1.5)
     assert result["target charge"] == pytest.approx(1.0)
     assert result.axes is not None
-    assert result.axes.get_ylabel() == "Current (mA)"
+    assert result.axes.get_ylabel() == "Current (A)"
 
 
 def test_ca_plot_accepts_plot_charge_overlay(ecat_module, blank_echem_factory):
@@ -77,9 +95,111 @@ def test_ca_plot_accepts_plot_charge_overlay(ecat_module, blank_echem_factory):
 
     ax = obj.plot({"plot charge": True, "print": False})
 
-    assert ax.get_ylabel() == "Current (mA)"
+    assert ax.get_ylabel() == "Current (A)"
     assert len(ax.figure.axes) == 2
     assert ax.figure.axes[1].get_ylabel() == "Charge (C)"
+
+
+def test_ca_plot_charge_overlay_inherits_general_y_inversion(
+    ecat_module,
+    blank_echem_factory,
+):
+    obj = blank_echem_factory(ecat_module.ca)
+    obj.type = "Chronoamperometry"
+    obj.data = pd.DataFrame(
+        {"Time": [0.0, 1.0, 2.0], "Current": [0.5, 0.75, 1.0]}
+    )
+    obj.units = {"Time": "s", "Current": "A"}
+    obj.num_x_cols = 1
+
+    ax = obj.plot(
+        {
+            "plot charge": True,
+            "invert y axis": True,
+            "print": False,
+        }
+    )
+    charge_ax = ax.figure.axes[1]
+
+    assert ax.yaxis_inverted()
+    assert charge_ax.yaxis_inverted()
+    assert min(ax.get_ylim()) <= 0 <= max(ax.get_ylim())
+    assert min(charge_ax.get_ylim()) <= 0 <= max(charge_ax.get_ylim())
+
+
+def test_ca_plot_charge_overlay_supports_independent_axis_inversion_overrides(
+    ecat_module,
+    blank_echem_factory,
+):
+    obj = blank_echem_factory(ecat_module.ca)
+    obj.type = "Chronoamperometry"
+    obj.data = pd.DataFrame(
+        {"Time": [0.0, 1.0, 2.0], "Current": [0.5, 0.75, 1.0]}
+    )
+    obj.units = {"Time": "s", "Current": "A"}
+    obj.num_x_cols = 1
+
+    ax = obj.plot(
+        {
+            "plot charge": True,
+            "invert y axis": True,
+            "invert current axis": False,
+            "invert charge axis": True,
+            "print": False,
+        }
+    )
+    charge_ax = ax.figure.axes[1]
+
+    assert not ax.yaxis_inverted()
+    assert charge_ax.yaxis_inverted()
+
+
+def test_ca_plot_charge_overlay_accepts_current_and_charge_y_units(
+    ecat_module,
+    blank_echem_factory,
+):
+    obj = blank_echem_factory(ecat_module.ca)
+    obj.type = "Chronoamperometry"
+    obj.data = pd.DataFrame(
+        {"Time": [0.0, 1.0, 2.0], "Current": [0.0, 0.5, 1.0]}
+    )
+    obj.units = {"Time": "s", "Current": "A"}
+    obj.num_x_cols = 1
+
+    ax = obj.plot(
+        {
+            "plot charge": True,
+            "y unit": ["uA", "uC"],
+            "print": False,
+        }
+    )
+    charge_ax = ax.figure.axes[1]
+
+    assert ax.get_ylabel() == "Current (μA)"
+    assert charge_ax.get_ylabel() == "Charge (μC)"
+    assert ax.lines[0].get_ydata().tolist() == pytest.approx([0.0, 5e5, 1e6])
+    assert charge_ax.lines[0].get_ydata().tolist() == pytest.approx(
+        [0.0, 5e5, 1.5e6]
+    )
+
+
+def test_ca_plot_charge_overlay_rejects_invalid_y_unit_list(
+    ecat_module,
+    blank_echem_factory,
+):
+    obj = blank_echem_factory(ecat_module.ca)
+    obj.type = "Chronoamperometry"
+    obj.data = pd.DataFrame(
+        {"Time": [0.0, 1.0, 2.0], "Current": [0.0, 0.5, 1.0]}
+    )
+    obj.units = {"Time": "s", "Current": "A"}
+    obj.num_x_cols = 1
+
+    with pytest.raises(
+        ecat_module.OptionError,
+        match="'y unit'.*exactly two",
+    ):
+        obj.plot({"plot charge": True, "y unit": ["uA"], "print": False})
 
 
 def test_ca_plot_charge_overlay_defaults_current_trace_to_black(
@@ -303,11 +423,18 @@ def test_time_at_charge_prints_scaled_time_unit(
     obj.units = {"Time": "s", "Current": "A"}
     obj.num_x_cols = 1
 
-    result = obj.time_at_charge({"target charge": 60.0, "plot": False})
+    result = obj.time_at_charge(
+        {"target charge": 60.0, "plot": False, "pretty print": False}
+    )
 
     assert result["time"] == pytest.approx(600.0)
     assert result["display time"] == pytest.approx(10.0)
-    assert "10.0 min" in capsys.readouterr().out
+    printed = capsys.readouterr().out
+    assert "Time At Charge:" in printed
+    assert "Metric" in printed
+    assert "Value" in printed
+    assert "10.00 min" in printed
+    assert "t(60 C)" not in printed
 
 
 def test_time_at_charge_does_not_add_legend_by_default(ecat_module, blank_echem_factory):

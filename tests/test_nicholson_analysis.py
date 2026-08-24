@@ -1,4 +1,5 @@
 import numpy as np
+import pandas as pd
 import pytest
 import matplotlib.pyplot as plt
 
@@ -150,9 +151,9 @@ def test_nicholson_analysis_failure_message_reports_counts_and_reasons(ecat_modu
 
     message = str(excinfo.value)
     assert "too reversible" in message
-    assert "nΔEp between 61 and 212 mV" in message
+    assert "nΔEp between 61.00 and 212.0 mV" in message
     assert "\n  - too reversible:" in message
-    assert "nΔEp = 50" in message
+    assert "nΔEp = 50.0000" in message
     assert "'exclude invalid delta ep': False" in message
 
 
@@ -178,11 +179,49 @@ def test_nicholson_display_tables_respect_sig_figs_and_autoscaled_units(ecat_mod
     result = ecat_module.nicholson_analysis(cvs, _base_options(**{"sig figs": 3}))
     display_data = ecat_module._nicholson_display_data_table(result["data"], {"sig figs": 3})
     summary_table = ecat_module._nicholson_summary_display_table(result["summary"], {"sig figs": 3})
+    parameter_table = ecat_module._nicholson_parameter_display_table(result["summary"], {"sig figs": 3})
 
     assert "scan rate / mV/s" in display_data.columns
     assert "ΔEp / mV" in display_data.columns
     assert any(col.startswith("k0 point / ") for col in display_data.columns)
-    assert summary_table.loc[summary_table["Setting"] == "k0", "Value"].iloc[0] != ""
+    assert summary_table.loc[summary_table["Metric"] == "k0", "Value"].iloc[0] != ""
+    assert list(parameter_table.columns) == ["Parameter", "Symbol", "Value"]
+    assert dict(zip(parameter_table["Parameter"], parameter_table["Symbol"]))["Temperature"] == "T"
+
+
+def test_nicholson_display_omits_name_for_unique_scan_rates(ecat_module):
+    cvs = [
+        FakeCV("valid 1", 0.025, 0.100, -0.020),
+        FakeCV("valid 2", 0.050, 0.120, 0.000),
+    ]
+
+    result = ecat_module.nicholson_analysis(cvs, _base_options())
+    display = ecat_module._nicholson_display_data_table(result["data"])
+
+    assert "Name" not in display.columns
+
+
+def test_nicholson_display_adds_name_for_replicate_scan_rates(ecat_module):
+    data = pd.DataFrame(
+        {
+            "name": ["replicate 1", "replicate 2"],
+            "scan rate / V s^-1": [0.1, 0.1],
+            "temperature / K": [298.15, 298.15],
+            "Ep1 / V": [-0.1, -0.1],
+            "Ep2 / V": [0.1, 0.1],
+            "E1/2 / V": [0.0, 0.0],
+            "Delta Ep / V": [0.2, 0.2],
+            "nDelta Ep / mV": [200.0, 200.0],
+            "psi": [0.1, 0.1],
+            "Nicholson x / s cm^-1": [1.0, 1.0],
+            "k0 point / cm s^-1": [0.1, 0.1],
+            "included": [True, True],
+        }
+    )
+
+    display = ecat_module._nicholson_display_data_table(data, {"sig figs": 4})
+
+    assert display.columns[0] == "Name"
 
 
 def test_nicholson_analysis_pretty_prints_equation_summary_and_data(ecat_module, capsys):
@@ -191,15 +230,47 @@ def test_nicholson_analysis_pretty_prints_equation_summary_and_data(ecat_module,
         FakeCV("valid 2", 0.4, 0.120, 0.000),
     ]
 
-    ecat_module.nicholson_analysis(cvs, _base_options(print=True, pretty_print=False))
+    ecat_module.nicholson_analysis(
+        cvs,
+        _base_options(print=True, print_all=True, pretty_print=False),
+    )
 
     printed = capsys.readouterr().out
-    assert "Nicholson Analysis Equation" in printed
-    assert "Nicholson Parameters" in printed
+    assert "Nicholson Analysis Equations" in printed
+    assert "Nicholson Analysis Parameters" in printed
     assert "Nicholson Analysis Summary" in printed
     assert "Nicholson Analysis Data" in printed
     assert "psi = k0 x" in printed
     assert "x = (R T / (pi D n F v))^1/2" not in printed
+    assert "R = " not in printed
+    assert "F = " not in printed
+    assert "D = " not in printed
+    assert "Parameter" in printed
+    assert "Symbol" in printed
+    assert "Metric" in printed
+    assert printed.index("Nicholson Analysis Parameters") < printed.index(
+        "Nicholson Analysis Equations"
+    )
+    assert printed.index("Nicholson Analysis Equations") < printed.index(
+        "Nicholson Analysis Summary"
+    )
+    assert printed.index("Nicholson Analysis Summary") < printed.index(
+        "Nicholson Analysis Data"
+    )
+
+
+def test_nicholson_default_print_omits_full_data_table(ecat_module, capsys):
+    cvs = [
+        FakeCV("valid 1", 0.2, 0.100, 0.000),
+        FakeCV("valid 2", 0.4, 0.120, 0.000),
+    ]
+
+    ecat_module.nicholson_analysis(
+        cvs,
+        _base_options(print=True, pretty_print=False),
+    )
+
+    assert "Nicholson Analysis Data" not in capsys.readouterr().out
 
 
 def test_nicholson_plot_all_uses_diagnostic_and_fit_figures(ecat_module):

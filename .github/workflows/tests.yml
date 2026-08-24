@@ -1,0 +1,91 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  release-metadata:
+    name: Release metadata / app shortcuts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install package and test runner
+        run: python -m pip install --upgrade pip pytest && python -m pip install -e .
+      - name: Check package, app, shortcut, and standalone versions
+        run: pytest -q tests/test_app_launcher.py::test_release_version_is_single_source_and_app_surfaces_match
+
+  core:
+    name: Core / Python ${{ matrix.python-version }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: Install core package and test runner
+        run: python -m pip install --upgrade pip pytest && python -m pip install -e .
+      - name: Run core test suite
+        env:
+          MPLBACKEND: Agg
+        run: pytest -q --ignore=tests/test_app_backbone.py --ignore=tests/test_app_launcher.py
+
+  app-smoke:
+    name: App extra / Python 3.13
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install app extra
+        run: python -m pip install --upgrade pip pytest && python -m pip install -e ".[app]"
+      - name: Run app tests
+        env:
+          MPLBACKEND: Agg
+        run: pytest -q tests/test_app_backbone.py tests/test_app_launcher.py
+
+  simulation-contract:
+    name: Optional simulation contract / Python 3.13
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install core package without optional backend
+        run: python -m pip install --upgrade pip pytest && python -m pip install -e .
+      - name: Test missing-backend and fake-backend behavior
+        env:
+          MPLBACKEND: Agg
+        run: pytest -q tests/test_simulation.py
+
+  simulation-extra:
+    name: ElectroKitty extra / Python 3.13
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install simulation extra
+        run: python -m pip install --upgrade pip pytest && python -m pip install -e ".[simulation]"
+      - name: Run simulation tests with ElectroKitty installed
+        env:
+          MPLBACKEND: Agg
+        run: pytest -q tests/test_simulation.py

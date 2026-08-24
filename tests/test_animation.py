@@ -87,10 +87,10 @@ def test_animate_normalizes_mapping_like_options(ecat_module, cv_factory):
 
     result = ecat_module.animate(
         cv_obj,
-        MappingProxyType({"plot": False, "animate_repeat": True}),
+        MappingProxyType({"plot": False, "loop": True}),
     )
 
-    assert result.summary["options"] == {"plot": False, "animate repeat": True}
+    assert result.summary["options"] == {"plot": False, "loop": True}
 
 
 def test_animate_accepts_space_style_animation_options(ecat_module, cv_factory):
@@ -136,13 +136,13 @@ def test_animate_accepts_multiplot_style_options_for_lists(ecat_module, cv_facto
         [first, second],
         {
             "plot": False,
-            "plot labels": ["10 mM Fc", "20 mM Fc"],
+            "labels": ["10 mM Fc", "20 mM Fc"],
             "legend outside": True,
         },
     )
 
     assert result.summary["options"]["labels"] == ["10 mM Fc", "20 mM Fc"]
-    assert result.summary["resolved options"]["plot labels"] == ["10 mM Fc", "20 mM Fc"]
+    assert result.summary["resolved options"]["labels"] == ["10 mM Fc", "20 mM Fc"]
     assert result.summary["resolved options"]["legend outside"] is True
 
 
@@ -284,7 +284,7 @@ def test_animation_result_to_html_returns_string(ecat_module, cv_factory):
 def test_animation_render_override_ignores_internal_underscore_keys(ecat_module, cv_factory):
     result = ecat_module.animate(
         cv_factory(),
-        {"plot": False, "print": False, "plot labels": ["Trace A"]},
+        {"plot": False, "print": False, "labels": ["Trace A"]},
     )
 
     resolved = dict(result.summary["resolved options"])
@@ -611,7 +611,7 @@ def test_animate_keeps_outside_legend_and_titles_inside_canvas(ecat_module, cv_f
             "print": False,
             "title": "CO$_2$ Concentration-Series Animation",
             "subtitle": "PhOH titration sequence with normalized staggered playback",
-            "plot labels": ["0 mM", "100 mM", "560 mM", "1 M", "2.8 M"],
+            "labels": ["0 mM", "100 mM", "560 mM", "1 M", "2.8 M"],
             "legend": True,
             "legend outside": True,
             "y axis": "current density",

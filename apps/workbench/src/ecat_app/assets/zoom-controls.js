@@ -27,6 +27,19 @@
     });
   }
 
+  function notifyLayoutResized() {
+    window.dispatchEvent(new Event("resize"));
+    window.dispatchEvent(new CustomEvent("ecat:layout-resized"));
+    window.requestAnimationFrame(function () {
+      window.dispatchEvent(new Event("resize"));
+      window.dispatchEvent(new CustomEvent("ecat:layout-resized"));
+      window.requestAnimationFrame(function () {
+        window.dispatchEvent(new Event("resize"));
+        window.dispatchEvent(new CustomEvent("ecat:layout-resized"));
+      });
+    });
+  }
+
   function applyZoom(percent, persist) {
     const resolved = clampZoom(percent);
     const scale = resolved / 100;
@@ -40,6 +53,7 @@
       label.textContent = `${resolved}%`;
     }
     syncButtons(resolved);
+    notifyLayoutResized();
     if (persist) {
       try {
         localStorage.setItem("ecat-ui-zoom", String(resolved));

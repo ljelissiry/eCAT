@@ -1,5 +1,7 @@
 """Filtering, sorting, grouping, and collection-summary helpers."""
 
+from collections.abc import Mapping
+
 from .utils import *  # noqa: F401,F403
 from .options import FilterOptions, GroupSummaryOptions, SortGroupOptions
 from .parsers import exp_type_short as _exp_type_short
@@ -29,6 +31,14 @@ def get_sort_group_dict():
         for c in getattr(echem_object, "concentrations", []):
             concs.append(concentration_to_float(c))
         return concs
+
+    def get_species(echem_object):
+        return [
+            f"{conc} {comp}" for conc, comp in zip(
+                getattr(echem_object, "concentrations", []) or [],
+                getattr(echem_object, "compounds", []) or [],
+            )
+        ]
 
     def get_type(echem_object):
         return echem_object.type
@@ -140,6 +150,7 @@ def get_sort_group_dict():
         'subfolder': get_folderpath,
         'compounds': get_compounds,
         'concentrations': get_concentrations,
+        'species': get_species,
         'type': get_type,
         'scan rate': get_scan_rate,
         'gas': get_gas,
@@ -260,16 +271,12 @@ def get_available_filter_values(object_list, keys=None):
         {
             'gas': ['Ar', 'CO2'],
             'scan rate': [0.05, 0.1, 0.2],
-            'composition': ['1 mM Fc', '100 mM H2O']
+            'species': ['1 mM Fc', '100 mM H2O']
         }
     """
     flat_objects = _flatten_object_list(object_list)
 
     opt_dict = get_sort_group_dict()
-    opt_dict['composition'] = lambda obj: [
-        f"{conc} {comp}" for conc, comp in zip(obj.concentrations, obj.compounds)
-    ]
-    opt_dict['species'] = opt_dict['composition']
 
     if keys is None:
         keys = list(opt_dict.keys()) + ["replicate"]
@@ -331,6 +338,98 @@ def _make_hashable_filter_value(value):
     if isinstance(value, tuple):
         return tuple(_make_hashable_filter_value(v) for v in value)
     return value
+
+
+_COLLECTION_FILTER_KEYS = {"compounds", "concentrations", "species"}
+
+
+def _is_logical_filter_request(value):
+    return isinstance(value, Mapping) and any(key in value for key in ("all", "any"))
+
+
+def _logical_filter_values(value):
+    """
+    Convert a scalar or sequence into a list of requested filter values.
+    Strings remain scalar values.
+    """
+    if isinstance(value, (list, tuple, set, np.ndarray, pd.Index)) and not isinstance(value, str):
+        return list(value)
+    return [value]
+
+
+def _logical_filter_clauses(value, default_logic):
+    """
+    Normalize implicit list behavior and explicit {'all': ...} / {'any': ...}
+    requests into clauses that can be evaluated by one matcher.
+    """
+    if _is_logical_filter_request(value):
+        unknown = set(value) - {"all", "any"}
+        if unknown:
+            unknown_text = ", ".join(str(key) for key in sorted(unknown))
+            raise ValueError(
+                "Filter logical requests only support 'all' and 'any' keys; "
+                f"got: {unknown_text}."
+            )
+
+        clauses = []
+        for logic in ("all", "any"):
+            if logic not in value:
+                continue
+            values = _logical_filter_values(value[logic])
+            if not values:
+                raise ValueError(f"Filter logical request '{logic}' must include at least one value.")
+            clauses.append((logic, values))
+
+        if not clauses:
+            raise ValueError("Filter logical request must include 'all' or 'any'.")
+        return clauses
+
+    values = _logical_filter_values(value)
+    if not values:
+        raise ValueError("Filter request must include at least one value.")
+    return [(default_logic, values)]
+
+
+def _match_logical_filter_request(value, match_one, default_logic):
+    for logic, values in _logical_filter_clauses(value, default_logic):
+        matches = [match_one(requested) for requested in values]
+        if logic == "all" and not all(matches):
+            return False
+        if logic == "any" and not any(matches):
+            return False
+    return True
+
+
+def _format_filter_value(value):
+    if isinstance(value, (list, tuple, set, np.ndarray, pd.Index)) and not isinstance(value, str):
+        return "[" + ", ".join(str(v) for v in list(value)) + "]"
+    return str(value)
+
+
+def _format_filter_criterion(key, value):
+    if _is_logical_filter_request(value):
+        pieces = []
+        for logic in ("all", "any"):
+            if logic in value:
+                pieces.append(f"{key} {logic} {_format_filter_value(value[logic])}")
+        return " and ".join(pieces)
+    if key in _COLLECTION_FILTER_KEYS and isinstance(value, (list, tuple, set, np.ndarray, pd.Index)) and not isinstance(value, str):
+        return f"{key} all {_format_filter_value(value)}"
+    return f"{key}: {_format_filter_value(value)}"
+
+
+def _filter_uses_collection_logic(filter_keys):
+    return any(
+        key in _COLLECTION_FILTER_KEYS
+        and (
+            _is_logical_filter_request(value)
+            or (
+                isinstance(value, (list, tuple, set, np.ndarray, pd.Index))
+                and not isinstance(value, str)
+            )
+        )
+        for key, value in filter_keys.items()
+    )
 
 
 def _best_object_time(obj):
@@ -440,17 +539,13 @@ def filter(object_list, filter_keys, options=None):
     --------
     >>> ar_cvs = e.filter(cvs, {"gas": "Ar"})
     """
-    options = FilterOptions.from_options(options).to_legacy_dict()
+    options = FilterOptions.from_options(options).to_options_dict()
 
     if not isinstance(filter_keys, dict):
         print("\033[91mError: filter_keys must be a dictionary where keys are attributes and values are criteria.\033[0m")
         return object_list
 
     opt_dict = get_sort_group_dict()
-    opt_dict['composition'] = lambda obj: [
-        f"{conc} {comp}" for conc, comp in zip(obj.concentrations, obj.compounds)
-    ]
-    opt_dict['species'] = opt_dict['composition']
 
     valid_keys = list(opt_dict.keys()) + ['replicate']
     if not validate_keys(filter_keys.keys(), valid_keys, "filter"):
@@ -458,9 +553,6 @@ def filter(object_list, filter_keys, options=None):
 
     if options.get('logic') is None:
         options['logic'] = 'AND' if options.get('mode', 'include') == 'include' else 'OR'
-
-    def _is_multi_value_request(value):
-        return isinstance(value, (list, tuple, set, np.ndarray, pd.Index))
 
     def _is_iterable_filter_value(value):
         return isinstance(value, (list, tuple, set, np.ndarray, pd.Index))
@@ -573,48 +665,37 @@ def filter(object_list, filter_keys, options=None):
             return False
 
         if key == "concentrations":
-            requested_values = (
-                list(requested_value)
-                if _is_iterable_filter_value(requested_value)
-                   and not isinstance(requested_value, str)
-                else [requested_value]
+            stat_values = stat_value if isinstance(stat_value, list) else [stat_value]
+            stat_concs = []
+            for value in stat_values:
+                parsed = _parse_filter_concentration(value)
+                if parsed is not None:
+                    stat_concs.append(parsed)
+
+            def concentration_matches_one(requested):
+                requested_conc = _parse_filter_concentration(requested)
+                if requested_conc is None:
+                    return False
+                return any(np.isclose(stat_conc, requested_conc) for stat_conc in stat_concs)
+
+            return _match_logical_filter_request(
+                requested_value,
+                concentration_matches_one,
+                default_logic="all",
             )
-            requested_concs = [
-                parsed for parsed in (_parse_filter_concentration(v) for v in requested_values)
-                if parsed is not None
-            ]
-            if requested_concs:
-                stat_values = stat_value if isinstance(stat_value, list) else [stat_value]
-                stat_concs = []
-                for value in stat_values:
-                    parsed = _parse_filter_concentration(value)
-                    if parsed is not None:
-                        stat_concs.append(parsed)
-                return any(
-                    np.isclose(stat_conc, req_conc)
-                    for stat_conc in stat_concs
-                    for req_conc in requested_concs
-                )
 
         if key == "species":
-            requested_values = (
-                list(requested_value)
-                if _is_iterable_filter_value(requested_value)
-                   and not isinstance(requested_value, str)
-                else [requested_value]
-            )
-            requested_species = [
-                parsed for parsed in (_parse_species_filter_value(v) for v in requested_values)
-                if parsed is not None
-            ]
             stat_values = stat_value if isinstance(stat_value, list) else [stat_value]
             stat_species = [
                 parsed for parsed in (_parse_species_stat_value(v) for v in stat_values)
                 if parsed is not None
             ]
 
-            for stat in stat_species:
-                for requested in requested_species:
+            def species_matches_one(requested_value):
+                requested = _parse_species_filter_value(requested_value)
+                if requested is None:
+                    return False
+                for stat in stat_species:
                     compound_matches = stat["compound"] == requested["compound"]
                     if not compound_matches:
                         continue
@@ -625,12 +706,27 @@ def filter(object_list, filter_keys, options=None):
                         requested["concentration"],
                     ):
                         return True
-            return False
+                return False
+
+            return _match_logical_filter_request(
+                requested_value,
+                species_matches_one,
+                default_logic="all",
+            )
 
         requested_norm = _normalize_filter_value(requested_value)
 
         if isinstance(stat_value, list):
             stat_norm = _normalize_filter_value(stat_value)
+            if key in _COLLECTION_FILTER_KEYS:
+                def collection_matches_one(requested):
+                    return _normalize_filter_value(requested) in stat_norm
+
+                return _match_logical_filter_request(
+                    requested_value,
+                    collection_matches_one,
+                    default_logic="all",
+                )
             if isinstance(requested_norm, list):
                 return all(v in stat_norm for v in requested_norm)
             return requested_norm in stat_norm
@@ -706,10 +802,16 @@ def filter(object_list, filter_keys, options=None):
         matched_objects = len(flat_output)
 
         search_criteria = f" {options.get('logic', 'AND')} ".join(
-            f"({key}: {value})" for key, value in filter_keys.items()
+            f"({_format_filter_criterion(key, value)})" for key, value in filter_keys.items()
         )
 
         print(f"Filtering Criteria: {search_criteria}")
+        if _filter_uses_collection_logic(filter_keys):
+            print(
+                "Membership filters (compounds, concentrations, species) "
+                "require all listed values by default. Use {'any': [...]} for OR "
+                "matching or {'all': [...]} to be explicit."
+            )
         print(f"Matched Objects: {matched_objects} / {total_objects}")
 
         if not filtered_list:
@@ -752,7 +854,7 @@ def sort(object_list, sort_keys, options=None):
     --------
     >>> sorted_cvs = e.sort(cvs, ["gas", "timestamp"])
     """
-    options = SortGroupOptions.from_options(options).to_legacy_dict()
+    options = SortGroupOptions.from_options(options).to_options_dict()
 
     if isinstance(sort_keys, str):
         sort_keys = [sort_keys]
@@ -811,7 +913,7 @@ def group(object_list, group_keys, options=None):
     --------
     >>> groups = e.group(cvs, ["gas", "compounds"])
     """
-    options = SortGroupOptions.from_options(options).to_legacy_dict()
+    options = SortGroupOptions.from_options(options).to_options_dict()
 
     opt_dict = get_sort_group_dict()
 
@@ -933,7 +1035,7 @@ def group_summary(object_list, group_keys=None, options=None):
     --------
     >>> summary = e.group_summary(groups, group_keys=["gas"])
     """
-    options = GroupSummaryOptions.from_options(options).to_legacy_dict()
+    options = GroupSummaryOptions.from_options(options).to_options_dict()
 
     if object_list is None:
         object_list = []
@@ -1081,7 +1183,7 @@ def sort_and_group(object_list, sort_keys=None, group_keys=None, options=None):
     --------
     >>> groups = e.sort_and_group(cvs, sort_keys=["timestamp"], group_keys=["gas"])
     """
-    options = SortGroupOptions.from_options(options).to_legacy_dict()
+    options = SortGroupOptions.from_options(options).to_options_dict()
 
     if sort_keys is None and group_keys is None:
         print("Provide at least one sort key or group key!")

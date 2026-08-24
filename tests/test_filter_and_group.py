@@ -117,6 +117,22 @@ def test_filter_species_accepts_concentration_plus_compound_strings(
     assert compound_only == [fc_100, fc_10]
 
 
+def test_filter_compounds_does_not_match_zero_concentration_species(
+    ecat_module,
+    cv_factory,
+):
+    hco3_zero = cv_factory(name="50mVs_sample_CO2_MeCN_0mM_HCO3_run01")
+    hco3_present = cv_factory(name="50mVs_sample_CO2_MeCN_1mM_HCO3_run01")
+
+    filtered = ecat_module.filter(
+        [hco3_zero, hco3_present],
+        {"compounds": "HCO3"},
+        {"print": False},
+    )
+
+    assert filtered == [hco3_present]
+
+
 def test_filter_species_accepts_l_unit_compound_strings(
     ecat_module,
     cv_factory,
@@ -161,6 +177,129 @@ def test_filter_species_accepts_mole_fraction_x_compound_strings(
     assert d2o_08.concentrations == ["0.8 x"]
     assert spaced == [d2o_08]
     assert compact == [d2o_08]
+
+
+def test_filter_species_list_defaults_to_all_required_species(ecat_module, cv_factory):
+    full = cv_factory(name="100mVs_MeCN_1mMCo_3mMFc_2.8MH2O_1mMZn(cyclen)")
+    missing_zinc = cv_factory(name="100mVs_MeCN_1mMCo_3mMFc_2.8MH2O")
+    fc_only = cv_factory(name="100mVs_MeCN_3mMFc")
+
+    filtered = ecat_module.filter(
+        [full, missing_zinc, fc_only],
+        {"species": ["1mMCo", "3mMFc", "2.8MH2O", "1mMZn(cyclen)"]},
+        {"print": False},
+    )
+
+    assert filtered == [full]
+
+
+def test_filter_species_any_matches_any_requested_species(ecat_module, cv_factory):
+    fc = cv_factory(name="100mVs_MeCN_3mMFc")
+    zinc = cv_factory(name="100mVs_MeCN_1mMZn(cyclen)")
+    phoh = cv_factory(name="100mVs_MeCN_100mMPhOH")
+
+    filtered = ecat_module.filter(
+        [fc, zinc, phoh],
+        {"species": {"any": ["3mMFc", "1mMZn(cyclen)"]}},
+        {"print": False},
+    )
+
+    assert filtered == [fc, zinc]
+
+
+def test_filter_compounds_and_concentrations_lists_default_to_all(ecat_module, cv_factory):
+    full = cv_factory(name="100mVs_MeCN_3mMFc_2.8MH2O")
+    missing_h2o = cv_factory(name="100mVs_MeCN_3mMFc")
+    missing_fc = cv_factory(name="100mVs_MeCN_2.8MH2O")
+
+    by_compounds = ecat_module.filter(
+        [full, missing_h2o, missing_fc],
+        {"compounds": ["Fc", "H2O"]},
+        {"print": False},
+    )
+    by_concentrations = ecat_module.filter(
+        [full, missing_h2o, missing_fc],
+        {"concentrations": ["3 mM", "2.8 M"]},
+        {"print": False},
+    )
+
+    assert by_compounds == [full]
+    assert by_concentrations == [full]
+
+
+def test_filter_collection_any_dict_overrides_default_all(ecat_module, cv_factory):
+    fc = cv_factory(name="100mVs_MeCN_3mMFc")
+    h2o = cv_factory(name="100mVs_MeCN_2.8MH2O")
+    neither = cv_factory(name="100mVs_MeCN_100mMPhOH")
+
+    by_compounds = ecat_module.filter(
+        [fc, h2o, neither],
+        {"compounds": {"any": ["Fc", "H2O"]}},
+        {"print": False},
+    )
+    by_concentrations = ecat_module.filter(
+        [fc, h2o, neither],
+        {"concentrations": {"any": ["3 mM", "2.8 M"]}},
+        {"print": False},
+    )
+
+    assert by_compounds == [fc, h2o]
+    assert by_concentrations == [fc, h2o]
+
+
+def test_filter_scalar_lists_still_default_to_any(ecat_module, cv_factory):
+    ar = cv_factory(name="100mVs_MeCN_Ar_3mMFc")
+    co2 = cv_factory(name="100mVs_MeCN_CO2_3mMFc")
+    n2 = cv_factory(name="100mVs_MeCN_N2_3mMFc")
+
+    filtered = ecat_module.filter(
+        [ar, co2, n2],
+        {"gas": ["Ar", "CO2"]},
+        {"print": False},
+    )
+
+    assert filtered == [ar, co2]
+
+
+def test_filter_print_shows_collection_logic_guidance(ecat_module, cv_factory, capsys):
+    obj = cv_factory(name="100mVs_MeCN_3mMFc_1mMCo")
+
+    ecat_module.filter(
+        [obj],
+        {"species": {"all": ["3mMFc", "1mMCo"]}},
+        {"print": True, "pretty print": False},
+    )
+
+    out = capsys.readouterr().out
+    assert "species all" in out
+    assert "Use {'any': [...]}" in out
+
+
+def test_filter_rejects_removed_composition_key(ecat_module, cv_factory, capsys):
+    obj = cv_factory(name="100mVs_MeCN_3mMFc")
+
+    result = ecat_module.filter(
+        [obj],
+        {"composition": "3mMFc"},
+        {"print": False},
+    )
+
+    out = capsys.readouterr().out
+    assert result == [obj]
+    assert "Invalid filter key" in out
+    assert "species" in out
+    assert "composition" not in ecat_module.get_available_filter_values([obj])
+
+
+def test_available_filter_values_and_group_use_species_key(ecat_module, cv_factory):
+    fc = cv_factory(name="100mVs_MeCN_3mMFc")
+    h2o = cv_factory(name="100mVs_MeCN_2.8MH2O")
+
+    available = ecat_module.get_available_filter_values([fc, h2o], keys=["species"])
+    groups = ecat_module.group([fc, h2o], "species", {"print": False})
+
+    assert available == {"species": ["2.8 M H2O", "3 mM Fc"]}
+    assert [[obj.name for obj in group] for group in groups] == [[fc.name], [h2o.name]]
 
 
 def test_group_concentrations_accepts_mole_fraction_x(ecat_module, cv_factory):
@@ -367,6 +506,33 @@ def test_show_objects_conditions_include_requested_ir_comp_columns(
     assert "IR Uncomp Resistance: 20 ohm" in conditions_line
 
 
+def test_show_objects_folder_line_formats_display_path(
+    ecat_module,
+    cv_factory,
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    project = tmp_path / "project"
+    data_dir = project / "data"
+    data_dir.mkdir(parents=True)
+    monkeypatch.chdir(project)
+
+    first = cv_factory(name="first_100mVs")
+    second = cv_factory(name="second_100mVs")
+    for obj in (first, second):
+        obj.folderpath = str(data_dir)
+
+    ecat_module.show_objects(
+        [first, second],
+        {"pretty print": False},
+    )
+
+    printed = capsys.readouterr().out
+    assert "[Folder] `data`" in printed
+    assert str(tmp_path) not in printed
+
+
 def test_group_summary_groups_concentrations_like_group(ecat_module, cv_factory):
     low_50 = cv_factory(name="50mVs_sample_CO2_MeCN_10mM_Fc_run01")
     low_100 = cv_factory(name="100mVs_sample_CO2_MeCN_10mM_Fc_run02")
@@ -569,3 +735,26 @@ def test_cv_txt_stats_supports_potential_rounding_option(ecat_module, cv_factory
 
     exactish_display_stats = obj.txt_stats({"potential rounding": None, "sig figs": 6})
     assert exactish_display_stats["scan window"] == "[-2.19818, -1.49994]"
+
+
+def test_show_objects_applies_sig_figs_to_scaled_scan_rates(ecat_module, cv_factory):
+    objects = [
+        cv_factory(name="100mVs_scan_rate_rounding_run01"),
+        cv_factory(name="100mVs_scan_rate_rounding_run02"),
+    ]
+    objects[0].scan_rate = 0.0249997
+    objects[1].scan_rate = 0.499999
+
+    table = ecat_module.show(
+        objects,
+        {
+            "pretty print": False,
+            "print conditions": False,
+            "return": True,
+            "sig figs": 3,
+        },
+    )
+
+    assert table["Scan Rate"].tolist() == ["25 mV/s", "500 mV/s"]
+    assert objects[0].scan_rate == pytest.approx(0.0249997)
+    assert objects[1].scan_rate == pytest.approx(0.499999)

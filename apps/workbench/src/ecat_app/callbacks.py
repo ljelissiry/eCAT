@@ -8,6 +8,7 @@ import ecat as e
 from dash import html
 
 from .adapters import (
+    SIMULATION_INSTALL_MESSAGE,
     default_included_row_ids,
     filter_and_group,
     load_local_path,
@@ -21,6 +22,7 @@ from .adapters import (
     render_browser_cv_data_program_plot,
     run_multi_cv_analysis,
     run_single_cv_analysis,
+    simulation_backend_available,
     summarize_objects,
     validate_simulation_mechanism,
 )
@@ -99,18 +101,18 @@ def _state_from_load_result(result, registry=default_registry) -> dict[str, obje
     }
 
 
-def handle_local_path_load(path, recursive=False, registry=default_registry) -> dict[str, object]:
+def handle_local_path_load(path, recursive=False, registry=default_registry, import_options=None) -> dict[str, object]:
     if not path:
         return empty_state()
-    return _state_from_load_result(load_local_path(path, recursive=recursive), registry)
+    return _state_from_load_result(load_local_path(path, recursive=recursive, import_options=import_options), registry)
 
 
-def handle_upload_load(filenames, contents, registry=default_registry) -> dict[str, object]:
+def handle_upload_load(filenames, contents, registry=default_registry, import_options=None) -> dict[str, object]:
     uploads = [
         {"filename": filename, "contents": content}
         for filename, content in zip(filenames or [], contents or [])
     ]
-    return _state_from_load_result(load_uploaded_files(uploads), registry)
+    return _state_from_load_result(load_uploaded_files(uploads, import_options=import_options), registry)
 
 
 def handle_default_load(repo_root=None, registry=default_registry) -> dict[str, object]:
@@ -118,17 +120,17 @@ def handle_default_load(repo_root=None, registry=default_registry) -> dict[str, 
     return _state_from_load_result(reload_workflow(workflow), registry)
 
 
-def handle_example_folder_load(example_key, repo_root=None, registry=default_registry) -> dict[str, object]:
+def handle_example_folder_load(example_key, repo_root=None, registry=default_registry, import_options=None) -> dict[str, object]:
     path = example_folder_path(example_key, repo_root)
     if path is None:
         return empty_state()
-    return handle_local_path_load(str(path), recursive=True, registry=registry)
+    return handle_local_path_load(str(path), recursive=True, registry=registry, import_options=import_options)
 
 
-def handle_apply_reference(workflow_data, reference_settings, registry=default_registry) -> dict[str, object]:
+def handle_apply_reference(workflow_data, reference_settings, registry=default_registry, import_options=None) -> dict[str, object]:
     workflow = AppWorkflow.from_dict(workflow_data)
     workflow.reference_settings = dict(reference_settings or {})
-    workflow.import_options = build_reference_options(workflow.reference_settings)
+    workflow.import_options = dict(import_options or build_reference_options(workflow.reference_settings))
     return _state_from_load_result(reload_workflow(workflow), registry)
 
 
@@ -702,7 +704,6 @@ def multi_cv_options_from_controls(
     segment=None,
     segments=None,
     guess_potential=None,
-    sevcik_mode="homogeneous",
     x_axis="auto",
     fit_model="linear",
     toggles=None,
@@ -734,8 +735,6 @@ def multi_cv_options_from_controls(
         options["segment"] = int(segment)
     if guess_potential not in (None, ""):
         options["guess potential"] = float(guess_potential)
-    if analysis == "sevcik_analysis":
-        options["scan dependence"] = 1.0 if str(sevcik_mode or "homogeneous") == "heterogeneous" else 0.5
     if analysis not in {"sevcik_analysis", "fowa", "tafel_analysis"} and x_axis and x_axis != "auto":
         options["x axis"] = x_axis
     if analysis not in {"sevcik_analysis", "fowa", "tafel_analysis"} and fit_model:
@@ -827,7 +826,7 @@ def multi_analysis_option_state(analysis):
     )
 
 
-def multi_analysis_equation_content(analysis, sevcik_mode="homogeneous"):
+def multi_analysis_equation_content(analysis):
     analysis = str(analysis or "none")
     if analysis == "none":
         return ""
@@ -840,7 +839,7 @@ def multi_analysis_equation_content(analysis, sevcik_mode="homogeneous"):
             html.Span(["i", html.Sub("p"), " = m x + b"]),
             html.Span("Fit selected peak current against the chosen x axis."),
         ],
-        "sevcik_analysis": _sevcik_equation_lines(sevcik_mode),
+        "sevcik_analysis": _sevcik_equation_lines(),
         "trumpet_analysis": [
             html.Span(["E", html.Sub("p"), " = E", html.Sup("0"), " ± (R T / n F) ln(k", html.Sub("s"), " / v)"]),
             html.Span("Use paired oxidative/reductive peak positions across scan rates."),
@@ -865,13 +864,7 @@ def multi_analysis_equation_content(analysis, sevcik_mode="homogeneous"):
     )
 
 
-def _sevcik_equation_lines(sevcik_mode="homogeneous"):
-    heterogeneous = str(sevcik_mode or "homogeneous") == "heterogeneous"
-    if heterogeneous:
-        return [
-            html.Span(["i", html.Sub("p"), " = mν + b"]),
-            html.Span(["Heterogeneous mode uses scan-rate dependence ", html.Span(["ν", html.Sup("1")]), "."]),
-        ]
+def _sevcik_equation_lines():
     return [
         html.Span(["i", html.Sub("p"), " = 0.4463 n F A C (n F ν D / R T)", html.Sup("1/2")]),
         html.Span(["D from slope of ", html.Span(["i", html.Sub("p")]), " versus ", html.Span(["ν", html.Sup("1/2")]), "."]),
@@ -1239,6 +1232,7 @@ def plot_options_from_controls(
     title_mode="auto",
     convention="IUPAC",
     custom_title=None,
+    invert_y_axis_values=None,
     display_values=None,
     gradient_values=None,
     colorbar_values=None,
@@ -1297,6 +1291,8 @@ def plot_options_from_controls(
         "_format": save_format or "svg",
         "_dpi": int(dpi or 300),
     }
+    if "invert_y_axis" in (invert_y_axis_values or []):
+        options["invert y axis"] = True
     options["color mode"] = "auto" if allow_gradients else "discrete"
     axis_label_mode = str(axis_label_mode or "auto").lower()
     if axis_label_mode == "manual":
@@ -2171,16 +2167,32 @@ def build_model_fit_state(
         model_options["cell_parameters"] = list(cell_parameter_rows)
     if fit_cv_index not in (None, ""):
         model_options["fit_cv_index"] = int(float(fit_cv_index))
+    resolved_fit_mode = str(fit_mode or "single")
+    if resolved_fit_mode != "single":
+        model_options.update(
+            {
+                "fit_requested": False,
+                "fit_mode": resolved_fit_mode,
+                "fit_result": {
+                    "status": "blocked",
+                    "message": (
+                        "Multiple-CV fitting is not available in the app yet. "
+                        "Use the group-fitting API or notebook workflow."
+                    ),
+                },
+            }
+        )
+        return model_options
     model_options.update(
         {
             "fit_requested": True,
-            "fit_mode": fit_mode or "single",
+            "fit_mode": resolved_fit_mode,
             "fit_result": {
-                "status": "placeholder",
+                "status": "pending",
                 "message": (
-                    f"Fit request captured. {compatibility_message} The simulator/fitter engine is not wired yet."
+                    f"Fit request ready. {compatibility_message}"
                     if compatibility_message
-                    else "Fit request captured. The simulator/fitter engine is not wired yet."
+                    else "Fit request ready."
                 ),
             },
         }
@@ -2432,6 +2444,8 @@ def model_fit_gate(model_options):
 
 
 def model_simulate_gate(model_options):
+    if not simulation_backend_available():
+        return (True, SIMULATION_INSTALL_MESSAGE)
     valid = bool((model_options or {}).get("mechanism_valid"))
     message = "" if valid else "Choose a valid mechanism before simulating."
     return (not valid, message)
@@ -2453,7 +2467,9 @@ def register_callbacks(app):
         from dash import Input, Output, State, ctx, html
     except ModuleNotFoundError as exc:
         raise RuntimeError(
-            "The eCAT app requires Dash. Reinstall or upgrade eCAT with `pip install -e .`."
+            "The eCAT app requires optional app dependencies. Install them with "
+            '`python -m pip install "ecat[app]"`. For a source checkout, use '
+            '`python -m pip install -e ".[app]"`.'
         ) from exc
 
     @app.callback(
@@ -2554,7 +2570,10 @@ def register_callbacks(app):
             }
             state = handle_apply_reference(workflow_data, settings)
         else:
-            state = handle_local_path_load(path, recursive="recursive" in (recursive_values or []))
+            state = handle_local_path_load(
+                path,
+                recursive="recursive" in (recursive_values or []),
+            )
         warnings = [html.Div(warning) for warning in state["warnings"]]
         condition_values = state.get("conditions", [])
         conditions = []
@@ -2646,6 +2665,7 @@ def register_callbacks(app):
         Input("ecat-plot-legend", "value"),
         Input("ecat-plot-title-mode", "value"),
         Input("ecat-plot-convention", "value"),
+        Input("ecat-plot-invert-y-axis", "value"),
         Input("ecat-plot-custom-title", "value"),
         Input("ecat-plot-style", "value"),
         Input("ecat-plot-axis-label-mode", "value"),
@@ -2685,6 +2705,7 @@ def register_callbacks(app):
         legend,
         title_values,
         convention,
+        invert_y_axis_values,
         custom_title,
         plot_style,
         axis_label_mode,
@@ -2725,6 +2746,7 @@ def register_callbacks(app):
             title_values,
             convention,
             custom_title,
+            invert_y_axis_values,
             display_values,
             gradient_values,
             colorbar_values,
@@ -3824,7 +3846,6 @@ def register_callbacks(app):
         State("ecat-multi-segment", "value"),
         State("ecat-multi-segments", "value"),
         State("ecat-multi-guess-potential", "value"),
-        State("ecat-sevcik-mode", "value"),
         State("ecat-multi-x-axis", "value"),
         State("ecat-multi-fit-model", "value"),
         State("ecat-multi-toggles", "value"),
@@ -3878,7 +3899,6 @@ def register_callbacks(app):
         segment,
         segments,
         guess_potential,
-        sevcik_mode,
         x_axis,
         fit_model,
         toggles,
@@ -3932,7 +3952,6 @@ def register_callbacks(app):
             segment,
             segments,
             guess_potential,
-            sevcik_mode,
             x_axis,
             fit_model,
             toggles,
@@ -4016,10 +4035,9 @@ def register_callbacks(app):
     @app.callback(
         Output("ecat-multi-analysis-equations", "children"),
         Input("ecat-multi-analysis", "value"),
-        Input("ecat-sevcik-mode", "value"),
     )
-    def multi_analysis_equations_callback(analysis, sevcik_mode):
-        return multi_analysis_equation_content(analysis, sevcik_mode)
+    def multi_analysis_equations_callback(analysis):
+        return multi_analysis_equation_content(analysis)
 
     @app.callback(
         Output("ecat-multi-analysis-options", "style"),

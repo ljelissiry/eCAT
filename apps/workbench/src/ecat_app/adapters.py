@@ -7,6 +7,7 @@ import contextlib
 from copy import deepcopy
 from dataclasses import dataclass, field
 import io
+import importlib.util
 from pathlib import Path
 import re
 import uuid
@@ -18,6 +19,16 @@ import ecat as e
 
 from .figures import figure_to_data_uri
 from .workflow import AppWorkflow
+
+
+SIMULATION_INSTALL_MESSAGE = (
+    "Model simulation requires ElectroKitty. Install simulation support with "
+    '`python -m pip install "ecat[simulation]"`.'
+)
+
+
+def simulation_backend_available() -> bool:
+    return importlib.util.find_spec("electrokitty") is not None
 
 
 @dataclass
@@ -384,7 +395,10 @@ def run_browser_fit_cv(
     if str(fit_mode or "single").strip().lower() != "single":
         return {
             "status": "blocked",
-            "message": "Multiple-CV fitting is not wired yet.",
+            "message": (
+                "Multiple-CV fitting is not available in the app yet. "
+                "Use the group-fitting API or notebook workflow."
+            ),
             "summary": {},
             "plot": None,
             "parameter_rows": list(parameter_rows or []),
@@ -740,7 +754,7 @@ def _load_one_file(path: Path, import_options: dict | None = None) -> tuple[obje
 def _status_from_stdout(output: str) -> str:
     for line in output.splitlines():
         stripped = line.strip()
-        if ".txt file" in stripped and "found" in stripped:
+        if "supported text file" in stripped and "found" in stripped:
             return stripped
         if stripped.startswith("No files were found") or stripped.startswith("Found "):
             return stripped
@@ -766,7 +780,7 @@ def load_local_path(path, recursive: bool = False, import_options: dict | None =
                     {
                         "folder path": str(path),
                         "recursive search": recursive,
-                        "sort keys": ["timestamp"],
+                        "sort keys": ["subfolder", "timestamp"],
                         **import_options,
                     }
                 )

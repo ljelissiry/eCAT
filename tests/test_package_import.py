@@ -6,7 +6,7 @@ from pathlib import Path
 def test_package_import_exposes_public_api():
     import ecat
 
-    assert ecat.__version__ == "0.1.0b3"
+    assert re.fullmatch(r"\d+\.\d+\.\d+(?:[a-z]+\d+)?", ecat.__version__)
     expected_public = {
         "echem",
         "cv",
@@ -14,7 +14,6 @@ def test_package_import_exposes_public_api():
         "cp",
         "dpv",
         "get_data",
-        "get_CVs",
         "get_data_from_excel",
         "multiplot",
         "multimultiplot",
@@ -95,7 +94,6 @@ def test_public_options_defaults_are_not_mutable_dicts():
 
     public_callables = [
         ecat.get_data,
-        ecat.get_CVs,
         ecat.get_data_from_excel,
         ecat.save_data,
         ecat.multiplot,
@@ -172,6 +170,9 @@ def test_package_metadata_version_matches_import_version():
 
     pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
     text = pyproject.read_text(encoding="utf-8")
-    version = re.search(r'^version = "([^"]+)"$', text, flags=re.MULTILINE).group(1)
+    project_block = text.split("[project]", 1)[1].split("\n[", 1)[0]
 
-    assert version == ecat.__version__
+    assert not re.search(r"(?m)^version\s*=", project_block)
+    assert re.search(r'(?m)^dynamic\s*=\s*\["version"\]$', project_block)
+    assert 'version = { attr = "ecat._version.__version__" }' in text
+    assert re.fullmatch(r"\d+\.\d+\.\d+(?:[a-z]+\d+)?", ecat.__version__)

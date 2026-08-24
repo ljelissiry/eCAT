@@ -183,6 +183,73 @@ def test_dpv_peak_potential_finds_cathodic_peak(ecat_module, blank_echem_factory
     assert obj.x().iloc[peak_index] == pytest.approx(-0.84, abs=0.003)
 
 
+def test_dpv_peak_potential_accepts_guess_potential_shorthand(ecat_module, blank_echem_factory):
+    obj = _synthetic_dpv(
+        ecat_module,
+        blank_echem_factory,
+        centers=(-0.84,),
+        amplitudes=(-2.0e-6,),
+        sigmas=(0.02,),
+    )
+
+    peak_potential, peak_index = obj.peak_potential(
+        -0.83,
+        {"plot": False, "print": False},
+    )
+
+    assert peak_potential == pytest.approx(-0.84, abs=0.003)
+    assert obj.x().iloc[peak_index] == pytest.approx(-0.84, abs=0.003)
+
+
+def test_dpv_peak_potential_prints_tidy_table(
+    ecat_module,
+    blank_echem_factory,
+    capsys,
+):
+    obj = _synthetic_dpv(
+        ecat_module,
+        blank_echem_factory,
+        centers=(-0.84,),
+        amplitudes=(-2.0e-6,),
+        sigmas=(0.02,),
+    )
+
+    obj.peak_potential(
+        {"guess potential": -0.83, "plot": False, "print": True, "pretty print": False}
+    )
+
+    printed = capsys.readouterr().out
+    assert "Peak Potential:" in printed
+    assert "Metric" in printed
+    assert "Value" in printed
+    assert "Ep" in printed
+    assert "Ep:" not in printed
+
+
+def test_dpv_peak_potential_exact_potential_does_not_plot_peak_marker(
+    ecat_module,
+    blank_echem_factory,
+):
+    obj = _synthetic_dpv(
+        ecat_module,
+        blank_echem_factory,
+        centers=(-0.84,),
+        amplitudes=(-2.0e-6,),
+        sigmas=(0.02,),
+    )
+
+    peak_potential, peak_index = obj.peak_potential(
+        {"exact potential": -0.8, "plot": True, "print": False}
+    )
+
+    ax = plt.gca()
+
+    assert peak_potential == pytest.approx(-0.8, abs=0.003)
+    assert obj.x().iloc[peak_index] == pytest.approx(-0.8, abs=0.003)
+    assert len(ax.lines) == 1
+    assert len(ax.collections) == 0
+
+
 def test_dpv_fit_overlapping_peaks_resolves_two_close_cathodic_peaks(
     ecat_module,
     blank_echem_factory,

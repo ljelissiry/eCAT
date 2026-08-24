@@ -62,6 +62,11 @@ def _default_normalized_axis(cv_obj, axis):
     return None
 
 
+def _rich_table_output_enabled(options):
+    options = {} if options is None else options
+    return bool(options.get("pretty print", True)) and display is not None and _can_rich_table_display()
+
+
 def _resolve_normalization_temperature(cv_obj, options):
     value = options.get("temperature", options.get("t"))
     if value is None:
@@ -367,7 +372,7 @@ def _normalization_parameter_display_value(value, sig_figs):
     if isinstance(value, (int, float, np.integer, np.floating)):
         if not np.isfinite(float(value)):
             return str(value)
-        return f"{round_sigfigs(float(value), sig_figs):g}"
+        return format_sigfigs(float(value), sig_figs)
     return str(value)
 
 
@@ -418,10 +423,6 @@ def _cv_normalization_parameter_table(normalized_cvs, options):
 
 
 def _display_cv_normalization_parameter_table(table, options):
-    if not options.get("pretty print", True) or display is None:
-        print(table.to_string())
-        return table
-
     display_table = table.copy()
     keys = table.attrs.get("parameter_keys", list(display_table.index))
     display_table.index = [
@@ -429,26 +430,19 @@ def _display_cv_normalization_parameter_table(table, options):
         for key in keys
     ]
     display_table.index.name = "Parameter"
-    styled = (
-        display_table.style
-        .format(escape=None)
-        .format_index(escape=None, axis=0)
-        .set_properties(**{
-            "text-align": "left",
-            "white-space": "pre-wrap",
-            "vertical-align": "top",
-        })
-        .set_table_styles([
-            {"selector": "th", "props": [("text-align", "left")]},
-            {"selector": "td", "props": [("text-align", "left")]},
-        ])
+    return _display_table(
+        table,
+        options,
+        title="CV Normalization Parameters",
+        rich_table=display_table,
+        escape=None,
+        format_index=True,
     )
-    display(styled)
-    return table
 
 
 def _print_cv_normalization_summary(normalized_cvs, options):
-    print("CV normalization summary:")
+    if not _rich_table_output_enabled(options):
+        print("CV normalization summary:")
     axes = {
         "x": any((getattr(cv_obj, "normalization_axes", {}) or {}).get("x") for cv_obj in normalized_cvs),
         "y": any((getattr(cv_obj, "normalization_axes", {}) or {}).get("y") for cv_obj in normalized_cvs),
@@ -587,7 +581,7 @@ def normalize(cvs, options=None):
     >>> normalized = e.normalize(cvs, {"E0": 0.0, "D": 1e-5, "C": 10, "C unit": "mM"})
     """
     typed_options = NormalizeOptions.from_options(options)
-    options = _legacy_normalize_option_keys(typed_options.to_legacy_dict())
+    options = _normalize_option_mapping(typed_options.to_options_dict())
     if isinstance(cvs, cv):
         pass
     elif isinstance(cvs, (list, tuple)):
@@ -605,6 +599,56 @@ def normalize(cvs, options=None):
     if print_series:
         _print_cv_normalization_summary(normalized, options)
     return normalized[0] if single_input else normalized
+
+
+def _coerce_trim_call_options(window_or_options=None, options=None, kwargs=None):
+    if isinstance(window_or_options, TrimOptions):
+        trim_options = window_or_options.to_options_dict()
+    elif isinstance(window_or_options, dict):
+        trim_options = dict(window_or_options)
+    elif window_or_options is None:
+        trim_options = {}
+    else:
+        trim_options = {"potential window": window_or_options}
+
+    if options is not None:
+        if isinstance(options, TrimOptions):
+            trim_options.update(options.to_options_dict())
+        elif isinstance(options, dict):
+            trim_options.update(options)
+        else:
+            raise TypeError("trim options must be a dictionary or TrimOptions object.")
+    trim_options.update(kwargs or {})
+    return TrimOptions.from_options(trim_options).to_options_dict()
+
+
+def trim(cvs, window_or_options=None, options=None, **kwargs):
+    """Return trimmed CV copy/copies while preserving collection shape.
+
+    Parameters
+    ----------
+    cvs : cv or sequence/grouped sequence of cv
+        CV object, list of CVs, or nested CV groups.
+    window_or_options : sequence or dict or TrimOptions
+        Two-value potential window, or trim options. See ``e.describe_options("trim")``.
+    options : dict or TrimOptions, optional
+        Additional trim options merged with ``window_or_options``.
+
+    Returns
+    -------
+    cv or list
+        Trimmed copy or copies; input objects are not mutated unless ``inplace=True``.
+    """
+    trim_options = _coerce_trim_call_options(window_or_options, options, kwargs)
+
+    def trim_one(item):
+        if isinstance(item, (list, tuple)):
+            return [trim_one(child) for child in item]
+        if not isinstance(item, cv):
+            raise TypeError("trim currently supports cv objects or groups of cv objects.")
+        return item.trim(trim_options)
+
+    return trim_one(cvs)
 
 
 def _find_column_by_text(columns, column_name):
@@ -762,6 +806,96 @@ def _resolve_reference_current_vector(cv_obj, options):
     raise ValueError("'reference mode' must be 'single' or 'both' for scale_current.")
 
 
+def _scale_current_diagnostic_segments(options):
+    mode = str(options.get("reference mode", "single")).strip().lower()
+    if mode == "both":
+        return _scale_reference_segments(options)
+    segments = options.get("segments")
+    if segments is None:
+        return [options.get("segment", 1)]
+    if isinstance(segments, int):
+        return [segments]
+    if isinstance(segments, (list, tuple)) and segments:
+        return list(segments)
+    return [options.get("segment", 1)]
+
+
+def _scale_current_peak_diagnostic_options(options, segment=None):
+    diag_options = _reference_ip0_options(options, segment=segment).to_options_dict()
+    diag_options["plot"] = True
+    diag_options["plot all"] = True
+    diag_options["plot cv"] = False
+    diag_options["new plot"] = False
+    diag_options["print"] = False
+    diag_options["print all"] = False
+    return diag_options
+
+
+def _plot_scale_current_diagnostics(scaled_cvs, options, target_ips, measured_ips):
+    if not scaled_cvs:
+        return
+    has_reference_extraction = any(
+        value is not None
+        for values in (target_ips, measured_ips)
+        for value in values
+    )
+    if not has_reference_extraction:
+        return
+    for scaled_cv in scaled_cvs:
+        for segment in _scale_current_diagnostic_segments(options):
+            try:
+                scaled_cv.peak_current(
+                    _scale_current_peak_diagnostic_options(options, segment=segment)
+                )
+            except Exception:
+                continue
+
+
+def _normalize_current_reference_diagnostic_refs(cv_list, options):
+    manual_ip0_values = _resolve_manual_ip0_values(options, len(cv_list))
+    reference_cvs = _resolve_reference_cvs(cv_list, options)
+    refs = []
+    seen = set()
+    for manual_ip0, ref_cv in zip(manual_ip0_values, reference_cvs):
+        if manual_ip0 is not None:
+            continue
+        marker = id(ref_cv)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        refs.append(ref_cv)
+    return refs
+
+
+def _plot_normalize_current_reference_diagnostics(cv_list, options):
+    if not cv_list or not options.get("plot reference diagnostic", False):
+        return
+
+    reference_cvs = _normalize_current_reference_diagnostic_refs(cv_list, options)
+    if not reference_cvs:
+        return
+
+    plot_options = _multiplot_options_from_mapping(options)
+    plot_options["print"] = False
+    plot_options["plot all"] = False
+    plot_options["new plot"] = False
+    plot_options["y axis"] = "Current"
+    plot_options.pop("labels", None)
+    if options.get("title", "auto") is not False:
+        plot_options["title"] = "Reference ip0 Diagnostic"
+    multiplot(reference_cvs, plot_options)
+
+    for ref_cv in reference_cvs:
+        diag_options = _reference_ip0_options(options).to_options_dict()
+        diag_options["plot"] = True
+        diag_options["plot all"] = True
+        diag_options["plot cv"] = False
+        diag_options["new plot"] = False
+        diag_options["print"] = False
+        diag_options["print all"] = False
+        ref_cv.peak_current(diag_options)
+
+
 def _scale_from_reference_currents(target_values, measured_values, source):
     target_values = np.asarray(target_values, dtype=float)
     measured_values = np.asarray(measured_values, dtype=float)
@@ -863,7 +997,7 @@ def _normalize_current_source_label(cvs, options, index):
 
 
 def _format_ip0_summary_value(ip0, sig_figs):
-    return f"{round_sigfigs(float(ip0), sig_figs):g} A"
+    return f"{format_sigfigs(float(ip0), sig_figs)} A"
 
 
 def _print_normalize_current_summary(cv_list, ip0_values, options):
@@ -901,7 +1035,12 @@ def _print_normalize_current_summary(cv_list, ip0_values, options):
     )
 
     if options.get("pretty print", True):
-        display_object_table(rows, options)
+        display_object_table(
+            rows,
+            options,
+            title="Current Normalization",
+            plain_title=False,
+        )
     else:
         print(rows.to_string(index=False))
 
@@ -960,7 +1099,7 @@ def normalize_current(cvs, options=None):
     >>> normalized = e.normalize_current(cvs, {"reference cv": blank_cv})
     """
     typed_options = NormalizationOptions.from_options(options)
-    options = typed_options.to_legacy_dict()
+    options = typed_options.to_options_dict()
     single_input = isinstance(cvs, cv)
     cv_list = _coerce_cv_list(cvs)
     ip0_values = _resolve_ip0_values(cv_list, options)
@@ -973,6 +1112,7 @@ def normalize_current(cvs, options=None):
         _print_normalize_current_summary(cv_list, ip0_values, options)
 
     if options.get("plot all", False):
+        _plot_normalize_current_reference_diagnostics(cv_list, options)
         plot_options = _multiplot_options_from_mapping(options)
         plot_options["y axis"] = "i/ip0"
         plot_options["ylabel"] = "$i / i_p^0$"
@@ -1033,7 +1173,7 @@ def scale_current(cvs, options=None):
     >>> scaled = e.scale_current(cvs, {"reference index": 0})
     """
     typed_options = ScaleCurrentOptions.from_options(options)
-    options = typed_options.to_legacy_dict()
+    options = typed_options.to_options_dict()
     single_input = isinstance(cvs, cv)
     cv_list = _coerce_cv_list(cvs)
     scales, target_ips, measured_ips = _resolve_scale_values(cv_list, options)
@@ -1048,16 +1188,22 @@ def scale_current(cvs, options=None):
         scaled_cv.current_scale_source_ip = measured_ip
 
     if options.get("print", False):
-        print("Current scaling summary:")
+        if not _rich_table_output_enabled(options):
+            print("Current scaling summary:")
         if options.get("pretty print", True):
             print_options = options.copy()
             print_options["print conditions"] = options.get("print conditions", True)
             display_df, _meta = build_object_table(cv_list, print_options)
             display_df["Scale Factor"] = [
-                round_sigfigs(scale, options.get("sig figs", 4))
+                format_sigfigs(scale, options.get("sig figs", 4))
                 for scale in scales
             ]
-            display_object_table(display_df, print_options)
+            display_object_table(
+                display_df,
+                print_options,
+                title="Current Scaling Summary",
+                plain_title=False,
+            )
         else:
             for cv_obj, scale in zip(cv_list, scales):
                 print(f"  {cv_obj.name}: scale = {scale:.6g}")
@@ -1066,6 +1212,7 @@ def scale_current(cvs, options=None):
         plot_options = _multiplot_options_from_mapping(options)
         plot_options["print"] = False
         multiplot(scaled, plot_options)
+        _plot_scale_current_diagnostics(scaled, options, target_ips, measured_ips)
 
     return scaled[0] if single_input else scaled
 
@@ -1095,6 +1242,28 @@ def build_object_table(*args, **kwargs):
 def display_object_table(*args, **kwargs):
     from .plotting import display_object_table as impl
     return impl(*args, **kwargs)
+
+
+def _display_table(*args, **kwargs):
+    from . import plotting as plotting_module
+
+    original_display = plotting_module.display
+    plotting_module.display = display
+    try:
+        return plotting_module._display_table(*args, **kwargs)
+    finally:
+        plotting_module.display = original_display
+
+
+def _can_rich_table_display(*args, **kwargs):
+    from . import plotting as plotting_module
+
+    original_display = plotting_module.display
+    plotting_module.display = display
+    try:
+        return plotting_module._can_rich_table_display(*args, **kwargs)
+    finally:
+        plotting_module.display = original_display
 
 
 def multiplot(*args, **kwargs):
