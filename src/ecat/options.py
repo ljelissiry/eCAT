@@ -92,6 +92,7 @@ _METHOD_SECTION_ALIASES = {
     "cv.current_at_potential": "cv_analysis",
     "cv.peak_potential": "cv_analysis",
     "cv.peak_current": "peak_current",
+    "cv.peak_width": "peak_width",
     "cv.peak_info": "peak_current",
     "cv.plateau_current": "plateau_current",
     "cv.half_peak_potential": "cv_analysis",
@@ -690,7 +691,6 @@ _OPTION_CATEGORY_BY_KEY = {
     "invert_y_axis": "Plotting",
     "invert_current_axis": "Axes",
     "invert_charge_axis": "Axes",
-    "stacking": "Plotting",
     "label_alterations": "Plotting",
     "xlabel": "Axes",
     "ylabel": "Axes",
@@ -718,11 +718,18 @@ _OPTION_CATEGORY_BY_KEY = {
     "xscale": "Plotting",
     "yscale": "Plotting",
     "plot_scale": "Plotting",
+    "phase": "Fitting/analysis",
+    "alpha": "Fitting/analysis",
+    "agreement_tolerance": "Fitting/analysis",
+    "current_ratio_tolerance": "Fitting/analysis",
+    "peak_separation_tolerance": "Fitting/analysis",
+    "integration_range": "Fitting/analysis",
 
     # Analysis and fitting behavior
     "noise_window": "Fitting/analysis",
     "noise_polyorder": "Fitting/analysis",
     "peak_prominence": "Fitting/analysis",
+    "level": "Fitting/analysis",
     "tangent_range": "Fitting/analysis",
     "tangent_min_points": "Fitting/analysis",
     "tangent_potential": "Fitting/analysis",
@@ -744,7 +751,6 @@ _OPTION_CATEGORY_BY_KEY = {
     "y_mode": "Fitting/analysis",
     "y0": "Fitting/analysis",
     "follow_e1_2": "Fitting/analysis",
-    "scan_dependence": "Fitting/analysis",
     "exclude_warnings": "Fitting/analysis",
     "exclude_low_r2": "Fitting/analysis",
     "local_slope_mode": "Fitting/analysis",
@@ -944,7 +950,7 @@ OPTION_DESCRIPTIONS = {
     "deduplicate_labels": "Append distinguishing metadata to duplicate multiplot labels; True uses scan window and segments.",
     "delimiter": "Column delimiter used in imported text files.",
     "diagnostic_y_axis": "Y axis used for FOWA diagnostic multiplot output.",
-    "directional_arrows": "Draw scan-direction arrowhead markers at selected potentials. Use one dict or a list of dicts; each dict requires potential and may include segment, color, alpha, arrowstyle, and size. If segment is omitted, arrows are added to every segment containing that potential. color defaults to the trace color. arrowstyle is passed to Matplotlib, e.g. ->, -|>, fancy, simple, or wedge. size controls arrowhead scale.",
+    "directional_arrows": "Draw scan-direction arrowhead markers at selected potentials. Arrow direction uses the default smoothed derivative and honors noise window and noise polyorder. Use one dict or a list of dicts; each dict requires potential and may include segment, color, alpha, arrowstyle, and size. If segment is omitted, arrows are added to every segment containing that potential. color defaults to the trace color. arrowstyle is passed to Matplotlib, e.g. ->, -|>, fancy, simple, or wedge. size controls arrowhead scale.",
     "e0": "Formal potential used for physical dimensionless CV normalization.",
     "ecat_shift_warning_threshold": "Potential-shift threshold for warning that catalytic and reference waves may not align.",
     "electrode_area": "Electrode area in cm^2.",
@@ -1029,6 +1035,7 @@ OPTION_DESCRIPTIONS = {
     "legend_outside": "Place the legend outside the axes.",
     "legend_pad": "Padding used when placing legends outside the axes.",
     "legend_sample_length": "Visual sample length used for legend handles.",
+    "level": "Fraction of the tangent-corrected peak current used to measure peak width.",
     "linestyle": "Line style for plotted traces.",
     "simulation_linestyle": "Line style for simulated traces in multiplot overlays.",
     "local_slope_mode": "Method for calculating local slopes.",
@@ -1086,6 +1093,12 @@ OPTION_DESCRIPTIONS = {
     "plot_scale": "Convenience axis-scale preset for scatter plots, such as log-log, semilogx, semilogy, symlog, or linear. Uses Matplotlib axis scaling and does not transform fit values.",
     "plot_options": "Nested plotting options passed through to plot helpers.",
     "scale_bar": "Draw a vertical scale bar on plot axes. Use False to hide, True to auto-pick a nice round length near 20-25% of the displayed y-axis range, a numeric value as the displayed y-axis length, or a dict with length, loc, label, unit, color, linewidth, cap width, label pad, fontsize/font size, ha, va, and remove y ticks. loc may be lower right, lower left, upper right, upper left, or an explicit (x, y) data-coordinate pair.",
+    "phase": "Physical model used by an analysis, such as bulk diffusion or surface confinement.",
+    "alpha": "Electron-transfer coefficient used for kinetic boundaries or fitting.",
+    "agreement_tolerance": "Maximum symmetric fractional disagreement accepted between independent estimates.",
+    "current_ratio_tolerance": "Maximum absolute deviation of the tangent-corrected anodic/cathodic peak-current ratio from unity for chemical-reversibility evidence.",
+    "peak_separation_tolerance": "Absolute peak-separation tolerance in V used for surface-confined zero-separation checks.",
+    "integration_range": "Potential range used for tangent-corrected charge integration, or auto for baseline-return detection.",
     "potential_window": "Two-value potential window used to select or trim CV data.",
     "_provided_options": "Internal record of explicitly provided options.",
     "plot_peak_potential": "Whether peak-potential diagnostics are plotted during peak-current extraction.",
@@ -1097,7 +1110,7 @@ OPTION_DESCRIPTIONS = {
     "pretty_print": "Use rich table display when printing object lists or summaries. False uses plain-text output when print is True.",
     "print": "Whether to emit output. False suppresses output; it is independent of pretty print.",
     "progress": "Whether to show a rendering/export progress bar when animations are displayed or saved.",
-    "print_all": "Whether child helper calls should print their own summaries.",
+    "print_all": "Request detailed row-level Data or evidence in addition to the default output. Parent analyses keep nested helper reports suppressed.",
     "print_conditions": "Whether to include condition columns in printed object tables.",
     "print_local_slopes": "Whether to print local slope diagnostics.",
     "psi_source": "Source used to resolve Nicholson psi values.",
@@ -1119,7 +1132,6 @@ OPTION_DESCRIPTIONS = {
     "require_plateau": "Raise an error if no scan-rate-independent plateau subset is found.",
     "return_stats": "Return a statistics dictionary instead of only a compact fit result.",
     "return": "Return the options table or menu as a pandas DataFrame.",
-    "scan_dependence": "Exponent applied to scan rate.",
     "scan_rate": "Scan rate in V/s. A scalar applies to all CVs; a sequence supplies one value per CV.",
     "s": "Electrode area alias used for physical dimensionless CV normalization.",
     "scale": "Multiplier applied to raw current columns by scale_current.",
@@ -1138,7 +1150,6 @@ OPTION_DESCRIPTIONS = {
     "solvent": "Solvent metadata for the electrochemical object.",
     "sort_keys": "Sort keys used to order imported objects after parsing and before reference assignment.",
     "species": "Chemical species used to resolve concentration or metadata. For normalize, exact-matches cv.compounds and pulls the paired cv.concentrations value when C/C unit are omitted.",
-    "stacking": "Vertically stack plotted traces.",
     "subtitle": "Plot subtitle text or subtitle mode.",
     "subtitle_fontsize": "Font size for subtitles.",
     "subtitles": "Subtitles for multiple plots or panels.",
@@ -1476,6 +1487,9 @@ def _build_option_metadata():
         "labels": {
             "description": "Explicit labels for plotted objects. If omitted, labels are generated from object metadata.",
         },
+        "offset": {
+            "description": "In displayed y-axis units, a numeric value applies a constant vertical step multiplied by trace index; a list supplies one explicit absolute vertical offset per trace.",
+        },
         "color_mode": {
             "description": "'auto' detects scan-rate or concentration gradients and colors those groups by gradient; remaining traces use discrete colors.",
         },
@@ -1597,6 +1611,21 @@ def _build_option_metadata():
     update("cv_analysis", cv_auto)
     update("peak_current", {
         **cv_auto,
+        "tangent_range": {
+            "description": "'auto' chooses a pre-peak baseline region from derivative/curvature behavior before the peak.",
+        },
+        "tangent_min_points": {
+            "description": "Minimum points for tangent fitting; when omitted, eCAT derives a minimum from the pre-peak data length.",
+        },
+        "tangent_potential": {
+            "description": "Manual tangent anchor potential; when omitted, eCAT anchors from the resolved tangent region. In complex CV analyses, the plural alias 'tangent potentials' accepts per-CV values.",
+        },
+    })
+    update("peak_width", {
+        **cv_auto,
+        "level": {
+            "description": "Fraction of the tangent-corrected peak current used for the width crossing. The default 0.5 gives full width at half peak current.",
+        },
         "tangent_range": {
             "description": "'auto' chooses a pre-peak baseline region from derivative/curvature behavior before the peak.",
         },
@@ -1891,6 +1920,58 @@ def _build_option_metadata():
             "description": "'auto' is passed to peak_current so peak-current extraction uses automatic tangent-baseline selection.",
         },
     })
+    update("reversibility_analysis", {
+        **cv_auto,
+        "phase": {
+            "description": "Physical model for the series. Bulk is the default diffusion-controlled model; use surface explicitly for adsorbed or surface-confined couples.",
+            "choices": ["bulk", "surface"],
+        },
+        "d": {
+            "description": "Bulk diffusion coefficient in cm^2/s. If omitted, eCAT attempts branch-specific Sevcik Dapp estimates when area and concentration are available.",
+        },
+        "c": {
+            "description": "Bulk concentration in mol/cm^3. If omitted, exact species metadata may be used when species is provided.",
+        },
+        "electrode_area": {
+            "description": "Electrode area in cm^2. If omitted, uses shared CV electrode_area metadata when available.",
+        },
+        "temperature": {
+            "description": "Temperature in K. If omitted, uses CV metadata and then the established 298.15 K fallback.",
+        },
+        "agreement_tolerance": {
+            "description": "Maximum symmetric fractional disagreement for independent estimates of the same quantity. This practical threshold can be changed globally with set_defaults.",
+        },
+        "current_ratio_tolerance": {
+            "description": "Maximum absolute deviation of tangent-corrected |ipa/ipc| from unity for chemical-reversibility evidence. Independent of agreement tolerance and configurable globally with set_defaults.",
+        },
+        "peak_separation_tolerance": {
+            "description": "Practical zero-separation tolerance in V for surface-confined couples; the effective value is at least three median potential increments.",
+        },
+        "min_r2": {
+            "description": "Minimum R2 for treating a regression as method-eligible evidence.",
+        },
+    })
+    update("surface_coverage_analysis", {
+        **cv_auto,
+        "electrode_area": {
+            "description": "Electrode area in cm^2. If omitted, total electroactive loading remains available but areal coverage is unavailable.",
+        },
+        "temperature": {
+            "description": "Temperature in K. If omitted, uses CV metadata and then the established 298.15 K fallback.",
+        },
+        "integration_range": {
+            "description": "Potential window for tangent-corrected charge integration. Auto finds baseline returns around each selected peak; [minimum, maximum] sets an explicit window.",
+        },
+        "agreement_tolerance": {
+            "description": "Maximum symmetric fractional disagreement for branch and slope/charge surface-coverage comparisons; globally configurable.",
+        },
+        "peak_separation_tolerance": {
+            "description": "Practical zero-separation tolerance in V used by surface reversibility diagnostics.",
+        },
+        "min_r2": {
+            "description": "Minimum R2 for treating the ip-versus-scan-rate regression as reliable evidence.",
+        },
+    })
     update("fit_peak_current", {
         **cv_auto,
         **scatter_fit_auto,
@@ -1907,11 +1988,17 @@ def _build_option_metadata():
     })
     update("trumpet_analysis", {
         **cv_auto,
+        "segment": {
+            "description": "Base segment used to locate the paired peak branch. Cathodic/anodic identity is determined from each segment's potential scan direction, not from segment number or input order.",
+        },
+        "segments": {
+            "description": "Explicit paired segments. The pair may be listed in either order; trumpet_analysis maps decreasing potential to the cathodic branch and increasing potential to the anodic branch before calculating alpha and beta.",
+        },
         "temperature": {
             "description": "Temperature in K. If omitted, uses each CV's temperature metadata before falling back to the option default.",
         },
         "d": {
-            "description": "Diffusion coefficient in cm^2/s for ks reporting; not inferred.",
+            "description": "Diffusion coefficient in cm^2/s for k0 reporting; not inferred.",
         },
         "tangent_range": {
             "description": "'auto' is passed to peak_current so peak-potential/current extraction uses automatic tangent-baseline selection.",
@@ -2091,6 +2178,7 @@ def _option_default_registry():
         (MultiScatterplotOptions, ["plot", "multiplot", "multi_scatterplot"]),
         (PeakPotentialOptions, ["plot", "cv_selection", "cv_analysis"]),
         (PeakCurrentOptions, ["plot", "cv_selection", "cv_analysis", "peak_current"]),
+        (PeakWidthOptions, ["plot", "cv_selection", "cv_analysis", "peak_current", "peak_width"]),
         (NormalizeOptions, ["normalize"]),
         (NormalizationOptions, ["cv_selection", "cv_analysis", "peak_current", "normalize_current"]),
         (ScaleCurrentOptions, ["cv_analysis", "peak_current", "scale_current"]),
@@ -2099,6 +2187,8 @@ def _option_default_registry():
         (FitRateOptions, ["fit_rate"]),
         (FitPeakPotentialOptions, ["plot", "cv_selection", "cv_analysis", "fit_peak_potential"]),
         (SevcikAnalysisOptions, ["plot", "cv_selection", "cv_analysis", "peak_current", "sevcik_analysis"]),
+        (ReversibilityAnalysisOptions, ["plot", "cv_selection", "cv_analysis", "peak_current", "reversibility_analysis"]),
+        (SurfaceCoverageAnalysisOptions, ["plot", "cv_selection", "cv_analysis", "peak_current", "surface_coverage_analysis"]),
         (FitPeakCurrentOptions, ["plot", "cv_selection", "cv_analysis", "peak_current", "fit_peak_current"]),
         (TrumpetAnalysisOptions, ["plot", "cv_selection", "cv_analysis", "peak_current", "trumpet_analysis"]),
         (NicholsonOptions, ["plot", "cv_selection", "cv_analysis", "peak_current", "nicholson"]),
@@ -2684,7 +2774,6 @@ class PlotOptions:
     plot_convention: str = "IUPAC"
     sig_figs: int = 4
     offset: float = 0
-    stacking: bool = False
     label_alterations: object | None = None
     legend_sample_length: float | str = "auto"
     legend_fontsize: int | None = None
@@ -2987,10 +3076,21 @@ class MultiplotOptions(PlotOptions):
     simulation_linestyle: str | None = None
     colorbar_tick_labels: str = "endpoints"
     colorbar_trace_ticks: bool = True
+    offset: float | list[float] = 0
 
     @classmethod
     def from_options(cls, options=None):
         return _coerce_options(cls, options, ["plot", "multiplot", "normalize_current"])
+
+    def validate(self):
+        PlotOptions.validate(self)
+        values = self.offset if isinstance(self.offset, list) else [self.offset]
+        try:
+            [float(value) for value in values]
+        except (TypeError, ValueError) as exc:
+            raise OptionError(
+                "'offset' must be a number or a list containing one numeric value per trace."
+            ) from exc
 
     def to_options_dict(self):
         data = PlotOptions.to_options_dict(self)
@@ -3342,6 +3442,41 @@ class PeakCurrentOptions(PeakPotentialOptions):
         data["percent threshold"] = self.percent_threshold
         data["plot peak potential"] = self.plot_peak_potential
         data["peak fallback"] = self.peak_fallback
+        return data
+
+
+@dataclass(frozen=True, slots=True)
+class PeakWidthOptions(PeakCurrentOptions):
+    level: float = 0.5
+
+    @classmethod
+    def from_options(cls, options=None):
+        return _coerce_options(
+            cls,
+            options,
+            ["plot", "cv_selection", "cv_analysis", "peak_current", "peak_width"],
+        )
+
+    def validate(self):
+        PeakCurrentOptions.validate(self)
+        try:
+            level = float(self.level)
+        except (TypeError, ValueError) as exc:
+            raise OptionError("'level' must be greater than 0 and less than 1.") from exc
+        if not 0 < level < 1:
+            raise OptionError("'level' must be greater than 0 and less than 1.")
+
+    def for_peak_current(self):
+        return PeakCurrentOptions(
+            **{
+                field.name: getattr(self, field.name)
+                for field in fields(PeakCurrentOptions)
+            }
+        )
+
+    def to_options_dict(self):
+        data = PeakCurrentOptions.to_options_dict(self)
+        data["level"] = float(self.level)
         return data
 
 
@@ -4168,7 +4303,6 @@ class SevcikAnalysisOptions(PeakCurrentOptions):
     return_stats: bool = False
     c: float | None = None
     num_electrons: int | float = 1
-    scan_dependence: int | float = 0.5
 
     @classmethod
     def from_options(cls, options=None):
@@ -4178,8 +4312,6 @@ class SevcikAnalysisOptions(PeakCurrentOptions):
         _validate_common_cv(self)
         if float(self.num_electrons) <= 0:
             raise OptionError("'num electrons' must be positive.")
-        if float(self.scan_dependence) <= 0:
-            raise OptionError("'scan dependence' must be positive.")
         if not 0 <= float(self.fit_alpha) <= 1:
             raise OptionError("'fit alpha' must be between 0 and 1.")
         _validate_fit_band_options(self)
@@ -4204,7 +4336,6 @@ class SevcikAnalysisOptions(PeakCurrentOptions):
         data["return stats"] = self.return_stats
         data["C"] = self.c
         data["num electrons"] = self.num_electrons
-        data["scan dependence"] = self.scan_dependence
         return data
 
     def for_peak_current(self, segment=None):
@@ -4231,6 +4362,141 @@ class SevcikAnalysisOptions(PeakCurrentOptions):
                 "percent threshold": self.percent_threshold,
             }
         )
+
+
+@dataclass(frozen=True, slots=True)
+class ReversibilityAnalysisOptions(PeakCurrentOptions):
+    phase: str = "bulk"
+    num_electrons: int | float = 1
+    alpha: float = 0.5
+    d: float | None = None
+    c: float | None = None
+    species: str | None = None
+    electrode_area: float | None = None
+    temperature: float | None = None
+    agreement_tolerance: float = 0.25
+    current_ratio_tolerance: float = 0.10
+    peak_separation_tolerance: float = 0.010
+    min_r2: float = 0.98
+
+    @classmethod
+    def from_options(cls, options=None):
+        return _coerce_options(
+            cls,
+            options,
+            ["plot", "cv_selection", "cv_analysis", "peak_current", "reversibility_analysis"],
+        )
+
+    def validate(self):
+        _validate_common_cv(self)
+        phase = _choice_token(self.phase)
+        if phase not in {"bulk", "surface"}:
+            raise OptionError("'phase' must be 'bulk' or 'surface'.")
+        if float(self.num_electrons) <= 0:
+            raise OptionError("'num electrons' must be positive.")
+        if not 0 < float(self.alpha) < 1:
+            raise OptionError("'alpha' must be between 0 and 1.")
+        if self.d is not None and float(self.d) <= 0:
+            raise OptionError("'D' must be positive when provided.")
+        if self.c is not None and float(self.c) <= 0:
+            raise OptionError("'C' must be positive when provided.")
+        if self.electrode_area is not None and float(self.electrode_area) <= 0:
+            raise OptionError("'electrode area' must be positive when provided.")
+        if self.temperature is not None and float(self.temperature) <= 0:
+            raise OptionError("'temperature' must be positive when provided.")
+        if not 0 <= float(self.agreement_tolerance) < 1:
+            raise OptionError("'agreement tolerance' must be between 0 and 1.")
+        if not 0 <= float(self.current_ratio_tolerance) < 1:
+            raise OptionError("'current ratio tolerance' must be between 0 and 1.")
+        if float(self.peak_separation_tolerance) <= 0:
+            raise OptionError("'peak separation tolerance' must be positive.")
+        if not 0 <= float(self.min_r2) <= 1:
+            raise OptionError("'min r2' must be between 0 and 1.")
+
+    def to_options_dict(self):
+        data = PeakCurrentOptions.to_options_dict(self)
+        data.update({
+            "phase": _choice_token(self.phase),
+            "num electrons": self.num_electrons,
+            "alpha": self.alpha,
+            "D": self.d,
+            "C": self.c,
+            "species": self.species,
+            "electrode area": self.electrode_area,
+            "temperature": self.temperature,
+            "agreement tolerance": self.agreement_tolerance,
+            "current ratio tolerance": self.current_ratio_tolerance,
+            "peak separation tolerance": self.peak_separation_tolerance,
+            "min r2": self.min_r2,
+        })
+        return data
+
+
+@dataclass(frozen=True, slots=True)
+class SurfaceCoverageAnalysisOptions(PeakCurrentOptions):
+    num_electrons: int | float = 1
+    electrode_area: float | None = None
+    temperature: float | None = None
+    integration_range: object = "auto"
+    agreement_tolerance: float = 0.25
+    peak_separation_tolerance: float = 0.010
+    min_r2: float = 0.98
+    fit_indices: object | None = None
+    plot_fit: bool = True
+    fit_label: bool | str = False
+    fit_color: object = "tab:red"
+    fit_linestyle: str = "--"
+    fit_linewidth: int | float = 1
+    fit_alpha: int | float = 1
+
+    @classmethod
+    def from_options(cls, options=None):
+        return _coerce_options(
+            cls,
+            options,
+            ["plot", "cv_selection", "cv_analysis", "peak_current", "surface_coverage_analysis"],
+        )
+
+    def validate(self):
+        _validate_common_cv(self)
+        if float(self.num_electrons) <= 0:
+            raise OptionError("'num electrons' must be positive.")
+        if self.electrode_area is not None and float(self.electrode_area) <= 0:
+            raise OptionError("'electrode area' must be positive when provided.")
+        if self.temperature is not None and float(self.temperature) <= 0:
+            raise OptionError("'temperature' must be positive when provided.")
+        if not 0 <= float(self.agreement_tolerance) < 1:
+            raise OptionError("'agreement tolerance' must be between 0 and 1.")
+        if float(self.peak_separation_tolerance) <= 0:
+            raise OptionError("'peak separation tolerance' must be positive.")
+        if not 0 <= float(self.min_r2) <= 1:
+            raise OptionError("'min r2' must be between 0 and 1.")
+        if not 0 <= float(self.fit_alpha) <= 1:
+            raise OptionError("'fit alpha' must be between 0 and 1.")
+        if self.integration_range != "auto":
+            value = self.integration_range
+            if not isinstance(value, (list, tuple)) or len(value) != 2:
+                raise OptionError("'integration range' must be 'auto' or [minimum, maximum].")
+
+    def to_options_dict(self):
+        data = PeakCurrentOptions.to_options_dict(self)
+        data.update({
+            "num electrons": self.num_electrons,
+            "electrode area": self.electrode_area,
+            "temperature": self.temperature,
+            "integration range": self.integration_range,
+            "agreement tolerance": self.agreement_tolerance,
+            "peak separation tolerance": self.peak_separation_tolerance,
+            "min r2": self.min_r2,
+            "fit indices": self.fit_indices,
+            "plot fit": self.plot_fit,
+            "fit label": self.fit_label,
+            "fit color": self.fit_color,
+            "fit linestyle": self.fit_linestyle,
+            "fit linewidth": self.fit_linewidth,
+            "fit alpha": self.fit_alpha,
+        })
+        return data
 
 
 @dataclass(frozen=True, slots=True)
@@ -4677,6 +4943,7 @@ _DESCRIBE_FUNCTION_WORKFLOWS = {
     "cv.current_at_potential": "Single CV analysis",
     "cv.peak_potential": "Single CV analysis",
     "cv.peak_current": "Single CV analysis",
+    "cv.peak_width": "Single CV analysis",
     "cv.peak_info": "Single CV analysis",
     "cv.plateau_current": "Single CV analysis",
     "cv.half_peak_potential": "Single CV analysis",
@@ -4684,6 +4951,7 @@ _DESCRIBE_FUNCTION_WORKFLOWS = {
     "cv.wave_info": "Single CV analysis",
     "cv_analysis": "Single CV analysis",
     "peak_current": "Single CV analysis",
+    "peak_width": "Single CV analysis",
     "dpv.peak_potential": "DPV analysis",
     "ca.charge": "CA/CP analysis",
     "ca.time_at_charge": "CA/CP analysis",
@@ -4693,6 +4961,8 @@ _DESCRIBE_FUNCTION_WORKFLOWS = {
     "cp.cycle_info": "CA/CP analysis",
     "fowa": "Batch analysis",
     "sevcik_analysis": "Batch analysis",
+    "reversibility_analysis": "Batch analysis",
+    "surface_coverage_analysis": "Batch analysis",
     "trumpet_analysis": "Batch analysis",
     "nicholson": "Batch analysis",
     "nicholson_analysis": "Batch analysis",
@@ -4748,6 +5018,7 @@ _DESCRIBE_FUNCTION_DESCRIPTIONS = {
     "cv.current_at_potential": "Extract current from a CV at a requested potential with segment and interpolation controls.",
     "cv.peak_potential": "Locate a CV peak potential using segment selection, smoothing, prominence, and fallback controls.",
     "cv.peak_current": "Measure CV peak current with peak selection, tangent/background handling, fallback behavior, plotting, and printing controls.",
+    "cv.peak_width": "Measure tangent-corrected full CV peak width at a fractional peak-current level.",
     "cv.peak_info": "Return peak-potential and peak-current details using the peak-current option surface.",
     "cv.plateau_current": "Analyze plateau current for one CV with optional normalization and plotting controls.",
     "cv.half_peak_potential": "Estimate a CV half-peak potential from selected peak-current diagnostics.",
@@ -4755,6 +5026,7 @@ _DESCRIBE_FUNCTION_DESCRIPTIONS = {
     "cv.wave_info": "Return paired-wave information using peak-current and half-wave controls.",
     "cv_analysis": "Shared CV analysis controls for segment selection, smoothing, peak guesses, exact potentials, diagnostics, and significant figures.",
     "peak_current": "Shared peak-current controls for tangent baselines, percent thresholds, and peak fallback behavior.",
+    "peak_width": "Shared peak-width controls for tangent baselines and fractional width level.",
     "dpv.peak_potential": "Locate a DPV peak potential near a guess with smoothing, prominence, and diagnostic controls.",
     "ca.charge": "Integrate chronoamperometry current to cumulative charge and optionally plot current, charge, and target diagnostics.",
     "ca.time_at_charge": "Find when a chronoamperometry trace reaches a requested target charge.",
@@ -4764,6 +5036,8 @@ _DESCRIBE_FUNCTION_DESCRIPTIONS = {
     "cp.cycle_info": "Summarize chronopotentiometry cycle capacity, efficiency, and potential metrics.",
     "fowa": "Foot-of-the-wave analysis for catalytic CVs, including reference-wave handling, tangent backgrounds, fit windows, and diagnostics.",
     "sevcik_analysis": "Sevcik-style peak-current trend analysis across scan rates.",
+    "reversibility_analysis": "Assess electrochemical and chemical reversibility across one scan-rate series.",
+    "surface_coverage_analysis": "Estimate surface coverage and total electroactive loading across a scan-rate series.",
     "trumpet_analysis": "Trumpet analysis from paired peak potentials across scan rates.",
     "nicholson": "Nicholson-style heterogeneous electron-transfer analysis from peak separation and scan-rate trends.",
     "nicholson_analysis": "Nicholson-style heterogeneous electron-transfer analysis from peak separation and scan-rate trends.",
@@ -5138,8 +5412,10 @@ def _option_model_for_function(function):
         "cv.peak_potential": PeakPotentialOptions,
         "cv.half_peak_potential": PeakPotentialOptions,
         "dpv.peak_potential": PeakPotentialOptions,
+        "peak_width": PeakWidthOptions,
         "peak_current": PeakCurrentOptions,
         "cv.peak_current": PeakCurrentOptions,
+        "cv.peak_width": PeakWidthOptions,
         "cv.peak_info": PeakCurrentOptions,
         "cv.half_wave_potential": PeakCurrentOptions,
         "cv.wave_info": PeakCurrentOptions,
@@ -5158,6 +5434,8 @@ def _option_model_for_function(function):
         "fit_peak_potential": FitPeakPotentialOptions,
         "fit_peak_current": FitPeakCurrentOptions,
         "sevcik_analysis": SevcikAnalysisOptions,
+        "reversibility_analysis": ReversibilityAnalysisOptions,
+        "surface_coverage_analysis": SurfaceCoverageAnalysisOptions,
         "trumpet_analysis": TrumpetAnalysisOptions,
         "nicholson": NicholsonOptions,
         "nicholson_analysis": NicholsonOptions,
@@ -5349,6 +5627,7 @@ __all__ = [
     'FitModelOptions',
     'PeakPotentialOptions',
     'PeakCurrentOptions',
+    'PeakWidthOptions',
     'NormalizeOptions',
     'NormalizationOptions',
     'ScaleCurrentOptions',
@@ -5357,6 +5636,8 @@ __all__ = [
     'FitRateOptions',
     'FitPeakPotentialOptions',
     'SevcikAnalysisOptions',
+    'ReversibilityAnalysisOptions',
+    'SurfaceCoverageAnalysisOptions',
     'FitPeakCurrentOptions',
     'TrumpetAnalysisOptions',
     'NicholsonOptions',

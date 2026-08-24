@@ -86,8 +86,8 @@ def test_ca_plot_can_show_corrected_current(ecat_module, blank_echem_factory):
         }
     )
 
-    np.testing.assert_allclose(ax.lines[0].get_ydata(), [-6000.0, -4000.0, -2000.0, 0.0])
-    assert ax.get_ylabel() == "Current (mA)"
+    np.testing.assert_allclose(ax.lines[0].get_ydata(), [-6.0, -4.0, -2.0, 0.0])
+    assert ax.get_ylabel() == "Current (A)"
 
 
 def test_ca_rate_at_time_reports_electron_flow(ecat_module, blank_echem_factory):

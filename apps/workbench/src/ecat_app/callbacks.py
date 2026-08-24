@@ -704,7 +704,6 @@ def multi_cv_options_from_controls(
     segment=None,
     segments=None,
     guess_potential=None,
-    sevcik_mode="homogeneous",
     x_axis="auto",
     fit_model="linear",
     toggles=None,
@@ -736,8 +735,6 @@ def multi_cv_options_from_controls(
         options["segment"] = int(segment)
     if guess_potential not in (None, ""):
         options["guess potential"] = float(guess_potential)
-    if analysis == "sevcik_analysis":
-        options["scan dependence"] = 1.0 if str(sevcik_mode or "homogeneous") == "heterogeneous" else 0.5
     if analysis not in {"sevcik_analysis", "fowa", "tafel_analysis"} and x_axis and x_axis != "auto":
         options["x axis"] = x_axis
     if analysis not in {"sevcik_analysis", "fowa", "tafel_analysis"} and fit_model:
@@ -829,7 +826,7 @@ def multi_analysis_option_state(analysis):
     )
 
 
-def multi_analysis_equation_content(analysis, sevcik_mode="homogeneous"):
+def multi_analysis_equation_content(analysis):
     analysis = str(analysis or "none")
     if analysis == "none":
         return ""
@@ -842,7 +839,7 @@ def multi_analysis_equation_content(analysis, sevcik_mode="homogeneous"):
             html.Span(["i", html.Sub("p"), " = m x + b"]),
             html.Span("Fit selected peak current against the chosen x axis."),
         ],
-        "sevcik_analysis": _sevcik_equation_lines(sevcik_mode),
+        "sevcik_analysis": _sevcik_equation_lines(),
         "trumpet_analysis": [
             html.Span(["E", html.Sub("p"), " = E", html.Sup("0"), " ± (R T / n F) ln(k", html.Sub("s"), " / v)"]),
             html.Span("Use paired oxidative/reductive peak positions across scan rates."),
@@ -867,13 +864,7 @@ def multi_analysis_equation_content(analysis, sevcik_mode="homogeneous"):
     )
 
 
-def _sevcik_equation_lines(sevcik_mode="homogeneous"):
-    heterogeneous = str(sevcik_mode or "homogeneous") == "heterogeneous"
-    if heterogeneous:
-        return [
-            html.Span(["i", html.Sub("p"), " = mν + b"]),
-            html.Span(["Heterogeneous mode uses scan-rate dependence ", html.Span(["ν", html.Sup("1")]), "."]),
-        ]
+def _sevcik_equation_lines():
     return [
         html.Span(["i", html.Sub("p"), " = 0.4463 n F A C (n F ν D / R T)", html.Sup("1/2")]),
         html.Span(["D from slope of ", html.Span(["i", html.Sub("p")]), " versus ", html.Span(["ν", html.Sup("1/2")]), "."]),
@@ -3855,7 +3846,6 @@ def register_callbacks(app):
         State("ecat-multi-segment", "value"),
         State("ecat-multi-segments", "value"),
         State("ecat-multi-guess-potential", "value"),
-        State("ecat-sevcik-mode", "value"),
         State("ecat-multi-x-axis", "value"),
         State("ecat-multi-fit-model", "value"),
         State("ecat-multi-toggles", "value"),
@@ -3909,7 +3899,6 @@ def register_callbacks(app):
         segment,
         segments,
         guess_potential,
-        sevcik_mode,
         x_axis,
         fit_model,
         toggles,
@@ -3963,7 +3952,6 @@ def register_callbacks(app):
             segment,
             segments,
             guess_potential,
-            sevcik_mode,
             x_axis,
             fit_model,
             toggles,
@@ -4047,10 +4035,9 @@ def register_callbacks(app):
     @app.callback(
         Output("ecat-multi-analysis-equations", "children"),
         Input("ecat-multi-analysis", "value"),
-        Input("ecat-sevcik-mode", "value"),
     )
-    def multi_analysis_equations_callback(analysis, sevcik_mode):
-        return multi_analysis_equation_content(analysis, sevcik_mode)
+    def multi_analysis_equations_callback(analysis):
+        return multi_analysis_equation_content(analysis)
 
     @app.callback(
         Output("ecat-multi-analysis-options", "style"),

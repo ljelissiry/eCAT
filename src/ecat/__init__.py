@@ -37,11 +37,13 @@ from . import (
     parsers,
     plotting,
     reference,
+    reversibility,
     results,
     simulation,
     utils,
 )
 from ._version import __version__
+from ._file_formats import UnsupportedFileFormatError
 from .analysis_batch import (
     fit_model,
     fit_peak_current,
@@ -54,6 +56,7 @@ from .analysis_batch import (
     tafel_analysis,
     trumpet_analysis,
 )
+from .reversibility import reversibility_analysis, surface_coverage_analysis
 from .analysis_cv import normalize, normalize_current, scale_current, trim
 from .animation import animate
 from .app import open_app
@@ -99,10 +102,13 @@ from .options import (
     OptionError,
     PeakCurrentOptions,
     PeakPotentialOptions,
+    PeakWidthOptions,
     PlateauCurrentOptions,
     PlotOptions,
     ScaleCurrentOptions,
     SevcikAnalysisOptions,
+    ReversibilityAnalysisOptions,
+    SurfaceCoverageAnalysisOptions,
     SortGroupOptions,
     TafelAnalysisOptions,
     TrimOptions,
@@ -115,6 +121,7 @@ from .options import (
 
 __all__ = [
     "__version__",
+    "UnsupportedFileFormatError",
     "simulation",
     "AnalysisResult",
     "ParseResult",
@@ -147,6 +154,8 @@ __all__ = [
     "open_app",
     "fowa",
     "sevcik_analysis",
+    "reversibility_analysis",
+    "surface_coverage_analysis",
     "trumpet_analysis",
     "nicholson_analysis",
     "tafel_analysis",
@@ -174,6 +183,7 @@ __all__ = [
     "MultiScatterplotOptions",
     "PeakPotentialOptions",
     "PeakCurrentOptions",
+    "PeakWidthOptions",
     "NormalizeOptions",
     "NormalizationOptions",
     "ScaleCurrentOptions",
@@ -182,6 +192,8 @@ __all__ = [
     "FitRateOptions",
     "FitPeakPotentialOptions",
     "SevcikAnalysisOptions",
+    "ReversibilityAnalysisOptions",
+    "SurfaceCoverageAnalysisOptions",
     "FitPeakCurrentOptions",
     "TrumpetAnalysisOptions",
     "NicholsonOptions",

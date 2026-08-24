@@ -9,6 +9,11 @@ import warnings
 import numpy as np
 import pandas as pd
 
+from ._file_formats import (
+    SUPPORTED_TEXT_SUFFIXES,
+    is_known_unsupported_binary_file,
+    is_supported_text_file,
+)
 from .options import ImportOptions, resolve_import_options
 from .utils import (
     _format_path_for_display,
@@ -828,16 +833,29 @@ def get_data(options=None):
 
         candidates = glob.glob(search_pattern, recursive=recursive)
         all_files = [os.path.abspath(p) for p in candidates if os.path.isfile(p)]
-        txt_files = [p for p in all_files if os.path.splitext(p)[1].lower() == ".txt"]
+        text_files = [p for p in all_files if is_supported_text_file(p)]
+        unsupported_binary_files = [
+            p for p in all_files if is_known_unsupported_binary_file(p)
+        ]
 
     except Exception as exc:
         print(f"Error while searching folder:\n {_format_path_for_display(root_abs)}\n{exc}")
         return []
 
     file_paths = sorted(
-        txt_files,
+        text_files,
         key=lambda p: os.path.normcase(os.path.relpath(p, root_abs)),
     )
+
+    if unsupported_binary_files:
+        print(f"Unsupported binary files skipped ({len(unsupported_binary_files)}):")
+        for filepath in sorted(unsupported_binary_files):
+            display_name = _format_reference_display(filepath, root_abs, quote=True)
+            print(f"  - {display_name}")
+        print(
+            "eCAT does not read BioLogic EC-Lab `.mpr` binaries. "
+            "Export EC-Lab ASCII `.mpt`, convert externally, or use a custom reader.\n"
+        )
 
     if len(file_paths) == 0:
         if len(all_files) == 0:
@@ -855,16 +873,15 @@ def get_data(options=None):
             )
 
             print(
-                f"Found {len(all_files)} file(s) in the folder, but none were .txt files.\n"
+                f"Found {len(all_files)} file(s) in the folder, but none were supported "
+                f"text files ({', '.join(sorted(SUPPORTED_TEXT_SUFFIXES))}).\n"
                 f"Folder:\n {_format_path_for_display(root_abs)}\n"
                 f"File types found: {suffix_summary}"
             )
         return []
     else:
-        s = ""
-        if len(file_paths) > 1:
-            s = "s"
-        print(f"{len(file_paths)} .txt file{s} found.\n")
+        noun = "file" if len(file_paths) == 1 else "files"
+        print(f"{len(file_paths)} supported text {noun} found.\n")
 
     # ---------------------------
     # 3. Build raw objects and sort
@@ -898,7 +915,7 @@ def get_data(options=None):
         object_list.append(echem_object)
 
     if not object_list:
-        print("No .txt files could be converted into eCAT objects.")
+        print("No supported text files could be converted into eCAT objects.")
         return []
 
     sort_keys = options.get("sort keys", ["subfolder", "timestamp"])

@@ -2,7 +2,44 @@
 
 ## Unreleased
 
-## 0.1.0b4 - Beta Parser, Plotting, Analysis, Simulation, And App Refresh - 2026-07-27
+## 0.1.0b4 - Beta Parser, Plotting, Analysis, Simulation, And App Refresh - 2026-08-24
+
+- Added `reversibility_analysis()` for cautious, series-level bulk or surface-confined electron-transfer assessment plus a separate chemical-reversibility conclusion, with documented Matsuda-Ayabe, Nicholson, Sevcik, trumpet/Laviron, and irreversible-asymptote eligibility rules.
+- Added `surface_coverage_analysis()` with independent peak-slope and tangent-corrected charge estimates of surface coverage and total electroactive loading, branch/method agreement diagnostics, and configurable agreement tolerance.
+- Added tangent-corrected full width at half peak current to `peak_info()` and both peak widths plus direction-resolved cathodic/anodic peak currents and `|ipa/ipc|` to `wave_info()`.
+- Reversibility and surface-coverage equations now use the shared LaTeX pretty-print path; reversibility diagnostics use constrained, vertically stacked panels with physical branch symbols.
+- Kept Matsuda-Ayabe `Lambda` classification independent from Nicholson `k0` eligibility, added quantitative region/current-ratio evidence, and separated the `current ratio tolerance` default (`0.10`) from cross-method `agreement tolerance` (`0.25`).
+- Made single-branch surface-coverage fit output a compact vertical result table and kept units in result values rather than equation definitions.
+- Made Sevcik analysis strictly diffusion-controlled with the fixed square-root scan-rate relationship and removed the configurable scan-rate exponent from the package and app.
+- Added consistent EC-Lab ASCII `.mpt` support to direct and folder imports while rejecting BioLogic binary `.mpr` input before delimited-text parsing with actionable conversion guidance.
+- Made filename/header scan-rate reconciliation tolerant of normal acquisition and rounding precision while retaining header-first behavior for genuine mismatches.
+- Kept canonical CV current selection through typed analysis defaults when imported tables also contain time, cycle, segment, or other auxiliary columns.
+- Normalized path-like inputs at the object-construction boundary so `pathlib.Path` works as documented with `echem.from_file()`.
+- Made trumpet analysis scan-direction independent by mapping paired segments to cathodic/anodic branches before calculating alpha, beta, and k0; ambiguous branch pairs now raise targeted errors and resolved branch assignments are reported.
+- Removed the inert `stacking` plot option; use numeric `offset` to separate traces vertically in `multiplot()`.
+- Allowed `multiplot()` `offset` to accept explicit per-trace offset lists while preserving scalar values as constant trace-to-trace steps.
+- Applied the existing `sig figs` setting to scaled scan-rate values in object summaries and gradient/colorbar labels so instrument precision noise does not leak into display text.
+- Made directional-arrow orientation use eCAT's default smoothed derivative, with the existing local point slope retained only as a short-trace fallback.
+- Standardized notebook-facing analysis reports as Parameters, Equations,
+  Summary, then Data only with `print all=True`; nested peak helpers no longer
+  leak their own reports into Sevcik or Nicholson output.
+- Standardized row identity across reversibility, surface coverage, Nicholson,
+  Sevcik, trumpet, FOWA, and plateau reports: unique scan-rate/concentration
+  context omits long names, replicate rows add `Name` first, and grouped rows
+  use `Condition`; returned data retains names for traceability.
+- Added compact phase-specific reversibility evidence tables; detailed peak
+  and eligibility columns remain available in the returned result rather than
+  crowding the printed report.
+- Labeled reversibility equations by scientific role and made Sevcik,
+  electron-transfer-rate, and irreversible-asymptote equations conditional on
+  the evidence paths actually used; unresolved bulk rates now explain how to
+  supply or estimate the required diffusion coefficient.
+- Added separate real-data reversibility and imported-data surface-confined
+  quickstarts, shifted advanced analysis and simulation/fitting to notebooks
+  09-12, and added a reproducible surface-series Excel fixture generated outside
+  the notebook.
+- Applied automatic current-unit scaling to both surface-coverage diagnostic
+  plots while retaining explicit `y unit` control.
 
 - Accept `wave ranges` as the explicit per-CV alias for FOWA catalytic-wave windows and document it as `wave range(s)`.
 - Add `fit=True/False` to FOWA; enabled fits now warn and skip only unusable per-CV regressions instead of aborting the complete analysis.

@@ -408,7 +408,7 @@ def _segment_contains_potential(segment_x, potential):
     return low <= potential <= high
 
 
-def _segment_direction_vector(xs, ys, idx):
+def _raw_segment_direction_vector(xs, ys, idx):
     if len(xs) < 2 or idx < 0 or idx >= len(xs):
         return 1.0, 0.0
 
@@ -424,6 +424,32 @@ def _segment_direction_vector(xs, ys, idx):
         if np.isclose(dx, 0.0) and np.isclose(dy, 0.0):
             dx = xs[idx + 1] - xs[idx]
             dy = ys[idx + 1] - ys[idx]
+
+    return float(dx), float(dy)
+
+
+def _segment_direction_vector(xs, ys, idx, options=None):
+    if len(xs) < 2 or idx < 0 or idx >= len(xs):
+        return 1.0, 0.0
+
+    options = {} if options is None else options
+    dx = dy = np.nan
+
+    # Import lazily to avoid coupling the plotting helpers to utility imports at
+    # module load time. Derivatives are taken along acquisition order so their
+    # signs preserve the scan direction.
+    from .utils import _savgol_apply
+
+    dx_values, x_meta = _savgol_apply(xs, options, deriv=1)
+    dy_values, y_meta = _savgol_apply(ys, options, deriv=1)
+    if x_meta["window"] is not None and y_meta["window"] is not None:
+        dx = float(dx_values[idx])
+        dy = float(dy_values[idx])
+
+    if not np.isfinite(dx) or not np.isfinite(dy) or (
+        np.isclose(dx, 0.0) and np.isclose(dy, 0.0)
+    ):
+        dx, dy = _raw_segment_direction_vector(xs, ys, idx)
 
     if np.isclose(dx, 0.0) and np.isclose(dy, 0.0):
         dx = 1.0
@@ -485,7 +511,7 @@ def _add_directional_arrows(ax, options, x, y, line_color=None):
             nearest_idx = int(np.argmin(np.abs(xs - potential)))
             anchor_x = float(xs[nearest_idx])
             anchor_y = float(ys[nearest_idx])
-            vx, vy = _segment_direction_vector(xs, ys, nearest_idx)
+            vx, vy = _segment_direction_vector(xs, ys, nearest_idx, options=options)
             if not np.isfinite(vx) or not np.isfinite(vy):
                 vx, vy = 1.0, 0.0
 

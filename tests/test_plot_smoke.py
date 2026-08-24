@@ -489,6 +489,33 @@ def test_directional_arrows_default_to_trace_color(cv_factory):
     plt.close(ax.figure)
 
 
+def test_directional_arrows_use_default_smoothed_derivative(cv_factory):
+    potential = np.linspace(-1.0, 1.0, 21)
+    current = potential.copy()
+    current[9] += 0.5
+    obj = cv_factory(
+        name="100mVs_noisy_direction_run01",
+        potential=potential,
+        current=current,
+    )
+
+    ax = obj.plot(
+        {
+            "legend": False,
+            "title": False,
+            "directional arrows": {"potential": 0.0},
+        }
+    )
+
+    arrows = [art for art in ax.texts if isinstance(art, Annotation)]
+    assert len(arrows) == 1
+    anchor_x, anchor_y = arrows[0].get_position()
+    tip_x, tip_y = arrows[0].xy
+    assert tip_x > anchor_x
+    assert tip_y > anchor_y
+    plt.close(ax.figure)
+
+
 def test_directional_arrows_apply_to_all_matching_segments_when_segment_omitted(cv_factory):
     obj = _multi_segment_cv(cv_factory, n_segments=3)
 
@@ -1762,7 +1789,7 @@ def test_normalize_current_shared_ip0_print_collapses_repeated_rows(
     printed = capsys.readouterr().out
     assert "Current Normalization:" in printed
     assert "CVs: 2" in printed
-    assert "ip0: 2e-06 A" in printed
+    assert "ip0: 2.000e-06 A" in printed
     assert "Source: manual ip0" in printed
     assert "50mVs_sample_CO2_MeCN_10mM_Fc_run01" not in printed
     assert "100mVs_sample_N2_DMF_5mM_Fc_run01" not in printed
@@ -2608,6 +2635,47 @@ def test_multiplot_auto_gradient_keeps_scan_rate_and_concentration_groups(
     assert color_spec["discrete indices"] == []
 
 
+def test_multiplot_scan_rate_colorbar_labels_respect_sig_figs(
+    ecat_module,
+    cv_factory,
+):
+    objects = [
+        cv_factory(name=f"100mVs_scan_rate_rounding_run{index:02d}")
+        for index in range(1, 5)
+    ]
+    for obj, scan_rate in zip(
+        objects,
+        [0.0249997, 0.0499994, 0.0999988, 0.499999],
+    ):
+        obj.scan_rate = scan_rate
+
+    options = ecat_module.MultiplotOptions.from_options(
+        {
+            "print": False,
+            "title": False,
+            "legend": True,
+            "gradient by": "scan rate",
+            "legend mode": "colorbar",
+            "colorbar tick labels": "all",
+            "sig figs": 3,
+        },
+    ).to_options_dict()
+
+    color_spec = ecat_module._prepare_multiplot_style(objects, options)["color spec"]
+    group = color_spec["gradient groups"][0]
+
+    assert group["ticklabels"] == [
+        "25 mV/s",
+        "50 mV/s",
+        "100 mV/s",
+        "500 mV/s",
+    ]
+    np.testing.assert_allclose(
+        group["values"],
+        [0.0249997, 0.0499994, 0.0999988, 0.499999],
+    )
+
+
 def test_multiplot_min_gradient_entries_counts_distinct_gradient_values(
     ecat_module,
     cv_factory,
@@ -3393,3 +3461,77 @@ def test_multimultiplot_handles_mixed_named_groups_without_crashing(
 
     for fig in figures:
         plt.close(fig)
+
+
+def test_analysis_display_omits_name_when_context_is_unique(ecat_module):
+    table = pd.DataFrame(
+        {
+            "name": ["25mVs_A", "50mVs_A"],
+            "scan rate / V s^-1": [0.025, 0.050],
+            "value": [1.0, 2.0],
+        }
+    )
+
+    display = ecat_module._conditional_analysis_name_column(
+        table,
+        ["scan rate / V s^-1"],
+        {"sig figs": 4},
+    )
+
+    assert display.columns.tolist() == ["scan rate / V s^-1", "value"]
+
+
+def test_analysis_display_adds_name_first_when_context_repeats(ecat_module):
+    table = pd.DataFrame(
+        {
+            "name": ["25mVs_A", "25mVs_B", "50mVs_A"],
+            "scan rate / V s^-1": [0.025, 0.025, 0.050],
+            "value": [1.0, 1.1, 2.0],
+        }
+    )
+
+    display = ecat_module._conditional_analysis_name_column(
+        table,
+        ["scan rate / V s^-1"],
+        {"sig figs": 4},
+    )
+
+    assert display.columns.tolist() == ["Name", "scan rate / V s^-1", "value"]
+    assert display["Name"].tolist() == ["25mVs_A", "25mVs_B", "50mVs_A"]
+
+
+def test_analysis_display_detects_duplicates_after_sig_fig_formatting(ecat_module):
+    table = pd.DataFrame(
+        {
+            "Name": ["rounded_A", "rounded_B"],
+            "Scan Rate": [0.0249997, 0.025],
+            "Value": [1.0, 2.0],
+        }
+    )
+
+    display = ecat_module._conditional_analysis_name_column(
+        table,
+        ["Scan Rate"],
+        {"sig figs": 3},
+    )
+
+    assert display.columns[0] == "Name"
+
+
+def test_analysis_display_uses_all_visible_context_columns(ecat_module):
+    table = pd.DataFrame(
+        {
+            "Name": ["condition_A", "condition_B"],
+            "Scan Rate": [0.1, 0.1],
+            "Concentration": [1.0, 2.0],
+            "Value": [1.0, 2.0],
+        }
+    )
+
+    display = ecat_module._conditional_analysis_name_column(
+        table,
+        ["Scan Rate", "Concentration"],
+        {"sig figs": 4},
+    )
+
+    assert "Name" not in display.columns

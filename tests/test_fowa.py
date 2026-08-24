@@ -839,7 +839,7 @@ def test_fowa_prints_by_default_after_multiplot_defaults(
         )
 
     captured = capsys.readouterr()
-    assert "### FOWA Summary ###" in captured.out
+    assert "FOWA Parameters:" in captured.out
 
 
 def test_fowa_summary_display_table_is_vertical(ecat_module):
@@ -847,16 +847,77 @@ def test_fowa_summary_display_table_is_vertical(ecat_module):
         {
             "Reference CV": "blank_cv",
             "ip0 Source": "manual (1e-06)",
+            "Catalyst Electrons": 2,
+            "Turnover Electrons": 3,
+            "Sigma": 1,
             "Segment": 1,
         }
     )
 
-    assert list(table.columns) == ["Field", "Value"]
+    assert list(table.columns) == ["Parameter", "Symbol", "Value"]
     assert table.to_dict("records") == [
-        {"Field": "Reference CV", "Value": "blank_cv"},
-        {"Field": "ip0 Source", "Value": "manual (1e-06)"},
-        {"Field": "Segment", "Value": "1"},
+        {"Parameter": "Reference CV", "Symbol": "", "Value": "blank_cv"},
+        {"Parameter": "ip0 Source", "Symbol": "", "Value": "manual (1e-06)"},
+        {"Parameter": "Catalyst Electrons", "Symbol": "n", "Value": "2"},
+        {"Parameter": "Turnover Electrons", "Symbol": "n'", "Value": "3"},
+        {"Parameter": "Sigma", "Symbol": "σ", "Value": "1"},
+        {"Parameter": "Segment", "Symbol": "", "Value": "1"},
     ]
+
+
+def test_fowa_data_omits_name_for_unique_visible_context(ecat_module, monkeypatch):
+    objects = [type("Obj", (), {"name": name})() for name in ("25mVs", "50mVs")]
+    monkeypatch.setattr(
+        ecat_module,
+        "build_object_table",
+        lambda object_list, options=None: (
+            pd.DataFrame(
+                {
+                    "Name": [obj.name for obj in object_list],
+                    "Scan Rate": [0.025, 0.05],
+                }
+            ),
+            {},
+        ),
+    )
+
+    table = ecat_module._fowa_summary_table(
+        objects,
+        [{"kobs": 1.0}, {"kobs": 2.0}],
+        [{}, {}],
+        [None, None],
+        {"sig figs": 4},
+    )
+
+    assert "Name" not in table.columns
+    assert "Scan Rate" in table.columns
+
+
+def test_fowa_data_adds_name_for_duplicate_visible_context(ecat_module, monkeypatch):
+    objects = [type("Obj", (), {"name": name})() for name in ("replicate 1", "replicate 2")]
+    monkeypatch.setattr(
+        ecat_module,
+        "build_object_table",
+        lambda object_list, options=None: (
+            pd.DataFrame(
+                {
+                    "Name": [obj.name for obj in object_list],
+                    "Scan Rate": [0.025, 0.025],
+                }
+            ),
+            {},
+        ),
+    )
+
+    table = ecat_module._fowa_summary_table(
+        objects,
+        [{"kobs": 1.0}, {"kobs": 1.1}],
+        [{}, {}],
+        [None, None],
+        {"sig figs": 4},
+    )
+
+    assert table.columns[0] == "Name"
 
 
 def test_fowa_summary_pretty_print_uses_styled_dataframe(ecat_module, monkeypatch):
@@ -876,7 +937,7 @@ def test_fowa_summary_pretty_print_uses_styled_dataframe(ecat_module, monkeypatc
         {"pretty print": True},
     )
 
-    assert list(table.columns) == ["Field", "Value"]
+    assert list(table.columns) == ["Parameter", "Symbol", "Value"]
     rendered = displayed["object"].to_html()
     assert "i<sub>p</sub><sup>0</sup> Source" in rendered
     assert "Reference E<sub>p</sub>" in rendered
@@ -929,13 +990,14 @@ def test_fowa_summary_plain_print_uses_dataframe_text(ecat_module, monkeypatch, 
     )
 
     output = capsys.readouterr().out
-    assert "Field" in output
+    assert "Parameter" in output
+    assert "Symbol" in output
     assert "Value" in output
     assert "Segment" in output
     assert "Fit Range" in output
     assert table.to_dict("records") == [
-        {"Field": "Segment", "Value": "1"},
-        {"Field": "Fit Range", "Value": "[0.1, 0.5]"},
+        {"Parameter": "Segment", "Symbol": "", "Value": "1"},
+        {"Parameter": "Fit Range", "Symbol": "", "Value": "[0.1, 0.5]"},
     ]
 
 
@@ -953,8 +1015,8 @@ def test_fowa_kobs_equation_can_skip_resolved_n_substitution(ecat_module, monkey
 
     output = capsys.readouterr().out
     assert "k_obs = (m * 0.4463 * n / n'^sigma)^2" in output
-    assert "n = 2 (n_cat, catalyst redox-wave electron count)" in output
-    assert "n' = 3 (n_turn, turnover electron count)" in output
+    assert "n = 2 (n_cat, catalyst redox-wave electron count)" not in output
+    assert "n' = 3 (n_turn, turnover electron count)" not in output
     assert "m * 0.4463 * 2 / 3^2" not in output
 
 
@@ -1218,6 +1280,7 @@ def test_fowa_print_accepts_per_cv_manual_ip0_values(
             {
                 "plot": False,
                 "print": True,
+                "print all": True,
                 "pretty print": False,
                 "non-catalytic current": [1e-6, 2e-6],
                 "redox mode": "manual",
@@ -1232,6 +1295,12 @@ def test_fowa_print_accepts_per_cv_manual_ip0_values(
 
     printed = capsys.readouterr().out
     assert "manual (per CV)" in printed
+    assert "FOWA Parameters:" in printed
+    assert "FOWA Summary:" in printed
+    assert "FOWA Data:" in printed
+    assert printed.index("FOWA Parameters:") < printed.index("FOWA Summary:")
+    assert printed.index("FOWA Summary:") < printed.index("FOWA Data:")
+    assert "### FOWA 0:" not in printed
     full_results = result.table.attrs["full_results_df"]
     assert full_results["ip0"].tolist() == pytest.approx([1e-6, 2e-6])
 

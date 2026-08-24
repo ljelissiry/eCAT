@@ -69,13 +69,15 @@ Public function names, argument names, and return shapes should match the top-le
 | `get_data(options=None)` | Load supported electrochemistry files from a folder. | `describe_options("get_data")` |
 | `get_data_from_excel(file_path, options=None)` | Create eCAT objects from an eCAT Excel workbook, or fall back to curated Excel CV header parsing when no `manifest` sheet is present. | `describe_options("get_data")` |
 
+The built-in text importer accepts `.txt` and EC-Lab ASCII `.mpt` files. BioLogic binary `.mpr` files raise `UnsupportedFileFormatError` before they reach the table parser; export `.mpt`, convert externally, or provide a direct custom reader. Folder loaders skip `.mpr` files with a clear relative-path diagnostic and continue loading supported text files.
+
 Folder loaders return an empty list (`[]`) when no supported files are found or no files can be converted, so notebook loops and filters can safely consume the result without a separate `None` check. By default, folder imports keep subfolders together and order objects within each subfolder by acquisition timestamp using `sort keys = ["subfolder", "timestamp"]`; pass explicit `sort keys` to override that ordering.
 
 `get_data()` and `echem.from_file()` now support a `custom parser` hook for filename-derived metadata and a `parser settings` dictionary for parser behavior. Use `custom parser mode="merge"` to fill only missing filename metadata, or `custom parser mode="override"` to replace the built-in filename parser result. File-derived metadata still wins by default; set `parser settings={"prefer file metadata": False}` only when you explicitly want the custom parser to replace file metadata such as scan rate. Parser settings also accept canonical `gases` and `solvents` lists plus `compound stopwords`.
 
 Every loaded object exposes `obj.parse_result`, a `ParseResult` with a consistent parser contract: `.data`, `.units`, `.technique`, `.software`, `.metadata`, `.raw_metadata`, `.warnings`, `.source`, and `.parser`. Use `parse_file(...)` when you want that contract directly for parser debugging or importer tests. Normal analysis workflows should use `echem.from_file(...)` or `get_data(...)`.
 
-Text importers use the parser contract before object promotion for tested CH, BASI, EC-Lab-style, limited NOVA ASCII, and generic numeric/header text paths. These importers preserve raw header/column metadata and nonfatal warnings on `obj.parse_result`. Generic files with only potential/current columns can promote as CV-like fallbacks; ambiguous generic files containing time, potential, and current columns remain generic `echem` objects unless a vendor or user-supplied technique marker resolves the technique. IviumSoft text and DPV text beyond existing CH/private-fixture coverage still need representative files before they are treated as beta-supported workflows.
+Text importers use the parser contract before object promotion for tested CH, BASI, EC-Lab-style, limited NOVA ASCII, and generic numeric/header text paths. These importers preserve raw header/column metadata and nonfatal warnings on `obj.parse_result`. Header and filename scan rates are normalized to V/s before comparison; differences within 0.1% or `1e-6 V/s` are treated as rounding noise, while genuine mismatches warn and retain the measured header value. Generic files with only potential/current columns can promote as CV-like fallbacks; ambiguous generic files containing time, potential, and current columns remain generic `echem` objects unless a vendor or user-supplied technique marker resolves the technique. IviumSoft text and DPV text beyond existing CH/private-fixture coverage still need representative files before they are treated as beta-supported workflows.
 
 ## eCAT App
 
@@ -203,6 +205,8 @@ The package default plot convention is `IUPAC`. For CVs, pass `{"plot convention
 
 `multiplot()` auto-generates labels from differing object metadata for CV, DPV, CA, and CP overlays. Pass `{"labels": [...]}` when you want explicit trace labels instead.
 
+Use a numeric `offset` as a constant vertical step between traces, or pass one explicit absolute offset per trace. Offset values use the displayed y-axis unit. For example, `{"y unit": "uA", "offset": 2}` plots offsets of `0`, `2`, and `4` uA for three traces, while `{"y unit": "uA", "offset": [0, 1, 4]}` uses those three offsets directly.
+
 Scale bars are available through plot options rather than as a standalone top-level helper:
 
 ```python
@@ -315,6 +319,7 @@ gas_subset = e.filter(cvs, {"gas": ["Ar", "CO2"]})
 |---|---|---|
 | `cv_obj.peak_potential(guess_or_options=None, options=None)` | Locate a selected peak potential. A numeric first argument is shorthand for `guess potential`. | `describe_options("cv.peak_potential")` |
 | `cv_obj.peak_current(guess_or_options=None, options=None)` | Measure peak current with baseline/tangent handling. A numeric first argument is shorthand for `guess potential`. | `describe_options("cv.peak_current")` |
+| `cv_obj.peak_width(guess_or_options=None, options=None)` | Measure tangent-corrected full peak width at a fractional peak-current level. A numeric first argument is shorthand for `guess potential`. | `describe_options("cv.peak_width")` |
 | `cv_obj.half_peak_potential(guess_or_options=None, options=None)` | Estimate half-peak potential. A numeric first argument is shorthand for `guess potential`. | `describe_options("cv.half_peak_potential")` |
 | `cv_obj.half_wave_potential(guess_or_options=None, options=None)` | Estimate half-wave potential from paired peaks. A numeric first argument is shorthand for `guess potential`. | `describe_options("cv.half_wave_potential")` |
 | `cv_obj.current_at_potential(potential, options=None)` | Extract current at a requested potential. | `describe_options("cv.current_at_potential")` |
@@ -327,9 +332,11 @@ gas_subset = e.filter(cvs, {"gas": ["Ar", "CO2"]})
 | `scale_current(cvs, options=None)` | Scale currents against reference currents or manual values. | `describe_options("scale_current")` |
 | `cv_obj.filter(options=None)` | Return a filtered CV copy using a recorded SciPy-backed filter. | `describe_options("cv.filter")` |
 
-Single-CV analysis helpers such as `peak_potential`, `peak_current`, `half_peak_potential`, `half_wave_potential`, `wave_info`, and `current_at_potential` return `CVAnalysisResult`, an `AnalysisResult` child that remains dictionary-compatible. Existing notebook access such as `result["ip"]` or `result["Ep"]` is preserved. New code can also use `result.primary` for the main base-unit scalar, `result.table` for a tidy display table with columns such as `Metric` and `Value`, and `result.show()` for pretty or plain printing. The table scales values to readable display units, while `result.primary` remains in base units.
+Single-CV analysis helpers such as `peak_potential`, `peak_current`, `peak_width`, `half_peak_potential`, `half_wave_potential`, `wave_info`, and `current_at_potential` return `CVAnalysisResult`, an `AnalysisResult` child that remains dictionary-compatible. Existing notebook access such as `result["ip"]`, `result["Ep"]`, or `result["width"]` is preserved. New code can also use `result.primary` for the main base-unit scalar, `result.table` for a tidy display table with columns such as `Metric` and `Value`, and `result.show()` for pretty or plain printing. Human-facing analysis tables are formatted at display time: `sig figs`, `x unit`, and `y unit` passed to `result.show(...)` control the rendered table without changing the base-unit scalar values. Display formatting preserves trailing significant zeros, so default four-sig-fig values can render as `100.0 mV` or `8.000 μA`. Automatic display scaling chooses a unit only when the largest finite absolute displayed value falls in a readable range, `1 <= abs(value) < 1000`; for example, `0.16 V` can display as `160.0 mV`, but `-1.474 V` stays in V instead of becoming `-1474 mV`. Plot axes keep their separate plotting convention and do not autoscale potential axes by default.
 
-Peak and wave defaults are intended for exploratory use. Single-feature helpers such as `peak_potential()`, `peak_current()`, `half_peak_potential()`, and `peak_info()` choose the largest detected feature when `segment` and `guess potential` are omitted. Paired-wave helpers such as `half_wave_potential()` and `wave_info()` default to segment `1` paired with segment `2` when `segments` is omitted. For final analysis, specify `segment`, `segments`, `guess potential`, or `exact potential` so the notebook records the intended feature. The default `peak kind = "both"` considers maxima and minima because current sign conventions determine which extrema are cathodic or anodic; set `peak kind = "infer"` to map increasing selected current to maxima and decreasing selected current to minima, or set `peak kind = "max"` / `"min"` to force one kind. CV and DPV peak/wave helpers accept a numeric first argument as shorthand for `guess potential`, so `cv.peak_current(-1.5, {"segment": 1})` is equivalent to `cv.peak_current({"guess potential": -1.5, "segment": 1})`.
+Peak and wave defaults are intended for exploratory use. Single-feature helpers such as `peak_potential()`, `peak_current()`, `peak_width()`, `half_peak_potential()`, and `peak_info()` choose the largest detected feature when `segment` and `guess potential` are omitted. Paired-wave helpers such as `half_wave_potential()` and `wave_info()` default to segment `1` paired with segment `2` when `segments` is omitted. For final analysis, specify `segment`, `segments`, `guess potential`, or `exact potential` so the notebook records the intended feature. The default `peak kind = "both"` considers maxima and minima because current sign conventions determine which extrema are cathodic or anodic; set `peak kind = "infer"` to map increasing selected current to maxima and decreasing selected current to minima, or set `peak kind = "max"` / `"min"` to force one kind. CV and DPV peak/wave helpers accept a numeric first argument as shorthand for `guess potential`, so `cv.peak_current(-1.5, {"segment": 1})` is equivalent to `cv.peak_current({"guess potential": -1.5, "segment": 1})`.
+
+`peak_width()` reports tangent-corrected full peak width. It reuses `peak_current()` peak and tangent-baseline options, then subtracts the tangent and finds the scan-order `E leading` and `E trailing` crossings at `level` times the tangent-corrected peak current. The default `level = 0.5` gives full width at half peak current. Crossings are linearly interpolated internally; there is no public `interpolate`, `side`, or `mode` option.
 
 Automatic peak prominence uses a conservative global estimate when no `guess potential` is provided. With a guess, eCAT estimates the automatic prominence from a local potential window centered on the guess, using 20% of the selected potential span by default; explicit `peak prominence` values still override this behavior. Set `noise window = None` to disable Savitzky-Golay smoothing for peak detection.
 
@@ -384,10 +391,17 @@ auto plot subtitles put autoscaled units in the values, such as `10 mV` or
 
 ## Advanced Analysis
 
+Notebook-facing analysis reports follow one shared order: Parameters,
+Equations, Summary, then Data only when `print all=True`. Empty sections are
+omitted, while complete numeric and diagnostic detail remains available on the
+returned result. See the [analysis output contract](analysis_output_contract.md).
+
 | Name | Purpose | Options |
 |---|---|---|
 | `fowa(cvs, options=None)` | Foot-of-the-wave analysis for catalytic CVs. | `describe_options("fowa")` |
 | `sevcik_analysis(cvs, options=None)` | Sevcik-style peak-current trend analysis. | `describe_options("sevcik_analysis")` |
+| `reversibility_analysis(cvs, options=None)` | Series-level electron-transfer and chemical-reversibility assessment for one bulk or surface-confined condition. | `describe_options("reversibility_analysis")` |
+| `surface_coverage_analysis(cvs, options=None)` | Surface coverage and electroactive loading from independent peak-slope and tangent-corrected charge methods. | `describe_options("surface_coverage_analysis")` |
 | `trumpet_analysis(cvs, options=None)` | Trumpet analysis from paired peak potentials. | `describe_options("trumpet_analysis")` |
 | `nicholson_analysis(cvs, options=None)` | Nicholson-style heterogeneous electron-transfer analysis. | `describe_options("nicholson_analysis")` |
 | `tafel_analysis(cv_or_list, TOF_max, thermodynamic_potential, redox_potential, options=None)` | Tafel-style turnover-frequency curves for one CV or a CV series; multi-CV calls reuse the shared `multiplot()` label, color, gradient, legend, and colorbar options. | `describe_options("tafel_analysis")`; also accepts common `multiplot` styling options |
@@ -397,13 +411,157 @@ auto plot subtitles put autoscaled units in the values, such as `10 mV` or
 | `fit_peak_potential(cvs, options=None)` | Fit peak-potential trends. | `describe_options("fit_peak_potential")` |
 | `fit_peak_current(cvs, options=None)` | Fit peak-current trends. | `describe_options("fit_peak_current")` |
 
-`plateau_current()` accepts one CV, a flat list of CVs, or nested lists of CVs. With the default `{"group mode": "auto"}`, a flat list is grouped with `e.group(..., "species")`, so concentration/composition series produce one plateau row per condition while scan-rate series within a condition are used for plateau validation. Use `{"group mode": "as given"}` to force one flat list to be treated as a single validation group, `{"group mode": "each"}` to analyze each CV independently, or pass nested lists when you want explicit validation groups. Printed output follows the FOWA pattern: a vertical summary, the plateau `kobs` equation, and a compact result table built from object-summary differences plus plateau-analysis columns. FOWA and plateau-current equations use literature-style display notation, with `n` for the catalyst redox-wave electron count and `n′` for the turnover electron count; the definitions immediately below each equation map those symbols to the code-facing options `n_cat` / `"catalyst electrons"` and `n_turn` / `"turnover electrons"`. Peak-current extraction details are retained in `result.diagnostics` rather than printed as separate peak-potential/current tables. In `plot all` diagnostics, CV overlays default to a single combined `i/ip0` plot for the catalytic CVs and available non-catalytic reference CVs when `ip0` can be resolved; otherwise eCAT falls back to current and records the fallback in `result.warnings`. Peak-current guide marks are redrawn on the normalized overlay using the same diagnostic style as FOWA. Plateau validation plots are emitted once per condition with enough scan-rate points and still use current versus `sqrt(scan rate)` because that diagnostic tests scan-rate independence of the limiting current. Multi-condition `plateau_current()` display tables keep a hidden numeric `attrs["full_results_df"]` table with `kobs` and concentration columns, so the result can be passed directly to `fit_rate(...)` even when context columns are not visible.
+### Reversibility Decision Tree
 
-`fowa(..., {"print": True})` prints a vertical `Field`/`Value` summary table for shared settings and reference information, the symbolic FOWA `kobs` equation with definitions, and the FOWA result table. It does not print a second equation with the `n` values substituted. The transformed FOWA plot labels the x-axis with the actual redox-reference convention used for the calculation: `E1/2` for `"redox mode": "half wave"`, `Ep/2` for `"half peak"`, `Eredox` for `"manual"`, and a generic `Eref` only when modes are mixed. The x-axis uses literature-style `n` in the exponent, and the printed equation defines `n = n_cat = catalyst redox-wave electron count`; `n′ = n_turn` appears in the slope-to-`kobs` equation rather than in the x-axis transform. `{"pretty print": False}` uses the same vertical summary shape as plain text.
+`reversibility_analysis()` accepts one chemical condition measured at at least
+three distinct scan rates. Five or more rates are recommended. Replicates are
+retained in `result.table`; trend calculations use the mean at each scan rate
+and retain replicate counts and standard deviations in
+`result.diagnostics["rate means"]`. Mixed conditions raise an error with a
+prompt to group first with `e.group(...)`.
 
-Advanced analysis helpers return `AnalysisResult`-style objects. Use `.table` for the primary table, `.summary` for workflow metadata, `.fits` / `.fit_table` where fitting applies, `.axes` for plots, `.units` for result units, and `.warnings` / `.diagnostics` for extra detail. FOWA and plateau-current results no longer pretend to be DataFrames; use `result.table.columns`, `result.table.loc[...]`, `result.table.attrs`, or `result.summary["kobs"]` for scalar plateau values. For export, `result.to_csv(...)` writes the primary table using pandas CSV semantics, while `result.to_excel(...)` writes a workbook with the primary `table` sheet plus available metadata sheets such as `summary`, `fit_table`, `fits`, `warnings`, `units`, and `diagnostics`.
+The required `phase` model is explicit. It defaults to `"bulk"`; use
+`"surface"` for adsorbed or surface-confined couples. There is no automatic
+phase inference.
 
-`nicholson_analysis()` returns an `AnalysisResult` with `result["data"]` and `result.table` for the Nicholson point table and `result["summary"]` / `result.summary` for equation metadata, fit statistics, and kinetic values. With `{"print": True}`, it prints the Nicholson equation, a summary table, and the input/result table. With `{"plot all": True}`, it produces one CV diagnostic plot and one Nicholson fit plot.
+For `phase="bulk"`, eCAT evaluates evidence in this order:
+
+1. Extract paired tangent-corrected peaks, half-peak potentials, full
+   half-peak widths, `E1/2`, `Delta Ep`, cathodic/anodic segment numbers, and
+   `|ipa/ipc|` for every CV. Physical branch names are resolved from potential
+   scan direction, so segment 1 may be cathodic or anodic.
+2. Convert `n Delta Ep` values to Nicholson `psi`, then calculate
+   `Lambda = sqrt(pi) psi`. Matsuda-Ayabe labels are `reversible` for
+   `Lambda >= 15`, `quasi-reversible` for
+   `10^[-2(1+alpha)] < Lambda < 15`, and `irreversible` below that lower
+   boundary. `psi` and `Lambda` remain available outside the recommended
+   Nicholson rate-estimation range whenever the conversion is defined.
+   Nicholson-derived rate estimates are used only for `0.1 <= psi <= 7`;
+   the Matsuda-Ayabe boundary, not the Nicholson fitting window, controls the
+   region label. The printed equations explicitly label the Nicholson
+   peak-separation approximation
+   `psi = [-0.6288 + 0.0021(n Delta Ep / mV)] /
+   [1 - 0.017(n Delta Ep / mV)]` and the separate Matsuda-Ayabe
+   classification thresholds.
+3. Resolve `D` from the explicit `D` option first. If `D` is omitted and exact
+   `species`, concentration, electrode area, and temperature information are
+   available, fit both peak-current branches against `sqrt(scan rate)` and
+   calculate two Sevcik `Dapp` estimates. They must have `R2 >= min r2` and
+   agree within `agreement tolerance` before their mean is used. The Sevcik
+   diffusion equation is printed only when this automatic estimate is
+   attempted.
+4. Report Nicholson `k0` in the eligible region. A high-scan-rate trumpet
+   estimate is also retained when its branch slopes are physical. If both
+   estimates exist, both are reported and disagreement beyond the configured
+   tolerance produces a warning. A series that remains reversible through its
+   fastest scan reports a lower bound based on `Lambda = 15`, not a falsely
+   precise fitted value. The `k0 = Lambda sqrt(D n F scan_rate / RT)`
+   conversion is printed only when `D` is available. Otherwise the summary
+   explains that `D`, or the area and concentration/species metadata needed
+   for a Sevcik estimate, must be supplied.
+5. A candidate irreversible series is only promoted to
+   `irreversible behavior indicated` when the independent asymptotes agree:
+   `|Ep-Ep/2| = 1.857 RT/(alpha nF)` and an `Ep` shift of
+   `2.303 RT/(2 alpha nF)` per decade of scan rate. Otherwise the cautious
+   conclusion is a quasi-reversible/irreversible transition. These
+   irreversible-asymptote equations are printed only when the series reaches
+   that candidate branch of the decision tree.
+
+For `phase="surface"`, diffusion, Sevcik, and Nicholson are not used. eCAT
+requires peak current to be linear in scan rate and compares peak separation
+with an effective zero-separation tolerance of
+`max(peak separation tolerance, 3 * median potential increment)`. Surface
+Laviron fitting is eligible only when at least two scan rates have
+`n Delta Ep > 200 mV`; its standard electron-transfer rate is reported in
+`s^-1`, not `cm/s`.
+
+Chemical reversibility is always reported separately from electron-transfer
+kinetics. All tangent-corrected $|i_{p,\mathrm{a}}/i_{p,\mathrm{c}}|$ ratios within
+`current ratio tolerance` of unity give
+`chemically reversible over observed timescale`. Ratios outside that band,
+especially when they move toward unity at faster scan rates, give
+`coupled chemistry indicated`. Sparse or contradictory evidence gives
+`indeterminate`. The default current-ratio tolerance is `0.10`; it is
+independent of the `0.25` default `agreement tolerance` used to compare two
+estimates of quantities such as `D` or surface coverage. Both can be changed
+globally with `set_defaults(...)`. The result records the observed ratio range,
+maximum deviation from unity, Matsuda-Ayabe `Lambda` range and region counts,
+and number of Nicholson-eligible scan rates. These labels describe the
+observed timescale and do not assign a chemical mechanism.
+
+With `plot=True`, the default reversibility figure contains two vertically
+stacked panels sharing a logarithmic scan-rate axis: $n\Delta E_p$ and
+$|i_{p,\mathrm{a}}/i_{p,\mathrm{c}}|$. `plot all=True` adds a separate
+$E_{p,\mathrm{c}}$/$E_{p,\mathrm{a}}$ scan-rate diagnostic. Pretty printing
+renders all analysis equations and scientific table symbols through the same
+LaTeX/HTML display path used by Sevcik and FOWA; `pretty print=False` uses
+plain-text equations and column names. Bulk reports always label the
+Nicholson Peak-Separation Conversion and Matsuda-Ayabe Classification;
+Sevcik Diffusion Estimate, Electron-Transfer Rate Conversion, and
+Irreversible-Asymptote Verification blocks appear only when their evidence
+paths apply.
+
+With `print all=True`, bulk reversibility prints a compact evidence table with
+scan rate, `E1/2`, `n Delta Ep`, `|ipa/ipc|`, `psi`, `Lambda`, electron-transfer
+region, and Nicholson-use status. Surface-confined mode instead prints scan
+rate, `E1/2`, `n Delta Ep`, absolute cathodic and anodic peak currents,
+`|ipa/ipc|`, and the surface region. `Name` is added as the first column only
+when replicate rows have the same displayed scan rate. Detailed peak,
+half-peak-width, branch, eligibility, and replicate columns remain in
+`result.table` and `result.diagnostics` without crowding the printed table.
+
+`surface_coverage_analysis()` mirrors the scan-rate-series structure of
+Sevcik analysis but uses the surface-confined equations
+`ip = n^2 F^2 A Gamma scan_rate / (4 RT)` and `Q = n F A Gamma`.
+The slope method fits each selected branch independently. The charge method
+integrates tangent-corrected current with respect to potential and divides by
+scan rate. The result reports `Gamma` in `mol/cm^2` and total electroactive
+loading in `mol`; loading remains available when electrode area is omitted.
+Slope, charge, and branch estimates are all retained, and disagreements beyond
+`agreement tolerance` warn rather than being silently averaged. Use an
+explicit `integration range` when the automatic tangent-baseline return search
+cannot resolve both sides of a peak.
+
+The public quickstarts keep the two physical models separate. Notebook
+`07_reversibility_analysis.ipynb` uses bundled real Fe/Fc CVs; notebook
+`08_surface_confined_cv.ipynb` imports the pre-generated
+`examples/data/surface_coverage_cv/surface_confined_cv_series.xlsx` workbook.
+The workbook's adjacent generator records its known coverage and loading but is
+not executed by the notebook.
+
+`sevcik_analysis()` is now strictly the bulk diffusion-controlled Sevcik
+workflow. Scan-rate series always fit peak current against `sqrt(scan rate)`;
+the former configurable scan-rate exponent is not an option. Use
+`surface_coverage_analysis()` for the linear-in-scan-rate surface-confined
+relationship.
+
+`trumpet_analysis()` is independent of the initial scan direction and segment
+order. It classifies decreasing-potential segments as cathodic and
+increasing-potential segments as anodic, then applies the cathodic slope to
+`alpha` and the anodic slope to `beta`. The result table and fit labels use
+those physical branch names, while `result.summary["segment selection"]`
+records the resolved cathodic/anodic segment numbers and assignment source.
+Mixed initial scan directions within one series are mapped per CV. Flat,
+nonmonotonic, same-direction, or otherwise unresolvable segment pairs raise a
+targeted branch-assignment error. CV-like custom objects without accessible
+segment data fall back only when their two fitted peak-potential slopes have
+unambiguous opposite signs.
+
+`plateau_current()` accepts one CV, a flat list of CVs, or nested lists of CVs. With the default `{"group mode": "auto"}`, a flat list is grouped with `e.group(..., "species")`, so concentration/composition series produce one plateau row per condition while scan-rate series within a condition are used for plateau validation. Use `{"group mode": "as given"}` to force one flat list to be treated as a single validation group, `{"group mode": "each"}` to analyze each CV independently, or pass nested lists when you want explicit validation groups. Printed output contains Plateau Current Parameters, the symbolic Plateau Current Equations, and a compact Plateau Current Summary built from object-summary differences plus plateau-analysis columns. `print all=True` adds Plateau Current Data. Plateau-current equations stay symbolic; the displayed parameter and result labels carry symbols such as `Catalyst Electrons (n)`, `Turnover Electrons (n′)`, `Temperature (T)`, `Diffusion Coefficient (D)`, `Electrode Area (S)`, and `Catalyst Concentration (C)`. Resolved parameter values stay in the parameter/summary tables. Peak-current extraction details are retained in `result.diagnostics` rather than printed as separate peak-potential/current tables. In `plot all` diagnostics, CV overlays default to a single combined `i/ip0` plot for the catalytic CVs and available non-catalytic reference CVs when `ip0` can be resolved; otherwise eCAT falls back to current and records the fallback in `result.warnings`. Peak-current guide marks are redrawn on the normalized overlay using the same diagnostic style as FOWA. Plateau validation plots are emitted once per condition with enough scan-rate points and still use current versus `sqrt(scan rate)` because that diagnostic tests scan-rate independence of the limiting current. Multi-condition `plateau_current()` display tables keep a hidden numeric `attrs["full_results_df"]` table with `kobs` and concentration columns, so the result can be passed directly to `fit_rate(...)` even when context columns are not visible.
+
+`fowa(..., {"print": True})` prints a vertical FOWA Parameters table for shared settings and reference information, the symbolic FOWA Equations with definitions, and the compact FOWA Summary table. `print all=True` adds the fuller FOWA Data table. It does not print a second equation with the `n` values substituted. The transformed FOWA plot labels the x-axis with the actual redox-reference convention used for the calculation: `E1/2` for `"redox mode": "half wave"`, `Ep/2` for `"half peak"`, `Eredox` for `"manual"`, and a generic `Eref` only when modes are mixed. The x-axis uses literature-style `n` in the exponent, and the printed equation defines `n = n_cat = catalyst redox-wave electron count`; `n′ = n_turn` appears in the slope-to-`kobs` equation rather than in the x-axis transform. `{"pretty print": False}` preserves the same section order using plain text.
+
+Advanced analysis helpers return `AnalysisResult`-style objects. Use `.table` for the primary table, `.summary` for workflow metadata, `.fits` / `.fit_table` where fitting applies, `.axes` for plots, `.units` for result units, and `.warnings` / `.diagnostics` for extra detail. FOWA and plateau-current results no longer pretend to be DataFrames; use `result.table.columns`, `result.table.loc[...]`, `result.table.attrs`, or `result.summary["kobs"]` for scalar plateau values. When an analysis has a specialized display formatter, `result.show({"sig figs": ...})` applies that formatter at display time while leaving exported/raw tables numeric where they were numeric. For export, `result.to_csv(...)` writes the primary table using pandas CSV semantics, while `result.to_excel(...)` writes a workbook with the primary `table` sheet plus available metadata sheets such as `summary`, `fit_table`, `fits`, `warnings`, `units`, and `diagnostics`.
+
+Row-level analysis reports use visible context as their identity. A unique scan
+rate or concentration series therefore omits long object names; if duplicate
+displayed contexts remain, `Name` is inserted first. Numeric identity is
+evaluated with the active `sig figs` setting, so acquisition values that print
+as the same scan rate are treated as replicates. Aggregated plateau and grouped
+results use `Condition`, `Group`, or `Branch` rather than `Name`. Returned data
+can still retain names for traceability even when the printed table omits them.
+
+`nicholson_analysis()` returns an `AnalysisResult` with `result["data"]` and `result.table` for the Nicholson point table and `result["summary"]` / `result.summary` for equation metadata, fit statistics, and kinetic values. With `{"print": True}`, it prints Nicholson Analysis Parameters, Equations, and Summary; `print all=True` adds the compact Nicholson Analysis Data table. With `{"plot all": True}`, it produces one CV diagnostic plot and one Nicholson fit plot.
 
 `fit_rate`, `fit_peak_current`, and `fit_peak_potential` use the same direct model fitter as `fit_model`. Use `fit model` to choose the model and `fit init`, `fit bounds`, `fit residual`, `fit max evals`, and `fit indices` to control the fit. Use `fit line range` only to extend or shorten the plotted fit line after fitting; it does not change selected points, fitted parameters, residuals, R2, RMSE, or fit-table `fit x min` / `fit x max` values. Standalone `fit_model` also accepts concise context-specific names such as `model`, `init`, `bounds`, `residual`, `band`, and `indices`.
 

@@ -42,7 +42,7 @@ Owned variables include the inherited `echem` state plus:
 Key public methods include:
 
 - `x()`, `y()`, `xy()`, `analysis_segment_data()`
-- `peak_potential()`, `peak_current()`, `half_peak_potential()`,
+- `peak_potential()`, `peak_current()`, `peak_width()`, `half_peak_potential()`,
   `half_wave_potential()`
 - `current_at_potential()` and related CV analysis helpers
 - `stats()`, `plot()`

@@ -395,6 +395,8 @@ def test_describe_options_documents_auto_retrieval_and_algorithmic_auto_behavior
 
     assert "uses each CV's scan_rate" in _option_row(nicholson_schema, "scan rate")["Description"]
     assert "uses each CV's temperature" in _option_row(trumpet_schema, "temperature")["Description"]
+    assert "potential scan direction" in _option_row(trumpet_schema, "segment")["Description"]
+    assert "either order" in _option_row(trumpet_schema, "segments")["Description"]
     assert "filename metadata parser" in _option_row(get_data_schema, "custom parser")["Description"]
     assert "built-in filename parser" in _option_row(get_data_schema, "custom parser mode")["Description"]
     assert "prefer file metadata" in _option_row(get_data_schema, "parser settings")["Description"]
@@ -556,6 +558,7 @@ def test_describe_options_no_argument_returns_menu_with_all_first(ecat_module):
     assert menu.loc[0, "Workflow"] == "Overview"
     assert "cv.peak_current" in functions
     assert "cv.peak_potential" in functions
+    assert "cv.peak_width" in functions
     assert "dpv.peak_potential" in functions
     assert "ca.charge" in functions
     assert "ca.current_at_time" in functions
@@ -583,6 +586,7 @@ def test_describe_options_no_argument_returns_menu_with_all_first(ecat_module):
 def test_describe_options_accepts_public_method_names(ecat_module):
     cases = {
         "cv.peak_current": ("tangent range", "peak fallback"),
+        "cv.peak_width": ("level", "tangent range"),
         "cv.half_wave_potential": ("tangent range", "peak fallback"),
         "cv.peak_potential": ("guess potential", "noise window"),
         "cv.half_peak_potential": ("guess potential", "noise window"),
@@ -607,6 +611,22 @@ def test_describe_options_accepts_public_method_names(ecat_module):
         options = set(df["Option"])
         for expected in expected_options:
             assert expected in options, method_name
+
+
+def test_describe_options_cv_peak_width_documents_level(ecat_module):
+    df = ecat_module.describe_options("cv.peak_width", {"print": False, "return": True})
+
+    options = set(df["Option"])
+    assert "level" in options
+    assert "tangent range" in options
+    assert "guess potential" in options
+    assert "side" not in options
+    assert "mode" not in options
+    assert "interpolate" not in options
+
+    level_row = df.loc[df["Option"] == "level"].iloc[0]
+    assert level_row["Default"] == 0.5
+    assert "fraction" in level_row["Description"].lower()
 
 
 def test_describe_options_method_name_matches_underlying_section(ecat_module):
@@ -1278,6 +1298,56 @@ def test_multiplot_passes_default_expanded_options_to_each_curve(
     assert observed_options[1]["offset"] == pytest.approx(
         ecat_module.MultiplotOptions.from_options({}).offset
     )
+
+
+def test_multiplot_accepts_explicit_per_trace_offsets(
+    ecat_module,
+    cv_factory,
+    monkeypatch,
+):
+    objects = [
+        cv_factory(name="50mVs_sample_CO2_MeCN_10mM_Fc_run01"),
+        cv_factory(name="100mVs_sample_CO2_MeCN_10mM_Fc_run01"),
+        cv_factory(name="200mVs_sample_CO2_MeCN_10mM_Fc_run01"),
+    ]
+    observed_offsets = []
+
+    def spy_plot(self, options=None):
+        observed_offsets.append(dict(options or {})["offset"])
+        return None
+
+    monkeypatch.setattr(ecat_module.cv, "plot", spy_plot)
+    monkeypatch.setattr(
+        ecat_module,
+        "_draw_multiplot_legend_and_colorbars",
+        lambda *args, **kwargs: None,
+    )
+
+    ecat_module.multiplot(objects, {"offset": [0, 2e-6, 5e-6]})
+
+    assert observed_offsets == pytest.approx([0, 2e-6, 5e-6])
+
+    described = ecat_module.describe_options(
+        "multiplot",
+        {"print": False, "return": True},
+    )
+    offset_row = described.loc[described["Option"].eq("offset")].iloc[0]
+    assert "explicit absolute vertical offset per trace" in offset_row["Description"]
+    assert "displayed y-axis units" in offset_row["Description"]
+
+
+def test_multiplot_rejects_offset_list_length_mismatch(ecat_module, cv_factory):
+    objects = [
+        cv_factory(name="50mVs_sample_CO2_MeCN_10mM_Fc_run01"),
+        cv_factory(name="100mVs_sample_CO2_MeCN_10mM_Fc_run01"),
+        cv_factory(name="200mVs_sample_CO2_MeCN_10mM_Fc_run01"),
+    ]
+
+    with pytest.raises(
+        ecat_module.OptionError,
+        match="'offset' must contain one value per trace: expected 3, received 2",
+    ):
+        ecat_module.multiplot(objects, {"offset": [0, 2e-6]})
 
 
 def test_multimultiplot_forwards_default_expanded_options_into_multiplot(

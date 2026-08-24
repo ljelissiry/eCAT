@@ -40,6 +40,27 @@ def test_factory_loading_sets_common_cv_metadata(ecat_module, fixtures_dir):
     assert obj.segments == 2
 
 
+def test_cv_current_remains_default_y_axis_with_time_and_cycle_columns(
+    ecat_module,
+    fixtures_dir,
+):
+    obj = ecat_module.echem.from_file(
+        str(fixtures_dir / "ch_cv.txt"),
+        {"print": False},
+    )
+    obj.data["Time"] = list(range(len(obj.data)))
+    obj.data["Cycle"] = 1
+
+    y = obj.y()
+    x = obj.x()
+    _, segment_y = obj.analysis_segment_data({"segment": 1})
+    _, expected_segment_y = obj._select_segments(x, obj.data["Current"], 1)
+
+    assert y.name == "Current"
+    assert y.tolist() == pytest.approx(obj.data["Current"].tolist())
+    assert segment_y.tolist() == pytest.approx(expected_segment_y.tolist())
+
+
 def test_from_file_invert_current_applies_once_after_promotion(ecat_module, fixtures_dir):
     filepath = str(fixtures_dir / "ch_cv.txt")
 
@@ -379,4 +400,4 @@ def test_get_data_returns_empty_list_when_no_files_convert(
 
     assert objects == []
     assert "Warning: could not convert `bad_export.txt`" in captured.out
-    assert "No .txt files could be converted into eCAT objects." in captured.out
+    assert "No supported text files could be converted into eCAT objects." in captured.out

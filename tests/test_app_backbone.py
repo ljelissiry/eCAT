@@ -682,7 +682,6 @@ def test_browser_multi_cv_options_filter_sevcik_unsupported_fit_options():
         x_axis="scan rate",
         fit_model="power",
         toggles=["fit", "plot_fit", "plot_all"],
-        sevcik_mode="heterogeneous",
     )
 
     assert options == {
@@ -690,7 +689,6 @@ def test_browser_multi_cv_options_filter_sevcik_unsupported_fit_options():
         "plot all": True,
         "segments": [1, 2],
         "guess potential": -0.2,
-        "scan dependence": 1.0,
     }
 
 
@@ -2271,7 +2269,7 @@ def test_browser_default_fe_phoh_multiscan_sorts_after_main_series(repo_root):
     assert names[7].startswith("MeCN_CO2_0.1MTBAPF6_3mMFc_1mMFe-tpyPY2Me_-1.2_to_1V")
 
 
-def test_browser_local_path_loading_reports_txt_file_status(fixtures_dir, tmp_path):
+def test_browser_local_path_loading_reports_supported_text_file_status(fixtures_dir, tmp_path):
     from ecat_app.adapters import load_local_path
 
     _copy_fixture(fixtures_dir, tmp_path, "ch_cv.txt")
@@ -2279,7 +2277,23 @@ def test_browser_local_path_loading_reports_txt_file_status(fixtures_dir, tmp_pa
 
     result = load_local_path(tmp_path, recursive=True)
 
-    assert result.status == "2 .txt files found."
+    assert result.status == "2 supported text files found."
+
+
+def test_browser_local_path_loading_discovers_eclab_mpt(fixtures_dir, tmp_path):
+    from ecat_app.adapters import load_local_path
+
+    destination = tmp_path / "eclab_cv.mpt"
+    destination.write_text(
+        (fixtures_dir / "eclab_cv.txt").read_text(encoding="ISO-8859-1"),
+        encoding="ISO-8859-1",
+    )
+
+    result = load_local_path(tmp_path, recursive=False)
+
+    assert result.status == "1 supported text file found."
+    assert len(result.objects) == 1
+    assert type(result.objects[0]).__name__ == "cv"
 
 
 def test_browser_callback_state_includes_import_status(fixtures_dir, tmp_path):
@@ -2291,7 +2305,7 @@ def test_browser_callback_state_includes_import_status(fixtures_dir, tmp_path):
 
     state = handle_local_path_load(str(tmp_path), recursive=True, registry=registry)
 
-    assert state["status"] == "1 .txt file found."
+    assert state["status"] == "1 supported text file found."
 
 
 def test_browser_import_returns_default_multiplot(fixtures_dir, tmp_path):
@@ -2816,7 +2830,7 @@ def test_browser_multi_cv_analysis_equations_and_labeled_inputs():
 
     fowa = multi_analysis_equation_content("fowa")
     tafel = multi_analysis_equation_content("tafel_analysis")
-    sevcik = multi_analysis_equation_content("sevcik_analysis", "heterogeneous")
+    sevcik = multi_analysis_equation_content("sevcik_analysis")
     none = multi_analysis_equation_content("none")
 
     assert "k" in repr(fowa)
@@ -2827,7 +2841,7 @@ def test_browser_multi_cv_analysis_equations_and_labeled_inputs():
     assert "exp" in repr(tafel)
     assert "i" in repr(sevcik)
     assert "ν" in repr(sevcik)
-    assert "1/2" not in repr(sevcik)
+    assert "1/2" in repr(sevcik)
     assert none == ""
 
 
@@ -3995,9 +4009,7 @@ def test_browser_dash_layout_contains_expected_tabs():
     assert "ecat-multi-analysis-options" in rendered
     assert "ecat-multi-option-row" in rendered
     assert "ecat-sevcik-options" in rendered
-    assert "ecat-sevcik-mode" in rendered
-    assert "Homogeneous" in rendered
-    assert "Heterogeneous" in rendered
+    assert "ecat-sevcik-mode" not in rendered
     assert "htmlFor='ecat-multi-segments'" in rendered
     assert "htmlFor='ecat-fowa-redox-potential'" in rendered
     assert "htmlFor='ecat-tafel-tof-max'" in rendered

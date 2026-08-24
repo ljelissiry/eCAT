@@ -15,6 +15,7 @@ OPTION_MODEL_CASES = [
     ("multi_scatterplot", option_models.MultiScatterplotOptions),
     ("cv.peak_potential", option_models.PeakPotentialOptions),
     ("cv.peak_current", option_models.PeakCurrentOptions),
+    ("cv.peak_width", option_models.PeakWidthOptions),
     ("normalize", option_models.NormalizeOptions),
     ("normalize_current", option_models.NormalizationOptions),
     ("scale_current", option_models.ScaleCurrentOptions),
@@ -253,6 +254,58 @@ def test_import_options_use_invert_current_for_data_sign(ecat_module):
 
     assert options["invert current"] is True
     assert "invert y axis" not in options
+
+
+def test_peak_width_options_accept_common_public_keys(ecat_module):
+    opts = ecat_module.PeakWidthOptions.from_options(
+        {
+            "plot": False,
+            "print": False,
+            "pretty print": False,
+            "sig figs": 5,
+            "level": 0.5,
+            "guess potential": -0.4,
+            "segment": 1,
+            "peak kind": "max",
+            "tangent range": "auto",
+        }
+    )
+
+    data = opts.to_options_dict()
+    assert data["level"] == 0.5
+    assert data["guess potential"] == -0.4
+    assert data["peak kind"] == "max"
+
+
+def test_peak_width_options_reject_side_mode_and_interpolate(ecat_module):
+    with pytest.raises(ecat_module.OptionError, match="Unknown option 'side'"):
+        ecat_module.PeakWidthOptions.from_options({"side": "both"})
+
+    with pytest.raises(ecat_module.OptionError, match="Unknown option 'mode'"):
+        ecat_module.PeakWidthOptions.from_options({"mode": "raw"})
+
+    with pytest.raises(ecat_module.OptionError, match="Unknown option 'interpolate'"):
+        ecat_module.PeakWidthOptions.from_options({"interpolate": False})
+
+
+def test_multiplot_rejects_removed_stacking_option(ecat_module):
+    with pytest.raises(ecat_module.OptionError, match="Unknown option 'stacking'"):
+        ecat_module.MultiplotOptions.from_options({"stacking": True})
+
+    described = ecat_module.describe_options(
+        "multiplot",
+        {"print": False, "return": True},
+    )
+    assert "stacking" not in described["Option"].tolist()
+
+
+@pytest.mark.parametrize("level", [0, -0.1, 1.0, 1.2])
+def test_peak_width_options_require_fractional_level(ecat_module, level):
+    with pytest.raises(
+        ecat_module.OptionError,
+        match="'level' must be greater than 0 and less than 1",
+    ):
+        ecat_module.PeakWidthOptions.from_options({"level": level})
 
 
 @pytest.mark.parametrize(

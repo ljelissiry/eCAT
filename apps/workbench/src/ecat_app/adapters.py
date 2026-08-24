@@ -754,7 +754,7 @@ def _load_one_file(path: Path, import_options: dict | None = None) -> tuple[obje
 def _status_from_stdout(output: str) -> str:
     for line in output.splitlines():
         stripped = line.strip()
-        if ".txt file" in stripped and "found" in stripped:
+        if "supported text file" in stripped and "found" in stripped:
             return stripped
         if stripped.startswith("No files were found") or stripped.startswith("Found "):
             return stripped

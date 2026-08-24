@@ -43,6 +43,24 @@ def test_ca_charge_can_resolve_target_from_moles_and_electrons(
     assert result.axes is None
 
 
+def test_ca_charge_prints_tidy_table(ecat_module, blank_echem_factory, capsys):
+    obj = blank_echem_factory(ecat_module.ca)
+    obj.type = "Chronoamperometry"
+    obj.data = pd.DataFrame({"Time": [0.0, 1.0, 2.0], "Current": [0.0, 0.5, 1.0]})
+    obj.units = {"Time": "s", "Current": "A"}
+    obj.num_x_cols = 1
+
+    result = obj.charge({"plot": False, "print": True, "pretty print": False})
+
+    printed = capsys.readouterr().out
+    assert result.table["Metric"].tolist() == ["Final Charge"]
+    assert "Charge:" in printed
+    assert "Metric" in printed
+    assert "Value" in printed
+    assert "Final Charge" in printed
+    assert "Final charge:" not in printed
+
+
 def test_ca_time_at_charge_uses_target_options_and_can_plot_ca(
     ecat_module,
     blank_echem_factory,
@@ -65,7 +83,7 @@ def test_ca_time_at_charge_uses_target_options_and_can_plot_ca(
     assert result["time"] == pytest.approx(1.5)
     assert result["target charge"] == pytest.approx(1.0)
     assert result.axes is not None
-    assert result.axes.get_ylabel() == "Current (mA)"
+    assert result.axes.get_ylabel() == "Current (A)"
 
 
 def test_ca_plot_accepts_plot_charge_overlay(ecat_module, blank_echem_factory):
@@ -77,9 +95,9 @@ def test_ca_plot_accepts_plot_charge_overlay(ecat_module, blank_echem_factory):
 
     ax = obj.plot({"plot charge": True, "print": False})
 
-    assert ax.get_ylabel() == "Current (mA)"
+    assert ax.get_ylabel() == "Current (A)"
     assert len(ax.figure.axes) == 2
-    assert ax.figure.axes[1].get_ylabel() == "Charge (mC)"
+    assert ax.figure.axes[1].get_ylabel() == "Charge (C)"
 
 
 def test_ca_plot_charge_overlay_inherits_general_y_inversion(
@@ -405,11 +423,18 @@ def test_time_at_charge_prints_scaled_time_unit(
     obj.units = {"Time": "s", "Current": "A"}
     obj.num_x_cols = 1
 
-    result = obj.time_at_charge({"target charge": 60.0, "plot": False})
+    result = obj.time_at_charge(
+        {"target charge": 60.0, "plot": False, "pretty print": False}
+    )
 
     assert result["time"] == pytest.approx(600.0)
     assert result["display time"] == pytest.approx(10.0)
-    assert "10.0 min" in capsys.readouterr().out
+    printed = capsys.readouterr().out
+    assert "Time At Charge:" in printed
+    assert "Metric" in printed
+    assert "Value" in printed
+    assert "10.00 min" in printed
+    assert "t(60 C)" not in printed
 
 
 def test_time_at_charge_does_not_add_legend_by_default(ecat_module, blank_echem_factory):

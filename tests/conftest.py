@@ -44,6 +44,7 @@ def ecat_module(repo_root):
         parsers,
         plotting,
         reference,
+        reversibility,
         utils,
     )
 
@@ -55,6 +56,7 @@ def ecat_module(repo_root):
         plotting,
         analysis_cv,
         analysis_batch,
+        reversibility,
         collection,
         reference,
         io,

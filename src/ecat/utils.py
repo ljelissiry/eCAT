@@ -699,9 +699,9 @@ def _scale_trace_to_match_current(trace, current_display):
 def scale_value(val, unit, selected_unit='auto', candidates=('k', 'm', 'μ', 'n', 'p')):
     """
     Scale a single numeric value `val` whose unit is something like
-    'V/s', 'mA', 's', etc.  If `selected_unit=='auto'` it picks the largest
-    SI prefix so that |scaled_val| >= 1.  Otherwise, it honors your
-    explicit prefix.  Returns (scaled_val, full_unit_str).
+    'V/s', 'mA', 's', etc. If `selected_unit=='auto'` it picks the first
+    SI prefix whose absolute scaled value is at least 1 and less than 1000.
+    Otherwise, it honors your explicit prefix. Returns (scaled_val, full_unit_str).
     """
     # 1) split numerator/denominator (e.g. 'V/s' → 'V', 's')
     if '/' in unit:
@@ -743,7 +743,7 @@ def scale_value(val, unit, selected_unit='auto', candidates=('k', 'm', 'μ', 'n'
         m = abs(base_val)
         for p in candidates:
             f = get_conversion_factor(p + base)
-            if m / f >= 1 and m / f < 10**3:
+            if _is_readable_scaled_abs(m, f):
                 new_val = base_val / f
                 new_unit = p + base
                 break
@@ -767,6 +767,23 @@ def scale_value(val, unit, selected_unit='auto', candidates=('k', 'm', 'μ', 'n'
         new_unit = f"{new_unit}/{denom_unit}"
 
     return new_val, new_unit
+
+
+def _finite_abs_max(values):
+    values = np.asarray(values, dtype=float)
+    if values.size == 0:
+        return 0.0
+    finite = values[np.isfinite(values)]
+    if finite.size == 0:
+        return 0.0
+    return float(np.nanmax(np.abs(finite)))
+
+
+def _is_readable_scaled_abs(abs_value, factor):
+    if factor == 0 or not np.isfinite(abs_value) or not np.isfinite(factor):
+        return False
+    scaled = abs_value / abs(factor)
+    return 1 <= scaled < 1e3
 
 
 def replace_keyword(name, keyword):
@@ -818,6 +835,22 @@ def round_sigfigs(number, sigfigs):
     if number == 0:
         return 0
     return round(number, sigfigs - 1 - int(np.floor(np.log10(abs(number)))))
+
+
+def format_sigfigs(number, sigfigs):
+    """Format a number with the requested significant figures, preserving zeros."""
+    try:
+        numeric = float(number)
+    except (TypeError, ValueError):
+        return str(number)
+    if not np.isfinite(numeric):
+        return str(numeric)
+    try:
+        precision = max(1, int(sigfigs))
+    except (TypeError, ValueError):
+        precision = 4
+    return f"{numeric:#.{precision}g}"
+
 
 def count_segments(x_values):
     if len(x_values) <= 1:
@@ -934,11 +967,11 @@ def _scale_current_density_axis(y_base, current_unit, selected_unit='auto', cand
     y_in_base_target_area = y_base * source_current_factor * area_factor
 
     if auto_current:
-        abs_max = max(abs(np.nanmin(y_in_base_target_area)), abs(np.nanmax(y_in_base_target_area)))
+        abs_max = _finite_abs_max(y_in_base_target_area)
         target_prefix = ""
         for prefix in (candidates or SI_PREFIXES):
             factor = get_conversion_factor(prefix + current_base)
-            if abs_max / factor >= 1:
+            if _is_readable_scaled_abs(abs_max, factor):
                 target_prefix = prefix
                 break
         target_current_unit = target_prefix + current_base
@@ -990,11 +1023,11 @@ def scale_axis(y_base, current_unit, selected_unit='auto', candidates=('m', 'μ'
     y_in_base = y_base * factor_base
 
     if selected_unit == 'auto':
-        abs_max = max(abs(np.nanmin(y_in_base)), abs(np.nanmax(y_in_base)))
+        abs_max = _finite_abs_max(y_in_base)
         for p in (candidates or SI_PREFIXES):
             target_unit = p + base
             f = get_conversion_factor(target_unit)
-            if abs_max / f >= 1:
+            if _is_readable_scaled_abs(abs_max, f):
                 return factor_base / f, target_unit
         return factor_base, base
     elif selected_unit is None:
@@ -1375,6 +1408,7 @@ __all__ = [
     'replace_keyword',
     'apply_text_alterations',
     'round_sigfigs',
+    'format_sigfigs',
     'count_segments',
     '_AREA_UNIT_TO_M',
     '_normalize_current_unit_text',

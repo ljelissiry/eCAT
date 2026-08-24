@@ -44,6 +44,25 @@ def _make_synthetic_cv(blank_echem_factory, ecat_module, potential, current, nam
     return obj
 
 
+def _synthetic_tangent_width_cv(ecat_module, blank_echem_factory):
+    potential = np.linspace(-0.30, 0.30, 601)
+    baseline = 2.0e-6 + 1.0e-6 * potential
+    sigma = 0.050
+    peak = 8.0e-6 * np.exp(-0.5 * (potential / sigma) ** 2)
+    current = baseline + peak
+
+    data = pd.DataFrame(
+        {
+            ("raw", "Potential (V)"): potential,
+            ("raw", "Current (A)"): current,
+        }
+    )
+    obj = blank_echem_factory(ecat_module.cv)
+    obj.manual_init("100mVs_tangent_width_peak", data, options={})
+    obj.segments = 1
+    return obj, sigma
+
+
 def test_cv_manual_init_builds_basic_in_memory_object(cv_factory):
     obj = cv_factory()
 
@@ -317,6 +336,138 @@ def test_cv_peak_analysis_accepts_guess_potential_shorthand(cv_factory):
     assert shorthand_half_peak["Δ(Ep - Ep/2)"] == pytest.approx(0.1, abs=1e-12)
 
 
+def test_peak_width_default_reports_tangent_corrected_fwhm(ecat_module, blank_echem_factory):
+    obj, sigma = _synthetic_tangent_width_cv(ecat_module, blank_echem_factory)
+
+    result = obj.peak_width(
+        {
+            "plot": False,
+            "print": False,
+            "guess potential": 0.0,
+            "peak kind": "max",
+            "tangent range": [0.20, 0.30],
+            "peak prominence": 1e-7,
+        }
+    )
+
+    expected_width = 2 * np.sqrt(2 * np.log(2)) * sigma
+    assert result["level"] == pytest.approx(0.5)
+    assert result["width"] == pytest.approx(expected_width, abs=0.003)
+    assert result["E leading"] == pytest.approx(-expected_width / 2, abs=0.003)
+    assert result["E trailing"] == pytest.approx(expected_width / 2, abs=0.003)
+    assert result["Ep"] == pytest.approx(0.0, abs=obj.delta_x)
+    assert result.primary == pytest.approx(expected_width, abs=0.003)
+
+
+def test_peak_width_stores_raw_values_and_formats_sig_figs_only_on_display(
+    ecat_module,
+    blank_echem_factory,
+    capsys,
+):
+    obj, _sigma = _synthetic_tangent_width_cv(ecat_module, blank_echem_factory)
+
+    result = obj.peak_width(
+        {
+            "plot": False,
+            "print": False,
+            "guess potential": 0.0,
+            "peak kind": "max",
+            "tangent range": [0.20, 0.30],
+            "peak prominence": 1e-7,
+            "sig figs": 2,
+        }
+    )
+
+    assert result["width"] == pytest.approx(result.diagnostics["width raw"])
+    assert result["E leading"] == pytest.approx(result.diagnostics["E leading raw"])
+    assert result["E trailing"] == pytest.approx(result.diagnostics["E trailing raw"])
+
+    result.show({"pretty print": False, "sig figs": 4})
+    out = capsys.readouterr().out
+    assert "117.7 mV" in out
+    assert "58.87 mV" in out
+
+
+def test_peak_width_level_changes_crossing_fraction(ecat_module, blank_echem_factory):
+    obj, sigma = _synthetic_tangent_width_cv(ecat_module, blank_echem_factory)
+
+    result = obj.peak_width(
+        {
+            "plot": False,
+            "print": False,
+            "guess potential": 0.0,
+            "peak kind": "max",
+            "tangent range": [0.20, 0.30],
+            "peak prominence": 1e-7,
+            "level": 0.25,
+        }
+    )
+
+    expected_width = 2 * sigma * np.sqrt(2 * np.log(1 / 0.25))
+    assert result["level"] == pytest.approx(0.25)
+    assert result["width"] == pytest.approx(expected_width, abs=0.004)
+
+
+def test_peak_width_requires_two_level_crossings(ecat_module, blank_echem_factory):
+    obj, _sigma = _synthetic_tangent_width_cv(ecat_module, blank_echem_factory)
+    obj.data = obj.data.loc[obj.data["Potential"] <= 0.01].reset_index(drop=True)
+
+    with pytest.raises(ValueError, match="two level crossings"):
+        obj.peak_width(
+            {
+                "plot": False,
+                "print": False,
+                "guess potential": 0.0,
+                "peak kind": "max",
+                "tangent range": [0.20, 0.30],
+                "peak prominence": 1e-7,
+            }
+        )
+
+
+def test_peak_width_plot_marks_width_crossings(ecat_module, blank_echem_factory):
+    obj, _sigma = _synthetic_tangent_width_cv(ecat_module, blank_echem_factory)
+
+    result = obj.peak_width(
+        {
+            "plot": True,
+            "print": False,
+            "guess potential": 0.0,
+            "peak kind": "max",
+            "tangent range": [0.20, 0.30],
+            "peak prominence": 1e-7,
+        }
+    )
+    ax = result.axes
+
+    assert ax is not None
+    assert len(ax.lines) >= 2
+    assert len(ax.collections) >= 1
+    plt.close(ax.figure)
+
+
+def test_peak_width_plot_all_includes_tangent_diagnostic(ecat_module, blank_echem_factory):
+    obj, _sigma = _synthetic_tangent_width_cv(ecat_module, blank_echem_factory)
+
+    result = obj.peak_width(
+        {
+            "plot": True,
+            "plot all": True,
+            "print": False,
+            "guess potential": 0.0,
+            "peak kind": "max",
+            "tangent range": [0.20, 0.30],
+            "peak prominence": 1e-7,
+        }
+    )
+    ax = result.axes
+
+    assert ax is not None
+    assert len(ax.lines) >= 3
+    assert len(ax.collections) >= 2
+    plt.close(ax.figure)
+
+
 def test_peak_potential_peak_kind_filters_nearest_opposite_extremum(cv_factory):
     potential = np.linspace(-0.2, 0.2, 161)
     current = (
@@ -434,11 +585,18 @@ def test_single_cv_analysis_result_preserves_dict_access_and_adds_table(cv_facto
     assert result["Ep"] == pytest.approx(0.2)
     assert result.primary == pytest.approx(0.2)
     assert list(result.table.columns) == ["Metric", "Value"]
-    assert result.table.to_dict("records")[0] == {"Metric": "Ep", "Value": "0.2 V"}
+    assert result.table.to_dict("records")[0] == {"Metric": "Ep", "Value": "200.0 mV"}
     assert "Segment" not in result.table.columns
 
 
-def test_single_cv_analysis_result_scales_display_current_and_show_plain(
+def test_cv_analysis_number_formatter_displays_requested_sig_figs(ecat_module):
+    assert ecat_module._cv_analysis_format_number(100, 4) == "100.0"
+    assert ecat_module._cv_analysis_format_number(47, 4) == "47.00"
+    assert ecat_module._cv_analysis_format_number(8, 4) == "8.000"
+    assert ecat_module._cv_analysis_format_number(105.967, 4) == "106.0"
+
+
+def test_single_cv_analysis_result_scales_display_values_and_show_plain(
     cv_factory,
     ecat_module,
     capsys,
@@ -461,7 +619,7 @@ def test_single_cv_analysis_result_scales_display_current_and_show_plain(
     assert abs(result.primary) < 1e-3
     rows = result.table.set_index("Metric")["Value"].to_dict()
     assert rows["ip"].endswith("μA")
-    assert rows["Ep"].endswith("V")
+    assert rows["Ep"].endswith("mV")
 
     result.show({"pretty print": False})
     out = capsys.readouterr().out
@@ -469,6 +627,69 @@ def test_single_cv_analysis_result_scales_display_current_and_show_plain(
     assert "Metric" in out
     assert "Value" in out
     assert "μA" in out
+    assert "mV" in out
+
+
+def test_cv_analysis_result_show_formats_sig_figs_and_units_at_display_time(
+    cv_factory,
+    capsys,
+):
+    obj = cv_factory()
+    result = obj.peak_current(
+        {
+            "plot": False,
+            "print": False,
+            "sig figs": 6,
+            "noise window": 5,
+            "noise polyorder": 2,
+            "peak prominence": 1e-7,
+            "tangent range": [0.05, 0.3],
+            "percent threshold": 100,
+        }
+    )
+
+    result.show({"pretty print": False, "sig figs": 4, "x unit": "auto"})
+    out_auto = capsys.readouterr().out
+    assert "200.0 mV" in out_auto
+    assert "μA" in out_auto
+
+    result.show({"pretty print": False, "sig figs": 5, "x unit": "V"})
+    out_volts = capsys.readouterr().out
+    assert "0.20000 V" in out_volts
+    assert "mV" not in out_volts
+
+
+def test_cv_analysis_result_auto_potential_display_keeps_volt_scale_for_large_potentials(
+    blank_echem_factory,
+    ecat_module,
+    capsys,
+):
+    potential = np.linspace(-1.6, -1.3, 301)
+    current = 2.0e-6 * np.exp(-0.5 * ((potential + 1.474) / 0.025) ** 2)
+    obj = _make_synthetic_cv(
+        blank_echem_factory,
+        ecat_module,
+        potential,
+        current,
+        "100mVs_large_potential_peak",
+    )
+    result = obj.peak_potential(
+        {
+            "plot": False,
+            "print": False,
+            "guess potential": -1.474,
+            "peak kind": "max",
+            "noise window": None,
+            "peak prominence": 1e-8,
+        }
+    )
+
+    assert result.table.to_dict("records")[0] == {"Metric": "Ep", "Value": "-1.474 V"}
+
+    result.show({"pretty print": False, "sig figs": 4, "x unit": "auto"})
+    out = capsys.readouterr().out
+    assert "-1.474 V" in out
+    assert "-1474 mV" not in out
 
 
 def test_cv_analysis_result_pretty_show_formats_metric_labels_as_html(
@@ -568,6 +789,35 @@ def test_wave_info_analysis_result_includes_segment_when_multiple_segments(
     assert result["P2 Ep"] == pytest.approx(-0.1)
 
 
+def test_wave_info_show_autoscales_potential_rows_as_one_display_group(
+    blank_echem_factory,
+    ecat_module,
+    capsys,
+):
+    obj = _make_dual_peak_cv(blank_echem_factory, ecat_module)
+    result = obj.wave_info(
+        {
+            "plot": False,
+            "print": False,
+            "noise window": 7,
+            "noise polyorder": 2,
+            "peak prominence": 5e-7,
+            "guess potential": [0.12, -0.11],
+            "tangent range": [0.05, 0.3],
+            "percent threshold": 100,
+        }
+    )
+
+    result.show({"pretty print": False, "sig figs": 3, "x unit": "auto"})
+    out = capsys.readouterr().out
+
+    assert "Wave Info:" in out
+    assert "mV" in out
+    assert "μA" in out
+    assert "E(1/2)" in out
+    assert "12.5 mV" in out
+
+
 def test_half_peak_potential_plots_peak_and_tangent_annotations(cv_factory):
     obj = cv_factory()
 
@@ -587,6 +837,89 @@ def test_half_peak_potential_plots_peak_and_tangent_annotations(cv_factory):
     assert len(ax.lines) == 2
     assert len(ax.collections) >= 3
     assert ax.get_legend() is None
+
+
+def test_peak_info_includes_tangent_corrected_half_width(
+    ecat_module,
+    blank_echem_factory,
+):
+    obj, sigma = _synthetic_tangent_width_cv(ecat_module, blank_echem_factory)
+
+    result = obj.peak_info(
+        {
+            "plot": False,
+            "print": False,
+            "guess potential": 0.0,
+            "peak kind": "max",
+            "peak prominence": 1e-7,
+            "tangent range": [0.20, 0.30],
+            "percent threshold": 100,
+        }
+    )
+
+    expected_fwhm = 2 * np.sqrt(2 * np.log(2)) * sigma
+    assert result["W1/2"] == pytest.approx(expected_fwhm, abs=2e-4)
+    assert result["width status"] == "ok"
+    assert result.diagnostics["peak width"]["width raw"] == pytest.approx(
+        expected_fwhm, abs=2e-4
+    )
+    assert "W1/2" in result.table["Metric"].tolist()
+    assert "Width Status" not in result.table["Metric"].tolist()
+
+
+def test_peak_info_soft_fails_unavailable_half_width(ecat_module, blank_echem_factory):
+    obj, _sigma = _synthetic_tangent_width_cv(ecat_module, blank_echem_factory)
+    obj.data = obj.data.loc[obj.data["Potential"] <= 0.01].reset_index(drop=True)
+
+    with pytest.warns(UserWarning, match="W1/2.*unavailable"):
+        result = obj.peak_info(
+            {
+                "plot": False,
+                "print": False,
+                "guess potential": 0.0,
+                "peak kind": "max",
+                "peak prominence": 1e-7,
+                "tangent range": [0.20, 0.30],
+                "percent threshold": 100,
+            }
+        )
+
+    assert np.isnan(result["W1/2"])
+    assert result["width status"] == "Unavailable"
+    assert result.diagnostics["peak width"]["status"] == "Unavailable"
+    assert "Width Status" in result.table["Metric"].tolist()
+    assert "reason" not in result.table.to_string(index=False).lower()
+
+
+def test_wave_info_includes_branch_widths_and_physical_peak_current_ratio(
+    blank_echem_factory,
+    ecat_module,
+):
+    obj = _make_dual_peak_cv(blank_echem_factory, ecat_module)
+    result = obj.wave_info(
+        {
+            "plot": False,
+            "print": False,
+            "noise window": 7,
+            "noise polyorder": 2,
+            "peak prominence": 5e-7,
+            "guess potential": [0.12, -0.11],
+            "tangent range": [0.05, 0.3],
+            "percent threshold": 100,
+        }
+    )
+
+    assert "P1 W1/2" in result
+    assert "P2 W1/2" in result
+    assert result["anodic segment"] == 1
+    assert result["cathodic segment"] == 2
+    assert result["ipa"] == pytest.approx(result["P1 ip"])
+    assert result["ipc"] == pytest.approx(result["P2 ip"])
+    assert result["|ipa/ipc|"] == pytest.approx(abs(result["P1 ip"] / result["P2 ip"]))
+    assert "return/forward ip ratio" not in result
+    assert result.diagnostics["current ratio"]["source"] == "tangent corrected"
+    assert result.diagnostics["current ratio"]["anodic segment"] == 1
+    assert result.diagnostics["current ratio"]["cathodic segment"] == 2
 
 
 def test_peak_current_manual_tangent_potential_regression(ecat_module, blank_echem_factory):
@@ -1303,11 +1636,15 @@ def test_half_wave_potential_preserves_return_shape_with_explicit_guesses(
     assert half_wave_result["ΔE"] == pytest.approx(0.225)
     assert half_wave_result["peak 1"] == {
         "segment": 1,
+        "scan direction": "increasing",
+        "branch": "anodic",
         "Ep": pytest.approx(0.125),
         "Ep y": pytest.approx(4.347705076372728e-06),
     }
     assert half_wave_result["peak 2"] == {
         "segment": 2,
+        "scan direction": "decreasing",
+        "branch": "cathodic",
         "Ep": pytest.approx(-0.1),
         "Ep y": pytest.approx(-2.832368301821216e-06),
     }
@@ -1526,10 +1863,8 @@ def test_scale_current_pretty_print_adds_scale(
     assert len(scaled) == 2
     assert displayed["kwargs"]["title"] == "Current Scaling Summary"
     assert "Scale Factor" in table.columns
-    assert table["Scale Factor"].iloc[0] == pytest.approx(1.0)
-    assert table["Scale Factor"].iloc[1] == pytest.approx(
-        scaled[1].current_scale_factor
-    )
+    assert table["Scale Factor"].iloc[0] == "1.000"
+    assert table["Scale Factor"].iloc[1] == "2.000"
 
 
 def test_scale_current_plain_print_keeps_text_summary(

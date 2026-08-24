@@ -10,6 +10,12 @@ import warnings as _warnings
 
 import pandas as pd
 
+from ._file_formats import validate_default_text_input
+
+
+_SCAN_RATE_REL_TOLERANCE = 1e-3
+_SCAN_RATE_ABS_TOLERANCE = 1e-6
+
 
 def parse_ch_timestamp(time_str):
     """
@@ -247,7 +253,12 @@ def _scan_rate_mismatch_warning(filepath, header_scan_rate, display_root=None):
         return None
     if not (math.isfinite(header_value) and math.isfinite(filename_value)):
         return None
-    if math.isclose(header_value, filename_value, rel_tol=1e-9, abs_tol=1e-12):
+    if math.isclose(
+        header_value,
+        filename_value,
+        rel_tol=_SCAN_RATE_REL_TOLERANCE,
+        abs_tol=_SCAN_RATE_ABS_TOLERANCE,
+    ):
         return None
     display_name = _format_file_for_warning(filepath, display_root)
     return (
@@ -1076,6 +1087,7 @@ def _make_parse_result(
 def parse_text_file_to_result(filepath, options=None):
     """Parse a text electrochemistry export into a pre-promotion ParseResult."""
     options = {} if options is None else dict(options)
+    validate_default_text_input(filepath)
     lines, encoding = _read_text_lines(filepath)
     nonempty_header = "\n".join(lines[:20])
     software = options.get("software")

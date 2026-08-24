@@ -56,6 +56,35 @@ def test_get_conversion_factor_and_scale_axis(ecat_module):
     assert unit == "μA"
 
 
+def test_scale_axis_auto_requires_readable_scaled_range(ecat_module):
+    scale_factor, unit = ecat_module.scale_axis(np.array([0.0, 0.16]), "V")
+    assert scale_factor == pytest.approx(1e3)
+    assert unit == "mV"
+
+    scale_factor, unit = ecat_module.scale_axis(np.array([0.0, -1.474]), "V")
+    assert scale_factor == pytest.approx(1.0)
+    assert unit == "V"
+
+    scale_factor, unit = ecat_module.scale_axis(np.array([0.0, 2.5e-3]), "A")
+    assert scale_factor == pytest.approx(1e3)
+    assert unit == "mA"
+
+    scale_factor, unit = ecat_module.scale_axis(np.array([0.0, 1.2]), "A")
+    assert scale_factor == pytest.approx(1.0)
+    assert unit == "A"
+
+
+def test_scale_axis_explicit_unit_can_exceed_readable_auto_range(ecat_module):
+    scale_factor, unit = ecat_module.scale_axis(
+        np.array([0.0, -1.474]),
+        "V",
+        selected_unit="mV",
+    )
+
+    assert scale_factor == pytest.approx(1e3)
+    assert unit == "mV"
+
+
 def test_scale_axis_respects_already_prefixed_current_units(ecat_module):
     scale_factor, unit = ecat_module.scale_axis(np.array([0.0, 35.2]), "μA")
 
@@ -120,6 +149,16 @@ def test_current_density_auto_scales_current_numerator(ecat_module):
 
     assert scale_factor == pytest.approx(1e6)
     assert unit == "μA/cm$^2$"
+
+
+def test_current_density_auto_requires_readable_scaled_range(ecat_module):
+    scale_factor, unit = ecat_module.scale_axis(
+        np.array([0.0, 1.2]),
+        "A/cm$^2$",
+    )
+
+    assert scale_factor == pytest.approx(1.0)
+    assert unit == "A/cm$^2$"
 
 
 @pytest.mark.parametrize("selected_unit", ["mm", "mm^2", "/mm^2"])

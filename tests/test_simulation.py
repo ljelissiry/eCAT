@@ -2870,7 +2870,7 @@ def test_simulation_result_plot_smoke(ecat_module, monkeypatch):
     assert result.axes.lines[0].get_linestyle() == "--"
     assert result.axes.lines[0].get_label() == "Simulation"
     assert result.axes.get_xlabel() == "Potential (V)"
-    assert result.axes.get_ylabel() == "Current (mA)"
+    assert result.axes.get_ylabel() == "Current (A)"
 
 
 def test_simulation_result_plot_uses_ecat_axis_units(ecat_module):

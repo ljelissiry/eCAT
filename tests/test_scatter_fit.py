@@ -939,7 +939,7 @@ def test_fit_model_power_recovers_parameters_and_can_plot_and_print(ecat_module,
     assert "Fit Model:" in printed
     assert "y = A x^n" in printed
     assert "y = 3x^1.5" not in printed
-    assert any("y = 3x^{1.5}" in text.get_text() for text in plt.gca().get_legend().get_texts())
+    assert any("y = 3.000x^{1.500}" in text.get_text() for text in plt.gca().get_legend().get_texts())
     assert plt.gca().lines[0].get_label().startswith("Power Fit")
     assert plt.gca().get_legend() is not None
 
@@ -2821,6 +2821,7 @@ def test_sevcik_auto_selects_one_segment_from_anchor(
     )
 
     assert "Seg 1 Peaks" in result.table.columns
+    assert "Name" in result.table.columns
     assert "Seg 2 Peaks" not in result.table.columns
     assert result.summary["segment selection"]["mode"] == "auto"
     assert result.summary["segment selection"]["selected segment"] == 1
@@ -2980,24 +2981,32 @@ def test_sevcik_prints_symbolic_equation_shared_params_and_fit_results(
     )
 
     output = capsys.readouterr().out
-    assert "Sevcik Analysis Summary:" in output
-    assert "[Sevcik diffusion coefficient equation]" in output
+    assert "Sevcik Analysis Parameters:" in output
+    assert "[Sevcik Analysis Equations]" in output
     assert "D = (R * T / (F * n)^3) * (m / (0.4463 * S * C))^2" in output
     assert "D = (8.31446" not in output
     assert "m = converted fit slope" not in output
     assert "Parameter" in output
+    assert "Symbol" in output
     assert "Value" in output
-    assert "n" in output
-    assert "298 K" in output
-    assert "0.071 cm^2" in output
-    assert "1e-06 mol/cm^3" in output
+    assert "Electron Count" in output
+    assert " n " in output or " n\n" in output
+    assert "298.0 K" in output
+    assert "0.07100 cm^2" in output
+    assert "1.000e-06 mol/cm^3" in output
     assert "Segment   | Diffusion Coef" not in output
-    assert "Sevcik Fit Results:" in output
+    assert "Sevcik Analysis Summary:" in output
     assert "Sevcik Fit Statistics:" not in output
     assert "Diffusion Coefficient" in output
     assert "cm^2/s" in output
     assert "slope" not in output
     assert "intercept" not in output
+    assert output.index("Sevcik Analysis Parameters:") < output.index(
+        "[Sevcik Analysis Equations]"
+    )
+    assert output.index("[Sevcik Analysis Equations]") < output.index(
+        "Sevcik Analysis Summary:"
+    )
 
     assert "Diffusion Coefficient" in result.fit_table.columns
     assert "slope" not in result.fit_table.columns
@@ -3229,8 +3238,9 @@ def test_trumpet_analysis_uses_temperature_attribute_not_legacy_T(ecat_module):
     fits = result.fits
 
     assert list(data["Scan Rates (V/s)"]) == [0.1, 1.0, 10.0]
-    assert "Seg 1 Peak Potential (V)" in data.columns
-    assert "Seg 2 Peak Potential (V)" in data.columns
+    assert "Name" in data.columns
+    assert "Cathodic Peak Potential (V)" in data.columns
+    assert "Anodic Peak Potential (V)" in data.columns
     assert len(fits) == 2
     k0_row = result.fit_table.loc[result.fit_table["Parameter"] == "k0", "Value"].iloc[0]
     assert k0_row == "not computed (D not provided)"
@@ -3355,6 +3365,120 @@ def test_trumpet_analysis_is_public_scatterfit_wrapper(ecat_module):
     assert len(result.fits) == 2
 
 
+def test_trumpet_analysis_maps_mirrored_scan_orders_to_same_alpha_beta(ecat_module):
+    class DirectionalCV:
+        def __init__(self, scan_rate, first_branch):
+            self.name = f"{first_branch}-{scan_rate:g}"
+            self.scan_rate = scan_rate
+            self.temperature = 298
+            self.segments = 2
+            self.first_branch = first_branch
+
+        def analysis_segment_data(self, options=None):
+            segment = int((options or {}).get("segment", 1))
+            first_increases = self.first_branch == "anodic"
+            increases = first_increases if segment == 1 else not first_increases
+            potential = np.linspace(-0.5, 0.5, 51)
+            if not increases:
+                potential = potential[::-1]
+            return potential, np.zeros_like(potential)
+
+        def half_wave_potential(self, options=None):
+            segments = list((options or {}).get("segments", [1, 2]))
+            logv = np.log10(float(self.scan_rate))
+            branch_ep = {
+                "cathodic": -0.30 - 0.05 * logv,
+                "anodic": 0.30 + 0.05 * logv,
+            }
+            first = self.first_branch
+            second = "cathodic" if first == "anodic" else "anodic"
+            return {
+                "E(1/2)": 0.0,
+                "ΔE": abs(branch_ep[first] - branch_ep[second]),
+                "peak 1": {"segment": segments[0], "Ep": branch_ep[first]},
+                "peak 2": {"segment": segments[1], "Ep": branch_ep[second]},
+            }
+
+    scan_rates = [0.1, 1.0, 10.0]
+    reduction_first = [DirectionalCV(rate, "cathodic") for rate in scan_rates]
+    oxidation_first = [DirectionalCV(rate, "anodic") for rate in scan_rates]
+    mixed_order = [
+        DirectionalCV(0.1, "cathodic"),
+        DirectionalCV(1.0, "anodic"),
+        DirectionalCV(10.0, "cathodic"),
+    ]
+
+    reduction_result = ecat_module.trumpet_analysis(
+        reduction_first,
+        {"plot": False, "print": False, "segments": [1, 2]},
+    )
+    oxidation_result = ecat_module.trumpet_analysis(
+        oxidation_first,
+        {"plot": False, "print": False, "segments": [1, 2]},
+    )
+    mixed_result = ecat_module.trumpet_analysis(
+        mixed_order,
+        {"plot": False, "print": False, "segments": [1, 2]},
+    )
+
+    def coefficient(result, symbol):
+        return float(result.fit_table.loc[result.fit_table["Parameter"] == symbol, "Value"].iloc[0])
+
+    assert coefficient(reduction_result, "α") == pytest.approx(
+        coefficient(oxidation_result, "α")
+    )
+    assert coefficient(reduction_result, "β") == pytest.approx(
+        coefficient(oxidation_result, "β")
+    )
+    assert coefficient(reduction_result, "α") == pytest.approx(
+        coefficient(mixed_result, "α")
+    )
+    assert coefficient(reduction_result, "β") == pytest.approx(
+        coefficient(mixed_result, "β")
+    )
+    assert reduction_result.fits[0][0] == pytest.approx(-0.05)
+    assert oxidation_result.fits[0][0] == pytest.approx(-0.05)
+    assert reduction_result.fits[1][0] == pytest.approx(0.05)
+    assert oxidation_result.fits[1][0] == pytest.approx(0.05)
+    assert reduction_result.summary["segment selection"]["cathodic segment"] == 1
+    assert oxidation_result.summary["segment selection"]["cathodic segment"] == 2
+    assert reduction_result.summary["segment selection"]["anodic segment"] == 2
+    assert oxidation_result.summary["segment selection"]["anodic segment"] == 1
+    assert mixed_result.summary["segment selection"]["cathodic segment"] is None
+    assert mixed_result.summary["segment selection"]["anodic segment"] is None
+    assert mixed_result.summary["segment selection"]["cathodic segments"] == [1, 2, 1]
+    assert mixed_result.summary["segment selection"]["anodic segments"] == [2, 1, 2]
+
+
+def test_trumpet_analysis_rejects_ambiguous_same_direction_segment_pair(ecat_module):
+    class AmbiguousCV:
+        name = "ambiguous scan"
+        scan_rate = 0.1
+        temperature = 298
+        segments = 2
+
+        def analysis_segment_data(self, options=None):
+            potential = np.linspace(-0.5, 0.5, 51)
+            return potential, np.zeros_like(potential)
+
+        def half_wave_potential(self, options=None):
+            return {
+                "E(1/2)": 0.0,
+                "ΔE": 0.6,
+                "peak 1": {"segment": 1, "Ep": -0.3},
+                "peak 2": {"segment": 2, "Ep": 0.3},
+            }
+
+    with pytest.raises(
+        ValueError,
+        match=r"trumpet_analysis could not assign cathodic and anodic branches.*ambiguous scan.*segments 1 and 2",
+    ):
+        ecat_module.trumpet_analysis(
+            [AmbiguousCV(), AmbiguousCV(), AmbiguousCV()],
+            {"plot": False, "print": False, "segments": [1, 2]},
+        )
+
+
 def test_trumpet_auto_segment_pair_uses_closest_adjacent_segment(ecat_module, cv_factory):
     class ThreeSegmentCV:
         def __init__(self, name, scan_rate):
@@ -3364,7 +3488,7 @@ def test_trumpet_auto_segment_pair_uses_closest_adjacent_segment(ecat_module, cv
             self.segments = 3
             self._segment_x = {
                 1: np.linspace(-0.6, -0.2, 100),
-                2: np.linspace(-0.6, -0.2, 100),
+                2: np.linspace(-0.2, -0.6, 100),
                 3: np.linspace(-0.6, -0.2, 100),
             }
 
@@ -3444,9 +3568,10 @@ def test_trumpet_analysis_print_uses_summary_and_shared_fit_model_output(
     )
 
     output = capsys.readouterr().out
-    assert "Trumpet Analysis Summary:" in output
-    assert "[Trumpet analysis equations]" in output
+    assert "Trumpet Analysis Parameters:" in output
+    assert "[Trumpet Analysis Equations]" in output
     assert "Parameter" in output
+    assert "Symbol" in output
     assert "Value" in output
     assert "Alpha" not in output
     assert "Beta" not in output
@@ -3460,6 +3585,12 @@ def test_trumpet_analysis_print_uses_summary_and_shared_fit_model_output(
     assert "α" in result.fit_table["Parameter"].tolist()
     assert "β" in result.fit_table["Parameter"].tolist()
     assert "k0" in result.fit_table["Parameter"].tolist()
+    assert output.index("Trumpet Analysis Parameters:") < output.index(
+        "[Trumpet Analysis Equations]"
+    )
+    assert output.index("[Trumpet Analysis Equations]") < output.index(
+        "Trumpet Analysis Summary:"
+    )
 
 
 def test_trumpet_analysis_plot_all_uses_multiplot_for_diagnostics(ecat_module, monkeypatch):
@@ -3762,6 +3893,42 @@ def test_tafel_accepts_multiple_cvs_and_tof_values(ecat_module):
     plt.close(ax.figure)
 
 
+def test_tafel_pretty_output_uses_analysis_report_sections(ecat_module, capsys):
+    class DummyCV:
+        name = "cat"
+        temperature = 298
+        compounds = []
+        gas = "CO2"
+        solvent = "MeCN"
+
+        def txt_stats(self, options=None):
+            return {"Name": self.name, "Gas": self.gas, "Solvent": self.solvent}
+
+    ecat_module.tafel_analysis(
+        DummyCV(),
+        TOF_max=10,
+        thermodynamic_potential=-0.7,
+        redox_potential=-1.47,
+        options={"plot": False, "print": True, "pretty print": False},
+    )
+
+    printed = capsys.readouterr().out
+    assert "Tafel Analysis Parameters:" in printed
+    assert "Tafel Analysis Equations:" in printed
+    assert "Tafel Analysis Summary:" in printed
+    assert "Parameter" in printed
+    assert "Symbol" in printed
+    assert "Metric" in printed
+    assert "TOFmax" in printed
+    assert "exp" in printed
+    assert printed.index("Tafel Analysis Parameters:") < printed.index(
+        "Tafel Analysis Equations:"
+    )
+    assert printed.index("Tafel Analysis Equations:") < printed.index(
+        "Tafel Analysis Summary:"
+    )
+
+
 def test_tafel_uses_shared_multiplot_style_helpers(ecat_module, monkeypatch):
     calls = {"prepare": 0, "finish": 0}
 
@@ -3920,7 +4087,7 @@ def test_fit_rate_loglog_default_prints_linear_model_summary(
     assert "y = A x^n" not in printed
     assert "±" in printed
     assert "X Range" in printed
-    assert "-1 to 0.4472" in printed
+    assert "-1.000 to 0.4472" in printed
     assert "m" in printed
     assert "b" in printed
 
@@ -4100,8 +4267,8 @@ def test_fit_rate_fit_label_formats_scientific_notation_as_mathtext(ecat_module)
     )
 
     labels = [text.get_text() for text in plt.gca().get_legend().get_texts()]
-    assert any(r"3.2\times 10^{5}" in label for label in labels)
-    assert any(r"1.1\times 10^{-5}" in label for label in labels)
+    assert any(r"3.20\times 10^{5}" in label for label in labels)
+    assert any(r"1.10\times 10^{-5}" in label for label in labels)
     assert not any("e+05" in label or "e-05" in label for label in labels)
 
 

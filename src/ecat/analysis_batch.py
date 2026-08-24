@@ -35,6 +35,7 @@ from .plotting import (
     _plot_multi_scatter_trace,
     _prepare_multiplot_style,
     _can_rich_table_display,
+    _conditional_analysis_name_column,
     _display_table,
     _pretty_table_header_html_label,
     _print_scatter_fit_statistics,
@@ -52,6 +53,7 @@ from .plotting import (
     pretty_table_column_label,
 )
 from .reference import midpoint_potential
+from ._cv_direction import resolve_cv_segment_pair_branches
 from .results import AnalysisResult, analysis_result_from_table
 
 
@@ -1284,7 +1286,7 @@ def _format_fit_model_display_value(value, sig_figs=None):
             return "inf"
         if np.isneginf(value):
             return "-inf"
-        return f"{float(value):.{int(sig_figs)}g}"
+        return format_sigfigs(float(value), sig_figs)
     return str(value)
 
 
@@ -1832,58 +1834,142 @@ def _trumpet_analysis_payload(cvs, options=None):
     ep1_values = np.asarray(ep1_values, dtype=float)
     ep2_values = np.asarray(ep2_values, dtype=float)
 
+    fit_indices = options.get("fit indices")
+    fit_x, fit_y1 = _select_fit_indices(log_scan_rates, ep1_values, fit_indices)
+    _, fit_y2 = _select_fit_indices(log_scan_rates, ep2_values, fit_indices)
+
+    branch_assignment, branch_diagnostics = resolve_cv_segment_pair_branches(
+        cvs,
+        base_segment,
+        paired_segment,
+        analysis_name="trumpet_analysis",
+    )
+    if branch_assignment is None:
+        slope1 = float(np.polyfit(fit_x, fit_y1, 1)[0])
+        slope2 = float(np.polyfit(fit_x, fit_y2, 1)[0])
+        if np.isfinite(slope1) and slope1 < 0 and np.isfinite(slope2) and slope2 > 0:
+            cathodic_segment, anodic_segment = base_segment, paired_segment
+        elif np.isfinite(slope2) and slope2 < 0 and np.isfinite(slope1) and slope1 > 0:
+            cathodic_segment, anodic_segment = paired_segment, base_segment
+        else:
+            raise ValueError(
+                "trumpet_analysis could not assign cathodic and anodic branches from "
+                "potential scan direction, and the fitted branch slopes were not one "
+                f"negative and one positive (segment {base_segment}: {slope1:g} V/dec; "
+                f"segment {paired_segment}: {slope2:g} V/dec). Pass a valid opposing "
+                "segment pair and inspect the selected peak potentials."
+            )
+        branch_assignment = {
+            "cathodic segment": int(cathodic_segment),
+            "anodic segment": int(anodic_segment),
+            "cathodic segments": [int(cathodic_segment)] * len(cvs),
+            "anodic segments": [int(anodic_segment)] * len(cvs),
+            "branch assignment source": "peak-potential fit slopes",
+        }
+        branch_diagnostics = {
+            **branch_diagnostics,
+            "source": "peak-potential fit slopes",
+            "segment slopes / V per decade": {
+                int(base_segment): slope1,
+                int(paired_segment): slope2,
+            },
+        }
+
+    cathodic_segment = branch_assignment["cathodic segment"]
+    anodic_segment = branch_assignment["anodic segment"]
+    cathodic_segments = branch_assignment["cathodic segments"]
+    anodic_segments = branch_assignment["anodic segments"]
+    cathodic_values = np.asarray([
+        ep1_values[index] if segment == base_segment else ep2_values[index]
+        for index, segment in enumerate(cathodic_segments)
+    ])
+    anodic_values = np.asarray([
+        ep1_values[index] if segment == base_segment else ep2_values[index]
+        for index, segment in enumerate(anodic_segments)
+    ])
+    fit_x, cathodic_fit_y = _select_fit_indices(log_scan_rates, cathodic_values, fit_indices)
+    _, anodic_fit_y = _select_fit_indices(log_scan_rates, anodic_values, fit_indices)
+
+    selection = dict(segment_selection or {})
+    selection.update(branch_assignment)
+    selection["branch assignment diagnostics"] = branch_diagnostics
+    segment_selection = selection
+
     data = pd.DataFrame(
         {
+            "Name": [getattr(cv_obj, "name", f"CV {index + 1}") for index, cv_obj in enumerate(cvs)],
             "Scan Rates (V/s)": scan_rates,
             "Log(Scan Rates (V/s))": log_scan_rates,
-            f"Seg {base_segment} Peak Potential (V)": ep1_values,
-            f"Seg {paired_segment} Peak Potential (V)": ep2_values,
+            "Cathodic Peak Potential (V)": cathodic_values,
+            "Anodic Peak Potential (V)": anodic_values,
             "ΔE (V)": deltas,
         }
     )
 
     point_colors = [None, None]
+    cathodic_segment_label = (
+        f" (Seg {cathodic_segment})" if cathodic_segment is not None else ""
+    )
+    anodic_segment_label = (
+        f" (Seg {anodic_segment})" if anodic_segment is not None else ""
+    )
     if options["plot"]:
         plt.figure()
         plt.xlabel("log(Scan Rate) (log(V/s))")
         plt.ylabel("Peak Potential (V)")
         point_colors[0] = _artist_color(
-            plt.scatter(log_scan_rates, ep1_values, label=f"Seg {base_segment} Ep")
+            plt.scatter(
+                log_scan_rates,
+                cathodic_values,
+                label=f"Cathodic{cathodic_segment_label} Ep",
+            )
         )
         point_colors[1] = _artist_color(
-            plt.scatter(log_scan_rates, ep2_values, label=f"Seg {paired_segment} Ep")
+            plt.scatter(
+                log_scan_rates,
+                anodic_values,
+                label=f"Anodic{anodic_segment_label} Ep",
+            )
         )
-
-    fit_indices = options.get("fit indices")
-    fit_x, fit_y1 = _select_fit_indices(log_scan_rates, ep1_values, fit_indices)
-    _, fit_y2 = _select_fit_indices(log_scan_rates, ep2_values, fit_indices)
 
     fit_model_results = {}
     fits = []
 
-    seg1_label = f"Seg {base_segment}"
-    seg2_label = f"Seg {paired_segment}"
-    seg1_fit = _fit_series_xy(fit_x, fit_y1, options=options, label=seg1_label, model="linear")
-    seg2_fit = _fit_series_xy(fit_x, fit_y2, options=options, label=seg2_label, model="linear")
-    fit_model_results[seg1_label] = seg1_fit["model_result"]
-    fit_model_results[seg2_label] = seg2_fit["model_result"]
-    fits.append(np.asarray(seg1_fit["model_result"]["popt"], dtype=float))
-    fits.append(np.asarray(seg2_fit["model_result"]["popt"], dtype=float))
+    cathodic_label = f"Cathodic{cathodic_segment_label}"
+    anodic_label = f"Anodic{anodic_segment_label}"
+    cathodic_fit = _fit_series_xy(
+        fit_x,
+        cathodic_fit_y,
+        options=options,
+        label=cathodic_label,
+        model="linear",
+    )
+    anodic_fit = _fit_series_xy(
+        fit_x,
+        anodic_fit_y,
+        options=options,
+        label=anodic_label,
+        model="linear",
+    )
+    fit_model_results[cathodic_label] = cathodic_fit["model_result"]
+    fit_model_results[anodic_label] = anodic_fit["model_result"]
+    fits.append(np.asarray(cathodic_fit["model_result"]["popt"], dtype=float))
+    fits.append(np.asarray(anodic_fit["model_result"]["popt"], dtype=float))
 
     if options["plot"] and options["plot fit"]:
         plot_options_1 = _options_with_default_fit_color(options, raw_options, point_colors[0], index=0)
-        plot_options_1.update({"new plot": False, "plot data": False, "model label": f"{seg1_label} Fit", "_fit line index": 0})
-        _plot_fit_model_result(seg1_fit["model_result"], plot_options_1)
+        plot_options_1.update({"new plot": False, "plot data": False, "model label": f"{cathodic_label} Fit", "_fit line index": 0})
+        _plot_fit_model_result(cathodic_fit["model_result"], plot_options_1)
 
         plot_options_2 = _options_with_default_fit_color(options, raw_options, point_colors[1], index=1)
-        plot_options_2.update({"new plot": False, "plot data": False, "model label": f"{seg2_label} Fit", "_fit line index": 1})
-        _plot_fit_model_result(seg2_fit["model_result"], plot_options_2)
+        plot_options_2.update({"new plot": False, "plot data": False, "model label": f"{anodic_label} Fit", "_fit line index": 1})
+        _plot_fit_model_result(anodic_fit["model_result"], plot_options_2)
 
     if options["plot"] and _scatterfit_legend_requested(options):
         plt.legend(fontsize=_scatterfit_legend_fontsize(options))
 
-    m1 = float(fits[0][0])
-    m2 = float(fits[1][0])
+    cathodic_slope = float(fits[0][0])
+    anodic_slope = float(fits[1][0])
     T = getattr(cvs[0], "temperature", None)
     if T is None:
         T = options.get("temperature", 298)
@@ -1891,8 +1977,8 @@ def _trumpet_analysis_payload(cvs, options=None):
     if not np.isfinite(T) or T <= 0:
         raise ValueError("trumpet_analysis requires a positive temperature in K.")
 
-    α = -R * T * np.log(10) / (2 * m1 * F)
-    β = R * T * np.log(10) / (2 * m2 * F)
+    α = -R * T * np.log(10) / (2 * cathodic_slope * F)
+    β = R * T * np.log(10) / (2 * anodic_slope * F)
 
     line1 = np.poly1d(fits[0])
     line2 = np.poly1d(fits[1])
@@ -1909,8 +1995,8 @@ def _trumpet_analysis_payload(cvs, options=None):
     warning = _trumpet_reliability_warning(
         alpha=α,
         beta=β,
-        slope_forward=m1,
-        slope_reverse=m2,
+        cathodic_slope=cathodic_slope,
+        anodic_slope=anodic_slope,
         intercept_x=intercept_x,
         fit_x=fit_x,
     )
@@ -1918,13 +2004,11 @@ def _trumpet_analysis_payload(cvs, options=None):
     trumpet_results = _trumpet_results_table(α, β, ks, D, warning, options)
 
     if options["print"]:
-        if not _rich_table_output_enabled(options):
-            print("Trumpet Analysis Summary:")
-        _display_trumpet_equations(resolved=True, compact=False, include_definitions=False)
         _display_trumpet_parameter_table(
             _trumpet_parameter_table(
-                base_segment=base_segment,
-                paired_segment=paired_segment,
+                cathodic_segments=cathodic_segments,
+                anodic_segments=anodic_segments,
+                branch_assignment_source=branch_assignment["branch assignment source"],
                 temperature=T,
                 diffusion_coefficient=D,
                 fit_indices=options.get("fit indices"),
@@ -1932,12 +2016,22 @@ def _trumpet_analysis_payload(cvs, options=None):
             ),
             options,
         )
+        _display_trumpet_equations(resolved=True, compact=False, include_definitions=False)
         _display_trumpet_results_table(trumpet_results, options)
         _print_fit_model_results(fit_model_results, options)
 
-    if options["print all"]:
-        print(data)
-        print(fits)
+    if options["print"] and options["print all"]:
+        display_data = _conditional_analysis_name_column(
+            data,
+            ["Scan Rates (V/s)"],
+            options,
+        )
+        _display_table(
+            display_data,
+            options,
+            title="Trumpet Analysis Data",
+            index=False,
+        )
 
     data.attrs["fit model results"] = fit_model_results
     data.attrs["fit table"] = trumpet_results
@@ -2232,18 +2326,19 @@ def _nicholson_parameter_display_table(summary, options=None):
     options = options or {}
     sig_figs = options.get("sig figs", 4)
     rows = [
-        ("Fit Model", summary.get("fit model", "origin")),
-        ("D", _nicholson_summary_scalar_text(summary.get("D / cm^2 s^-1"), "cm^2/s", sig_figs=sig_figs)),
-        ("n", _format_fit_model_display_value(summary.get("num electrons"), sig_figs=sig_figs)),
-        ("T", _nicholson_summary_scalar_text(summary.get("temperature / K"), "K", sig_figs=sig_figs)),
-        ("ψ Source", summary.get("psi source")),
+        ("Fit Model", "", summary.get("fit model", "origin")),
+        ("Diffusion Coefficient", "D", _nicholson_summary_scalar_text(summary.get("D / cm^2 s^-1"), "cm^2/s", sig_figs=sig_figs)),
+        ("Electron Count", "n", _format_fit_model_display_value(summary.get("num electrons"), sig_figs=sig_figs)),
+        ("Temperature", "T", _nicholson_summary_scalar_text(summary.get("temperature / K"), "K", sig_figs=sig_figs)),
+        ("Psi Source", "ψ", summary.get("psi source")),
         (
             "Valid nΔEp Range",
+            "nΔEp",
             f"{_format_fit_model_display_value(summary.get('nicholson delta ep min mv'), sig_figs=sig_figs)} to "
             f"{_format_fit_model_display_value(summary.get('nicholson delta ep max mv'), sig_figs=sig_figs)} mV",
         ),
     ]
-    return pd.DataFrame([{"Parameter": key, "Value": value} for key, value in rows])
+    return _analysis_parameter_table(rows)
 
 
 def _nicholson_summary_display_table(summary, options=None):
@@ -2259,7 +2354,7 @@ def _nicholson_summary_display_table(summary, options=None):
         ("k0 Point Median", _nicholson_summary_scalar_text(summary.get("k0 point median / cm s^-1"), "cm/s", sig_figs=sig_figs)),
         ("k0 Point Std", _nicholson_summary_scalar_text(summary.get("k0 point std / cm s^-1"), "cm/s", sig_figs=sig_figs)),
     ]
-    return pd.DataFrame([{"Setting": key, "Value": value} for key, value in rows])
+    return pd.DataFrame([{"Metric": key, "Value": value} for key, value in rows])
 
 
 def _nicholson_display_data_table(data, options=None):
@@ -2304,7 +2399,15 @@ def _nicholson_display_data_table(data, options=None):
         ]
     if "included" in display_df.columns:
         display_df["included"] = display_df["included"].map(lambda value: "Yes" if bool(value) else "No")
-    return display_df
+    scan_rate_columns = [
+        column for column in display_df.columns
+        if str(column).strip().lower().startswith("scan rate /")
+    ]
+    return _conditional_analysis_name_column(
+        display_df,
+        scan_rate_columns,
+        options,
+    )
 
 
 def _nicholson_fit_failure_message(data, summary):
@@ -2406,39 +2509,46 @@ def _nicholson_equation_summary(through_origin=True):
 
 def _print_nicholson_summary(data, summary, options):
     display_data = _nicholson_display_data_table(data, options)
+    parameter_table = _nicholson_parameter_display_table(summary, options)
+    parameter_rich_table = _analysis_parameter_rich_table(parameter_table)
     if options.get("pretty print", True):
+        _display_table(
+            parameter_table,
+            options,
+            title="Nicholson Analysis Parameters",
+            rich_table=parameter_rich_table,
+            escape=None,
+            index=False,
+        )
         if not _rich_table_output_enabled(options):
-            print("Nicholson Analysis Equation:")
+            print("Nicholson Analysis Equations:")
         _display_analysis_equation(
-            r"\text{Nicholson analysis equation:}",
-            "Nicholson analysis equation",
+            r"\text{Nicholson analysis equations:}",
+            "Nicholson Analysis Equations",
             _nicholson_equation_bundle(summary),
             resolved=False,
             compact=False,
-            include_definitions=True,
+            include_definitions=False,
         )
-        display_object_table(
-            _nicholson_parameter_display_table(summary, options),
-            options,
-            title="Nicholson Parameters",
-        )
-        display_object_table(
+        _display_table(
             _nicholson_summary_display_table(summary, options),
             options,
             title="Nicholson Analysis Summary",
+            index=False,
         )
-        display_object_table(display_data, options, title="Nicholson Analysis Data")
+        if options.get("print all", False):
+            display_object_table(display_data, options, title="Nicholson Analysis Data")
     else:
-        print("Nicholson Analysis Equation:")
+        print("Nicholson Analysis Parameters:")
+        print(parameter_table.to_string(index=False, justify="left"))
+        print("\nNicholson Analysis Equations:")
         equation = _nicholson_equation_bundle(summary)
         print("  " + equation["symbolic"])
-        print("  " + equation["definitions"])
-        print("\nNicholson Parameters:")
-        print(_nicholson_parameter_display_table(summary, options).to_string(index=False, justify="left"))
         print("\nNicholson Analysis Summary:")
         print(_nicholson_summary_display_table(summary, options).to_string(index=False, justify="left"))
-        print("\nNicholson Analysis Data:")
-        print(display_data.to_string(index=False, justify="left"))
+        if options.get("print all", False):
+            print("\nNicholson Analysis Data:")
+            print(display_data.to_string(index=False, justify="left"))
     excluded = data.loc[~data["included"].astype(bool), ["name", "exclusion reason"]]
     if not excluded.empty:
         print("Excluded points:")
@@ -2540,7 +2650,8 @@ def nicholson_analysis(cvs, options=None):
         peak_options = dict(options)
         peak_options.update(diagnostic_axis_options)
         peak_options["plot"] = diagnostic_ax is not None
-        peak_options["print"] = bool(options.get("print all", False))
+        peak_options["print"] = False
+        peak_options["print all"] = False
         peak_options["internal call"] = True
         peak_options["new plot"] = False
         peak_options["plot cv"] = False
@@ -2674,8 +2785,6 @@ def _sevcik_analysis_payload(cvs, options=None):
     )
 
     num_electrons = options.get("num electrons", 1)
-    scan_dependence = options.get("scan dependence", 0.5)
-
     peaks, x_values = [], []
     peak_unit = _axis_common_unit(
         cvs,
@@ -2684,7 +2793,9 @@ def _sevcik_analysis_payload(cvs, options=None):
     )
     diffusion_coefficients, fits = [], []
     fit_rows = []
-    data = pd.DataFrame()
+    data = pd.DataFrame(
+        {"Name": [getattr(cv_obj, "name", f"CV {index + 1}") for index, cv_obj in enumerate(cvs)]}
+    )
     C = None
     v = None
 
@@ -2699,8 +2810,8 @@ def _sevcik_analysis_payload(cvs, options=None):
             C = 0
         for cv in cvs:
             x_values.append(cv.scan_rate)
-        x_values = np.array(x_values) ** scan_dependence
-        data[f'Scan Rate ^ {scan_dependence}'] = x_values
+        x_values = np.sqrt(np.asarray(x_values, dtype=float))
+        data['Scan Rate^1/2 / (V s^-1)^1/2'] = x_values
     else:
         v = cvs[0].scan_rate
         diff_conc_idx = next((i for i in range(len(cvs[0].concentrations))
@@ -2713,7 +2824,8 @@ def _sevcik_analysis_payload(cvs, options=None):
     internal_options["internal call"] = True
     internal_options["new plot"] = False
     internal_options["plot"] = options.get("plot all", False)
-    internal_options["print"] = options.get("print all", False)
+    internal_options["print"] = False
+    internal_options["print all"] = False
     internal_options.update(_common_cv_plot_axis_options(cvs, options))
     internal_options.pop("segments", None)
     internal_options.pop("plot segment", None)
@@ -2742,8 +2854,6 @@ def _sevcik_analysis_payload(cvs, options=None):
             )
             y_name = cv.y(options).name
             y_unit = cv.units.get(y_name, '')
-            if options.get('print all'):
-                print(cv.name)
             peak_current = cv.peak_current(cv_peak_options)["ip"]
             scaled_peak_current, _ = scale_value(peak_current, y_unit, selected_unit=peak_unit)
             segment_peaks.append(scaled_peak_current)
@@ -2751,7 +2861,7 @@ def _sevcik_analysis_payload(cvs, options=None):
 
     if do_plot:
         plt.figure()
-        plt.xlabel('(Scan Rate)$^{' + str(scan_dependence) + '}$ (V/s)' if 'scan rate' in different else 'Concentration (M)')
+        plt.xlabel(r'(Scan Rate)$^{1/2}$ ((V/s)$^{1/2}$)' if 'scan rate' in different else 'Concentration (M)')
         plt.ylabel(f'Peak {y_name} ({peak_unit})')
 
     for i, seg in enumerate(segments):
@@ -2800,8 +2910,7 @@ def _sevcik_analysis_payload(cvs, options=None):
                 D = (R * T / (F * num_electrons) ** 3) * (m / (0.4463 * S * C)) ** 2
             else:
                 D = (R * T / (F ** 2 * num_electrons ** 3 * v * S ** 2)) * (m / 0.4463) ** 2
-            D = round_sigfigs(D, 3)
-            diffusion_coefficients.append(D)
+            diffusion_coefficients.append(float(D))
 
     sevcik_fit_table = _sevcik_fit_results_table(
         _scatter_fit_table(fit_rows),
@@ -2810,20 +2919,6 @@ def _sevcik_analysis_payload(cvs, options=None):
     )
 
     if do_print:
-        if not _rich_table_output_enabled(options):
-            print("Sevcik Analysis Summary:")
-        _display_sevcik_diffusion_equation(
-            mode="scan rate" if "scan rate" in different else "concentration",
-            num_electrons=num_electrons,
-            temperature=T,
-            electrode_area=S,
-            concentration=C,
-            scan_rate=v,
-            scan_dependence=scan_dependence,
-            resolved=False,
-            compact=False,
-            include_definitions=False,
-        )
         _display_sevcik_parameter_table(
             _sevcik_parameter_table(
                 mode="scan rate" if "scan rate" in different else "concentration",
@@ -2832,16 +2927,39 @@ def _sevcik_analysis_payload(cvs, options=None):
                 electrode_area=S,
                 concentration=C,
                 scan_rate=v,
-                scan_dependence=scan_dependence,
                 options=options,
             ),
             options,
         )
+        _display_sevcik_diffusion_equation(
+            mode="scan rate" if "scan rate" in different else "concentration",
+            num_electrons=num_electrons,
+            temperature=T,
+            electrode_area=S,
+            concentration=C,
+            scan_rate=v,
+            resolved=False,
+            compact=False,
+            include_definitions=False,
+        )
         _print_sevcik_fit_results(sevcik_fit_table, options)
 
-    if options.get('print all'):
-        print(data)
-        print(fits)
+    if do_print and options.get("print all"):
+        identity_columns = [
+            column for column in data.columns
+            if column.startswith("Scan Rate") or column.startswith("Concentration")
+        ]
+        display_data = _conditional_analysis_name_column(
+            data,
+            identity_columns,
+            options,
+        )
+        _display_table(
+            display_data,
+            options,
+            title="Sevcik Analysis Data",
+            index=False,
+        )
 
     if isinstance(data, pd.DataFrame):
         data.attrs["fit table"] = sevcik_fit_table
@@ -2878,23 +2996,23 @@ def sevcik_analysis(cvs, options=None):
 def _format_trumpet_equation():
     return {
         "symbolic latex": (
-            r"E_{p,\mathrm{f}}=m_{\mathrm{f}}\log_{10}(\nu)+b_{\mathrm{f}},\quad "
-            r"E_{p,\mathrm{r}}=m_{\mathrm{r}}\log_{10}(\nu)+b_{\mathrm{r}}"
+            r"E_{p,\mathrm{c}}=m_{\mathrm{c}}\log_{10}(\nu)+b_{\mathrm{c}},\quad "
+            r"E_{p,\mathrm{a}}=m_{\mathrm{a}}\log_{10}(\nu)+b_{\mathrm{a}}"
         ),
         "resolved latex": (
-            r"\alpha=-\frac{RT\ln(10)}{2Fm_{\mathrm{f}}},\quad "
-            r"\beta=\frac{RT\ln(10)}{2Fm_{\mathrm{r}}},\quad "
+            r"\alpha=-\frac{RT\ln(10)}{2Fm_{\mathrm{c}}},\quad "
+            r"\beta=\frac{RT\ln(10)}{2Fm_{\mathrm{a}}},\quad "
             r"k^0=\frac{10^{0.78+x_{\mathrm{int}}/2}}{\sqrt{RT/(\alpha F D)}}"
         ),
         "compact latex": "",
         "definitions latex": "",
         "symbolic": (
-            "Ep,f = mf * log10(v) + bf; "
-            "Ep,r = mr * log10(v) + br"
+            "Ep,c = mc * log10(v) + bc; "
+            "Ep,a = ma * log10(v) + ba"
         ),
         "resolved": (
-            "alpha = -(R * T * ln(10)) / (2 * F * mf); "
-            "beta = (R * T * ln(10)) / (2 * F * mr); "
+            "alpha = -(R * T * ln(10)) / (2 * F * mc); "
+            "beta = (R * T * ln(10)) / (2 * F * ma); "
             "k0 = 10^(0.78 + xint / 2) / sqrt(R * T / (alpha * F * D))"
         ),
         "compact": "",
@@ -2904,8 +3022,8 @@ def _format_trumpet_equation():
 
 def _display_trumpet_equations(resolved=False, compact=False, include_definitions=False):
     return _display_analysis_equation(
-        r"\text{Trumpet analysis equations:}",
-        "Trumpet analysis equations",
+        r"\text{Trumpet Analysis Equations:}",
+        "Trumpet Analysis Equations",
         _format_trumpet_equation(),
         resolved=resolved,
         compact=compact,
@@ -2913,50 +3031,61 @@ def _display_trumpet_equations(resolved=False, compact=False, include_definition
     )
 
 
-def _trumpet_parameter_table(base_segment, paired_segment, temperature, diffusion_coefficient, fit_indices, options=None):
+def _trumpet_parameter_table(
+    cathodic_segments,
+    anodic_segments,
+    branch_assignment_source,
+    temperature,
+    diffusion_coefficient,
+    fit_indices,
+    options=None,
+):
     options = options or {}
     sig_figs = options.get("sig figs", 4)
+
+    def segment_value(values):
+        values = [int(value) for value in values]
+        if len(set(values)) == 1:
+            return values[0]
+        return "varies: " + ", ".join(str(value) for value in values)
+
     rows = [
-        {"Parameter": "Segments", "Value": f"{base_segment}, {paired_segment}"},
-        {"Parameter": "T", "Value": _format_sevcik_value(temperature, sig_figs=sig_figs, unit="K")},
+        ("Cathodic Segment", "", segment_value(cathodic_segments)),
+        ("Anodic Segment", "", segment_value(anodic_segments)),
+        ("Branch Assignment", "", branch_assignment_source),
+        ("Temperature", "T", _format_sevcik_value(temperature, sig_figs=sig_figs, unit="K")),
     ]
     if diffusion_coefficient is not None:
         rows.append(
-            {
-                "Parameter": "D",
-                "Value": _format_sevcik_value(diffusion_coefficient, sig_figs=sig_figs, unit="cm^2/s", scientific=True),
-            }
+            (
+                "Diffusion Coefficient",
+                "D",
+                _format_sevcik_value(diffusion_coefficient, sig_figs=sig_figs, unit="cm^2/s", scientific=True),
+            )
         )
     if fit_indices is not None:
-        rows.append({"Parameter": "Fit Indices", "Value": f"{fit_indices} (Python-style exclusive stop)"})
-    return pd.DataFrame(rows)
+        rows.append(("Fit Indices", "", f"{fit_indices} (Python-style exclusive stop)"))
+    return _analysis_parameter_table(rows)
 
 
 def _display_trumpet_parameter_table(table, options):
-    display_table = table.copy()
-    display_table["Parameter"] = [
-        {
-            "T": "<i>T</i>",
-            "D": "<i>D</i>",
-        }.get(str(value), value)
-        for value in display_table["Parameter"]
-    ]
+    display_table = _analysis_parameter_rich_table(table)
     return _display_table(
         table,
         options,
-        title="Trumpet Parameters",
+        title="Trumpet Analysis Parameters",
         rich_table=display_table,
         escape=None,
         index=False,
     )
 
 
-def _trumpet_reliability_warning(alpha, beta, slope_forward, slope_reverse, intercept_x, fit_x):
+def _trumpet_reliability_warning(alpha, beta, cathodic_slope, anodic_slope, intercept_x, fit_x):
     reasons = []
-    if not (np.isfinite(slope_forward) and slope_forward < 0):
-        reasons.append("forward branch slope does not have the expected negative sign")
-    if not (np.isfinite(slope_reverse) and slope_reverse > 0):
-        reasons.append("reverse branch slope does not have the expected positive sign")
+    if not (np.isfinite(cathodic_slope) and cathodic_slope < 0):
+        reasons.append("cathodic branch slope does not have the expected negative sign")
+    if not (np.isfinite(anodic_slope) and anodic_slope > 0):
+        reasons.append("anodic branch slope does not have the expected positive sign")
     if not (np.isfinite(alpha) and 0 < alpha < 1):
         reasons.append("alpha is outside the physical 0-1 range")
     if not (np.isfinite(beta) and 0 < beta < 1):
@@ -2993,20 +3122,22 @@ def _trumpet_results_table(alpha, beta, ks, diffusion_coefficient, warning, opti
 
 
 def _display_trumpet_results_table(table, options):
-    display_table = table.copy()
-    display_table["Parameter"] = [
+    plain_table = table.rename(columns={"Parameter": "Metric"})
+    display_table = plain_table.copy()
+    display_table["Metric"] = [
         {
             "α": "&alpha;",
             "β": "&beta;",
             "k0": "<i>k</i><sup>0</sup>",
         }.get(str(value), value)
-        for value in display_table["Parameter"]
+        for value in display_table["Metric"]
     ]
     return _display_table(
         table,
         options,
-        title="Trumpet Results",
+        title="Trumpet Analysis Summary",
         rich_table=display_table,
+        plain_table=plain_table,
         escape=None,
         index=False,
     )
@@ -4684,15 +4815,8 @@ def _fit_peak_potential_payload(cvs, options=None):
                 if seg + 1 not in ep_by_segment:
                     continue
 
-                E_half = midpoint_potential(
-                    ep_by_segment[seg],
-                    ep_by_segment[seg + 1],
-                    options.get("sig figs",4)
-                )
-                delta_E = round_sigfigs(
-                    abs(ep_by_segment[seg] - ep_by_segment[seg + 1]),
-                    options.get("sig figs",4)
-                )
+                E_half = float((ep_by_segment[seg] + ep_by_segment[seg + 1]) / 2)
+                delta_E = float(abs(ep_by_segment[seg] - ep_by_segment[seg + 1]))
 
                 scaled_E_half, _ = scale_value(E_half, x_unit, selected_unit=ep_unit)
                 scaled_delta_E, _ = scale_value(delta_E, x_unit, selected_unit=ep_unit)
@@ -5280,6 +5404,15 @@ def _fowa_summary_table(cvs, results, plot_data, ref_cvs, options=None):
         display_source_df,
         keep_in_table=keep_in_table,
     )
+    identity_columns = [
+        column for column in summary_df.columns
+        if column in display_df.columns and column not in {"Name", "Plot Label"}
+    ]
+    display_df = _conditional_analysis_name_column(
+        display_df,
+        identity_columns,
+        options,
+    )
 
     display_df.attrs["shared_summary"] = shared_summary
     display_df.attrs["plot_data"] = plot_data
@@ -5306,9 +5439,14 @@ def _fowa_summary_table(cvs, results, plot_data, ref_cvs, options=None):
 
 
 def _fowa_summary_display_table(summary):
-    return pd.DataFrame(
+    symbol_map = {
+        "Catalyst Electrons": "n",
+        "Turnover Electrons": "n'",
+        "Sigma": "σ",
+    }
+    return _analysis_parameter_table(
         [
-            {"Field": str(key), "Value": "" if value is None else str(value)}
+            (str(key), symbol_map.get(str(key), ""), "" if value is None else str(value))
             for key, value in summary.items()
         ]
     )
@@ -5324,10 +5462,10 @@ def _display_fowa_summary_table(summary, options=None, *, title="FOWA Summary", 
     if table.empty:
         return table
 
-    display_table = table.copy()
-    display_table["Field"] = [
+    display_table = _analysis_parameter_rich_table(table)
+    display_table["Parameter"] = [
         _fowa_summary_field_html_label(field)
-        for field in display_table["Field"]
+        for field in display_table["Parameter"]
     ]
     return _display_table(
         table,
@@ -5382,6 +5520,57 @@ def _is_table_blank(value):
         return bool(pd.isna(value))
     except (TypeError, ValueError):
         return False
+
+
+_ANALYSIS_SYMBOL_HTML = {
+    "n": "<i>n</i>",
+    "n'": "<i>n</i><sup>&prime;</sup>",
+    "σ": "<i>&sigma;</i>",
+    "T": "<i>T</i>",
+    "D": "<i>D</i>",
+    "S": "<i>S</i>",
+    "C": "<i>C</i>",
+    "C*": "<i>C</i><sup>*</sup>",
+    "ν": "<i>&nu;</i>",
+    "ν_ip0": "<i>&nu;</i><sub>ip0</sub>",
+    "s_ip0": "<i>s</i><sub>ip0</sub>",
+    "ψ": "<i>&psi;</i>",
+    "nΔEp": "<i>n</i>&Delta;<i>E</i><sub>p</sub>",
+    "Ethermo": "<i>E</i><sub>thermo</sub>",
+    "Eredox": "<i>E</i><sub>redox</sub>",
+    "TOFmax": "TOF<sub>max</sub>",
+    "η": "<i>&eta;</i>",
+}
+
+
+def _analysis_symbol_html(symbol):
+    symbol_text = "" if symbol is None else str(symbol)
+    return _ANALYSIS_SYMBOL_HTML.get(symbol_text, symbol_text)
+
+
+def _analysis_parameter_table(rows):
+    records = []
+    for row in rows:
+        if len(row) == 2:
+            parameter, value = row
+            symbol = ""
+        else:
+            parameter, symbol, value = row
+        records.append(
+            {
+                "Parameter": str(parameter),
+                "Symbol": "" if symbol is None else str(symbol),
+                "Value": "" if _is_table_blank(value) else str(value),
+            }
+        )
+    return pd.DataFrame(records, columns=["Parameter", "Symbol", "Value"])
+
+
+def _analysis_parameter_rich_table(table):
+    rich_table = table.copy()
+    if "Symbol" in rich_table.columns:
+        rich_table["Symbol"] = [_analysis_symbol_html(value) for value in rich_table["Symbol"]]
+    return rich_table
 
 
 def _display_unit_for_numeric_column(values, unit):
@@ -5584,7 +5773,7 @@ def _display_analysis_equation(
         if resolved:
             display(Math(equation["resolved latex"]))
 
-        if compact:
+        if compact and equation.get("compact latex"):
             display(Math(equation["compact latex"]))
 
         if include_definitions:
@@ -5595,7 +5784,7 @@ def _display_analysis_equation(
         print("  " + equation["symbolic"])
         if resolved:
             print("  " + equation["resolved"])
-        if compact:
+        if compact and equation.get("compact"):
             print("  " + equation["compact"])
         if include_definitions:
             print("  " + equation["definitions"])
@@ -5620,7 +5809,6 @@ def _format_sevcik_diffusion_equation(
     electrode_area,
     concentration=None,
     scan_rate=None,
-    scan_dependence=0.5,
 ):
     """
     Return display-ready text/LaTeX for Sevcik diffusion coefficient equations.
@@ -5633,10 +5821,8 @@ def _format_sevcik_diffusion_equation(
     S = float(electrode_area)
     C = None if concentration is None else float(concentration)
     v = None if scan_rate is None else float(scan_rate)
-    scan_dependence = float(scan_dependence)
-
     if is_scan_rate_mode:
-        fit_latex = rf"i_p=m\nu^{{{scan_dependence:g}}}+b"
+        fit_latex = r"i_p=m\nu^{1/2}+b"
         formula_latex = (
             r"D=\frac{RT}{(Fn)^3}"
             r"\left(\frac{m}{0.4463SC}\right)^2"
@@ -5650,7 +5836,7 @@ def _format_sevcik_diffusion_equation(
             rf"\left(\frac{{m}}{{{0.4463 * S * (0 if C is None else C):.6g}}}\right)^2"
         )
         symbolic_text = (
-            f"i_p = m * v^{scan_dependence:g} + b; "
+            "i_p = m * v^0.5 + b; "
             "D = (R * T / (F * n)^3) * (m / (0.4463 * S * C))^2"
         )
         resolved_text = (
@@ -5724,7 +5910,6 @@ def _display_sevcik_diffusion_equation(
     electrode_area,
     concentration=None,
     scan_rate=None,
-    scan_dependence=0.5,
     resolved=True,
     compact=False,
     include_definitions=True,
@@ -5736,11 +5921,10 @@ def _display_sevcik_diffusion_equation(
         electrode_area=electrode_area,
         concentration=concentration,
         scan_rate=scan_rate,
-        scan_dependence=scan_dependence,
     )
     return _display_analysis_equation(
-        r"\text{Sevcik diffusion coefficient equation:}",
-        "Sevcik diffusion coefficient equation",
+        r"\text{Sevcik analysis equations:}",
+        "Sevcik Analysis Equations",
         equation,
         resolved=resolved,
         compact=compact,
@@ -5750,24 +5934,23 @@ def _display_sevcik_diffusion_equation(
 
 def _sevcik_parameter_label(key, html=False):
     labels = {
+        "n": "Electron Count",
+        "T": "Temperature",
+        "S": "Electrode Area",
+        "C": "Concentration",
+        "v": "Scan Rate",
+    }
+    return labels.get(key, key)
+
+
+def _sevcik_parameter_symbol(key):
+    return {
         "n": "n",
         "T": "T",
         "S": "S",
-        "C": "C",
-        "v": "v",
-        "scan dependence": "scan dependence",
-    }
-    html_labels = {
-        "n": "<i>n</i>",
-        "T": "<i>T</i>",
-        "S": "<i>S</i>",
-        "C": "<i>C</i><sup>*</sup>",
-        "v": "<i>&nu;</i>",
-        "scan dependence": "Scan dependence",
-    }
-    if html:
-        return html_labels.get(key, labels.get(key, key))
-    return labels.get(key, key)
+        "C": "C*",
+        "v": "ν",
+    }.get(key, "")
 
 
 def _format_sevcik_value(value, sig_figs=4, unit="", scientific=False):
@@ -5780,7 +5963,7 @@ def _format_sevcik_value(value, sig_figs=4, unit="", scientific=False):
             digits = max(int(sig_figs) - 1, 0)
             text = f"{float(value):.{digits}e}"
         else:
-            text = f"{round_sigfigs(float(value), sig_figs):g}"
+            text = format_sigfigs(float(value), sig_figs)
     else:
         text = str(value)
     return f"{text} {unit}".strip()
@@ -5793,7 +5976,6 @@ def _sevcik_parameter_table(
     electrode_area,
     concentration=None,
     scan_rate=None,
-    scan_dependence=0.5,
     options=None,
 ):
     options = options or {}
@@ -5804,9 +5986,8 @@ def _sevcik_parameter_table(
         "S": electrode_area,
     }
     if "scan" in str(mode).strip().lower():
-        keys.extend(["C", "scan dependence"])
+        keys.append("C")
         values["C"] = concentration
-        values["scan dependence"] = scan_dependence
     else:
         keys.append("v")
         values["v"] = scan_rate
@@ -5822,26 +6003,24 @@ def _sevcik_parameter_table(
         [
             {
                 "Parameter": _sevcik_parameter_label(key),
+                "Symbol": _sevcik_parameter_symbol(key),
                 "Value": _format_sevcik_value(values.get(key), sig_figs=sig_figs, unit=units.get(key, "")),
             }
             for key in keys
         ]
+        ,
+        columns=["Parameter", "Symbol", "Value"],
     )
     table.attrs["parameter_keys"] = keys
     return table
 
 
 def _display_sevcik_parameter_table(table, options):
-    display_table = table.copy()
-    keys = table.attrs.get("parameter_keys", list(display_table.index))
-    display_table["Parameter"] = [
-        _sevcik_parameter_label(key, html=True)
-        for key in keys
-    ]
+    display_table = _analysis_parameter_rich_table(table)
     return _display_table(
         table,
         options,
-        title="Sevcik Parameters",
+        title="Sevcik Analysis Parameters",
         rich_table=display_table,
         escape=None,
         index=False,
@@ -5878,7 +6057,7 @@ def _print_sevcik_fit_results(fit_table, options=None):
     return _display_table(
         fit_table,
         options,
-        title="Sevcik Fit Results",
+        title="Sevcik Analysis Summary",
         index=False,
     )
 
@@ -5974,11 +6153,12 @@ def _display_fowa_kobs_equation(options, resolved=True, compact=False):
     """
     eq = _format_fowa_kobs_equation(options)
     return _display_analysis_equation(
-        r"\text{FOWA } k_{\mathrm{obs}}\text{ equation:}",
-        "FOWA kobs equation",
+        r"\text{FOWA equations:}",
+        "FOWA Equations",
         eq,
         resolved=resolved,
         compact=compact,
+        include_definitions=False,
     )
 
 
@@ -6466,16 +6646,8 @@ def _format_plateau_kobs_equation(mode, values):
     C = values.get("C")
     area = values.get("electrode area")
 
-    definitions_latex = (
-        rf"n={n_cat:g}\ (n_{{\mathrm{{cat}}}},\ \mathrm{{catalyst\ redox-wave\ electron\ count}}),\quad "
-        rf"n^{{\prime}}={n_turn:g}\ (n_{{\mathrm{{turn}}}},\ \mathrm{{turnover\ electron\ count}}),\quad "
-        rf"T={temperature:g}\ \mathrm{{K}}"
-    )
-    definitions_text = (
-        f"n = {n_cat:g} (n_cat, catalyst redox-wave electron count), "
-        f"n' = {n_turn:g} (n_turn, turnover electron count), "
-        f"T = {temperature:g} K"
-    )
+    definitions_latex = ""
+    definitions_text = ""
 
     if mode == "direct":
         symbolic_latex = (
@@ -6489,22 +6661,12 @@ def _format_plateau_kobs_equation(mode, values):
             rf"\left(\frac{{|{0 if ilim is None else ilim:g}|}}"
             rf"{{({n_cat:g})F({0 if area is None else area:g})({0 if C is None else C:g})}}\right)^2"
         )
-        symbolic = "kobs = (|ilim| / (n F A C))^2 / (D n')"
+        symbolic = "kobs = (|ilim| / (n F S C))^2 / (D n')"
         resolved = (
             f"kobs = (|{_equation_value_text(ilim, 'A')}| / "
             f"({n_cat:g} * F * {_equation_value_text(area, 'cm^2')} * "
             f"{_equation_value_text(C, 'mol/cm^3')}))^2 / "
             f"({_equation_value_text(D, 'cm^2/s')} * {n_turn:g})"
-        )
-        definitions_latex += (
-            rf",\quad D={0 if D is None else D:g}\ \mathrm{{cm^2/s}},\quad "
-            rf"S={0 if area is None else area:g}\ \mathrm{{cm^2}},\quad "
-            rf"C={0 if C is None else C:g}\ \mathrm{{mol/cm^3}}"
-        )
-        definitions_text += (
-            f", D = {_equation_value_text(D, 'cm^2/s')}, "
-            f"A = {_equation_value_text(area, 'cm^2')}, "
-            f"C = {_equation_value_text(C, 'mol/cm^3')}"
         )
     elif mode == "slope normalized":
         symbolic_latex = (
@@ -6526,8 +6688,6 @@ def _format_plateau_kobs_equation(mode, values):
             f"|{_equation_value_text(ip0_slope, 'A/(V/s)^1/2')}| "
             f"* sqrt({n_cat:g} * F / (R * {temperature:g} K)))^2 / {n_turn:g}"
         )
-        definitions_latex += rf",\quad s_{{i_{{p,0}}}}={0 if ip0_slope is None else ip0_slope:g}"
-        definitions_text += f", s_ip0 = {_equation_value_text(ip0_slope, 'A/(V/s)^1/2')}"
     else:
         symbolic_latex = (
             r"k_{\mathrm{obs}}="
@@ -6550,17 +6710,15 @@ def _format_plateau_kobs_equation(mode, values):
             f"* sqrt({n_cat:g} * F * {_equation_value_text(ip0_scan_rate, 'V/s')} "
             f"/ (R * {temperature:g} K)))^2 / {n_turn:g}"
         )
-        definitions_latex += rf",\quad \nu_{{i_{{p,0}}}}={0 if ip0_scan_rate is None else ip0_scan_rate:g}\ \mathrm{{V/s}}"
-        definitions_text += f", v_ip0 = {_equation_value_text(ip0_scan_rate, 'V/s')}"
 
     return {
         "symbolic latex": symbolic_latex,
         "resolved latex": resolved_latex,
-        "compact latex": resolved_latex,
+        "compact latex": "",
         "definitions latex": definitions_latex,
         "symbolic": symbolic,
         "resolved": resolved,
-        "compact": resolved,
+        "compact": "",
         "definitions": definitions_text,
     }
 
@@ -6568,11 +6726,12 @@ def _format_plateau_kobs_equation(mode, values):
 def _display_plateau_kobs_equation(mode, values, resolved=False, compact=False):
     equation = _format_plateau_kobs_equation(mode, values)
     return _display_analysis_equation(
-        r"\text{Plateau }k_{\mathrm{obs}}\text{ equation:}",
-        "Plateau kobs equation",
+        r"\text{Plateau current equations:}",
+        "Plateau Current Equations",
         equation,
         resolved=resolved,
         compact=compact,
+        include_definitions=False,
     )
 
 
@@ -6678,6 +6837,52 @@ def _plateau_validation_status(selection):
     return "passed" if bool(valid) else "failed"
 
 
+_PLATEAU_PARAMETER_LABELS = {
+    "catalyst electrons": "Catalyst Electrons",
+    "turnover electrons": "Turnover Electrons",
+    "temperature": "Temperature",
+    "d": "Diffusion Coefficient",
+    "c": "Catalyst Concentration",
+    "electrode area": "Electrode Area",
+    "ip0 scan rate": "ip0 Scan Rate",
+    "ip0 sqrt scan rate slope": "ip0 sqrt(scan rate) slope",
+}
+
+
+_PLATEAU_PARAMETER_SYMBOLS = {
+    "catalyst electrons": "n",
+    "turnover electrons": "n'",
+    "temperature": "T",
+    "d": "D",
+    "c": "C",
+    "electrode area": "S",
+    "ip0 scan rate": "ν_ip0",
+    "ip0 sqrt scan rate slope": "s_ip0",
+}
+
+
+def _plateau_symbol_display_label(label):
+    text = str(label)
+    if " / " in text:
+        base, unit = text.rsplit(" / ", 1)
+        return f"{_plateau_symbol_display_label(base)} / {unit}"
+    key = text.strip().lower()
+    symbol = _PLATEAU_PARAMETER_SYMBOLS.get(key)
+    base = _PLATEAU_PARAMETER_LABELS.get(key, text)
+    return f"{base} ({symbol})" if symbol else base
+
+
+def _plateau_parameter_table(rows):
+    return _analysis_parameter_table([
+        (
+            _PLATEAU_PARAMETER_LABELS.get(str(key).strip().lower(), str(key)),
+            _PLATEAU_PARAMETER_SYMBOLS.get(str(key).strip().lower(), ""),
+            value,
+        )
+        for key, value in rows
+    ])
+
+
 def _plateau_summary_display_table(row, selection, warnings_list, options=None):
     rows = [
         ("Formula Mode", row.get("formula mode")),
@@ -6713,7 +6918,7 @@ def _plateau_summary_display_table(row, selection, warnings_list, options=None):
     ])
     if warnings_list:
         rows.append(("Warnings", " | ".join(str(item) for item in warnings_list)))
-    return pd.DataFrame([{"Setting": key, "Value": value} for key, value in rows])
+    return _plateau_parameter_table(rows)
 
 
 def _plateau_compact_result_row(row, options=None):
@@ -6801,7 +7006,10 @@ def _plateau_result_table(row, options=None, *, transpose=False):
     compact = _plateau_compact_result_row(row, options)
     if transpose:
         return pd.DataFrame(
-            [{"Metric": key, "Value": value} for key, value in compact.items()]
+            [
+                {"Metric": _plateau_symbol_display_label(key), "Value": value}
+                for key, value in compact.items()
+            ]
         )
     table = pd.DataFrame([_plateau_numeric_result_row(row)])
     table.attrs["units"] = _plateau_units_map()
@@ -6812,37 +7020,34 @@ def _plateau_results_display_table(table, options=None):
     options = {} if options is None else options
     if set(table.columns) == {"Metric", "Value"}:
         return table.copy()
-    return _results_display_table_with_unit_headers(
+    display_table = _results_display_table_with_unit_headers(
         table,
         options,
         value_formatter=_format_plateau_display_value,
+    )
+    return display_table.rename(
+        columns={
+            column: _plateau_symbol_display_label(column)
+            for column in display_table.columns
+        }
     )
 
 
 def _display_plateau_table(title, table, options=None):
     options = options or {}
-    plain_display = not _rich_table_output_enabled(options)
-    if plain_display:
-        print(f"\n### {title} ###")
-    if options.get("pretty print", True):
-        display_object_table(table, options, title=title, plain_title=False)
-    else:
-        with pd.option_context(
-            "display.max_colwidth", None,
-            "display.max_columns", None,
-            "display.max_rows", None,
-            "display.width", None,
-            "display.expand_frame_repr", False,
-        ):
-            print(table.to_string(index=False))
-    return table
+    rich_table = _analysis_parameter_rich_table(table) if "Symbol" in table.columns else None
+    return _display_table(
+        table,
+        options,
+        title=title,
+        rich_table=rich_table,
+        escape=None,
+        index=False,
+    )
 
 
 def _display_plateau_results_table(title, table, options=None):
     options = {} if options is None else options
-    plain_display = not _rich_table_output_enabled(options)
-    if plain_display:
-        print(f"\n### {title} ###")
     display_table = _plateau_results_display_table(table, options)
     return _display_table(
         table,
@@ -6852,7 +7057,7 @@ def _display_plateau_results_table(title, table, options=None):
         plain_table=display_table,
         escape=None,
         index=False,
-        plain_title=False,
+        plain_title=True,
     )
 
 
@@ -7067,6 +7272,20 @@ def _plateau_grouped_result_tables(groups, result_rows, options):
         display_source_df,
         keep_in_table=keep_in_table,
     )
+    identity_columns = [
+        column
+        for column in [*summary_df.columns, *context_df.columns, *concentration_df.columns]
+        if column in display_df.columns and column not in {"Name", "Plot Label"}
+    ]
+    identity_check = _conditional_analysis_name_column(
+        display_df,
+        identity_columns,
+        options,
+    )
+    needs_condition = "Name" in identity_check.columns
+    display_df = display_df.drop(columns=["Name", "Plot Label"], errors="ignore")
+    if needs_condition and "condition" in full_result_table.columns:
+        display_df.insert(0, "Condition", full_result_table["condition"].to_numpy())
     display_df.attrs["shared_summary"] = shared_summary
     display_df.attrs["full_results_df"] = full_result_table
     display_df.attrs["units"] = _plateau_units_map()
@@ -7134,11 +7353,8 @@ def _plateau_grouped_summary_display_table(display_df, full_result_table, group_
     }
     if warnings_list:
         rows["Warnings"] = " | ".join(str(item) for item in warnings_list)
-    return pd.DataFrame([
-        {
-            "Setting": key,
-            "Value": _format_plateau_summary_value(key, value, options),
-        }
+    return _plateau_parameter_table([
+        (key, _format_plateau_summary_value(key, value, options))
         for key, value in rows.items()
     ])
 
@@ -7639,7 +7855,7 @@ def _plateau_current_grouped(groups, raw_options, options, *, group_mode=None):
 
     if options.get("print", True):
         _display_plateau_table(
-            "Plateau Current Summary",
+            "Plateau Current Parameters",
             _plateau_grouped_summary_display_table(
                 result_table,
                 full_result_table,
@@ -7657,10 +7873,10 @@ def _plateau_current_grouped(groups, raw_options, options, *, group_mode=None):
                 resolved=False,
                 compact=options.get("print all", False),
             )
-        _display_plateau_results_table("Plateau Current Results", result_table, options)
+        _display_plateau_results_table("Plateau Current Summary", result_table, options)
         if options.get("print all", False):
             if not details.empty:
-                _display_plateau_table("Plateau Current Diagnostics", details, options)
+                _display_plateau_table("Plateau Current Data", details, options)
 
     return analysis_result_from_table(
         result_table,
@@ -7678,6 +7894,7 @@ def _plateau_current_grouped(groups, raw_options, options, *, group_mode=None):
             "ip0 currents": ip0_currents,
         },
         warnings=warnings_list,
+        display_table_formatter=_plateau_results_display_table,
     )
 
 
@@ -8018,7 +8235,7 @@ def plateau_current(cvs, options=None):
 
     if options.get("print", True):
         _display_plateau_table(
-            "Plateau Current Summary",
+            "Plateau Current Parameters",
             _plateau_summary_display_table(row, selection, warnings_list, options),
             options,
         )
@@ -8028,9 +8245,9 @@ def plateau_current(cvs, options=None):
             resolved=False,
             compact=options.get("print all", False),
         )
-        _display_plateau_results_table("Plateau Current Results", result_table, options)
+        _display_plateau_results_table("Plateau Current Summary", result_table, options)
         if options.get("print all", False):
-            _display_plateau_table("Plateau Current Diagnostics", details_df, options)
+            _display_plateau_table("Plateau Current Data", details_df, options)
 
     if (options.get("plot all", False) or options.get("plot", True)) and len(ic_df) > 1:
         _plot_plateau_validation(ic_df, selection, options)
@@ -8067,6 +8284,7 @@ def plateau_current(cvs, options=None):
             "plateau selection": selection,
         },
         warnings=warnings_list,
+        display_table_formatter=_plateau_results_display_table,
     )
 
 
@@ -9724,78 +9942,6 @@ def fowa(cvs, options=None):
             "ref color": resolved_color_map.get(id(ref_cv), "0.4") if ref_cv is not None else "0.4",
         })
 
-        if options.get("print all", False):
-            print(f"\n### FOWA {i}: {cat_cv.name} ###")
-
-            if options.get("non-catalytic current") is not None:
-                print(f"Using manual non-catalytic current (ip0): {ip0:.6g}")
-            else:
-                print(f"Using non-catalytic CV for ip0: {ref_cv.name}")
-                if ref_Ep is not None:
-                    print(f"  Reference peak potential (Ep): {ref_Ep:.6g}")
-                print(f"  Tangent-corrected ip0: {ip0:.6g}")
-
-            if redox_mode_used == "manual":
-                print(f"Using manual redox potential: {redox_potential:.6g}")
-            elif redox_mode_used == "half wave":
-                print(f"Using non-catalytic CV E1/2 for redox potential: {redox_source}")
-                print(f"  Resolved E1/2: {redox_potential:.6g}")
-            elif redox_mode_used == "half peak":
-                print(f"Using catalytic CV Ep/2 for redox potential: {redox_source}")
-                print(f"  Resolved Ep/2: {redox_potential:.6g}")
-
-            print(f"Background correction: {background_mode if background_mode is not None else 'none'}")
-            if background_mode == "tangent" and background_tangent_potential is not None:
-                print(f"  Automatic tangent potential: {background_tangent_potential:.6g}")
-
-            print(f"Wave window: {x_wave[0]:.6g} to {x_wave[-1]:.6g}")
-            if not fit_enabled:
-                print("Fit: disabled")
-            elif not fit_succeeded:
-                print("Fit: skipped")
-            else:
-                print(f"Fit range (transformed x): [{fit_lo}, {fit_hi}]")
-                print(f"Fit points: {n_fit}")
-                print(f"Formula: {formula_label}")
-
-            if fit_succeeded and formula_label == "EC' apparent":
-                print(
-                    "k_obs = (slope * 0.4463 * n / n'^sigma)^2 "
-                    "* (n*F*v)/(RT)\n"
-                    "  TOF_max = k_obs"
-                )
-                print(
-                    "where n = n_cat = 'catalyst electrons', "
-                    "n' = n_turn = 'turnover electrons', "
-                    "and sigma is the ET-pathway exponent."
-                )
-                print(
-                    "  Key options to adjust if needed: "
-                    "'catalyst electrons', 'turnover electrons', 'sigma', "
-                    "'fit range', 'redox potential', 'non-catalytic current', "
-                    "'background correction'."
-                )
-            elif fit_succeeded:
-                print(
-                    "  Custom formula used. Adjust 'custom formula' and 'formula label' "
-                    "if you want a different mechanism."
-                )
-
-            if fit_succeeded:
-                print(f"Slope: {slope:.6g}")
-                print(f"Intercept: {intercept:.6g}")
-                print(f"R^2: {r2:.4f}")
-                for key, value in kinetics.items():
-                    if isinstance(value, (int, float, np.floating)):
-                        print(f"{key}: {value:.6g}")
-                    else:
-                        print(f"{key}: {value}")
-
-            if row_warnings:
-                print("Warnings:")
-                for msg in row_warnings:
-                    print(f"  - {msg}")
-
     if plot_all_normalized:
         normalized_cvs = [
             raw_plot_copies.get(id(obj))
@@ -9896,9 +10042,6 @@ def fowa(cvs, options=None):
     shared_summary = display_df.attrs.get("shared_summary", {})
 
     if options.get("print", True):
-        if not _rich_table_output_enabled(options):
-            print("\n### FOWA Summary ###")
-
         combined_summary = {}
 
         # Keep the manually-added structural info you liked
@@ -9911,6 +10054,18 @@ def fowa(cvs, options=None):
             combined_summary["Fit Range"] = f"[{fit_lo}, {fit_hi}]"
         combined_summary["Background Correction"] = background_mode if background_mode is not None else "none"
         combined_summary["Mechanism"] = options.get("mechanism", "EC'")
+        combined_summary["Catalyst Electrons"] = _format_fit_model_display_value(
+            options.get("catalyst electrons", options.get("num electrons", 1)),
+            sig_figs=options.get("sig figs", 4),
+        )
+        combined_summary["Turnover Electrons"] = _format_fit_model_display_value(
+            options.get("turnover electrons", 1),
+            sig_figs=options.get("sig figs", 4),
+        )
+        combined_summary["Sigma"] = _format_fit_model_display_value(
+            options.get("sigma", 1.0),
+            sig_figs=options.get("sig figs", 4),
+        )
 
         # If the source was manual, include the explicit manual value
         if options.get("non-catalytic current") is not None:
@@ -9964,6 +10119,9 @@ def fowa(cvs, options=None):
             "Fit",
             "Fit Range",
             "Mechanism",
+            "Catalyst Electrons",
+            "Turnover Electrons",
+            "Sigma",
         ]
 
         ordered_summary = {}
@@ -9977,23 +10135,32 @@ def fowa(cvs, options=None):
         _display_fowa_summary_table(
             ordered_summary,
             options,
-            title="FOWA Summary",
-            plain_title=False,
+            title="FOWA Parameters",
+            plain_title=True,
         )
 
         if any(np.isfinite(float(row.get("kobs", np.nan))) for row in results):
             _display_fowa_kobs_equation(
                 options,
                 resolved=False,
-                compact=options.get("print all", False),
+                compact=False,
             )
 
         _display_fowa_results_table(
             display_df,
             options,
-            title="FOWA Results",
-            plain_title=False,
+            title="FOWA Summary",
+            plain_title=True,
         )
+        if options.get("print all", False):
+            full_results = display_df.attrs.get("full_results_df")
+            if isinstance(full_results, pd.DataFrame) and not full_results.empty:
+                _display_fowa_results_table(
+                    full_results,
+                    options,
+                    title="FOWA Data",
+                    plain_title=True,
+                )
 
 
     if options.get("plot", True):
@@ -10015,6 +10182,7 @@ def fowa(cvs, options=None):
                 "full results": single_df.attrs.get("full_results_df"),
             },
             warnings=single_df.attrs.get("warnings", {}),
+            display_table_formatter=_fowa_results_display_table,
         )
 
     return analysis_result_from_table(
@@ -10026,6 +10194,7 @@ def fowa(cvs, options=None):
             "full results": display_df.attrs.get("full_results_df"),
         },
         warnings=display_df.attrs.get("warnings", {}),
+        display_table_formatter=_fowa_results_display_table,
     )
 
 def _resolve_df_column(df, requested, aliases=None, required=True):
@@ -11130,6 +11299,134 @@ def _tafel_curve(overpotential, tof_max, thermodynamic_potential, redox_potentia
     return tof, np.log10(tof)
 
 
+def _tafel_equation_bundle():
+    return {
+        "symbolic latex": (
+            r"\mathrm{TOF}=\frac{2\mathrm{TOF}_{\max}}"
+            r"{1+\exp\left[\frac{F}{RT}(E_{\mathrm{thermo}}-E_{\mathrm{redox}}-\eta)\right]},\quad "
+            r"y=\log_{10}(\mathrm{TOF})"
+        ),
+        "resolved latex": "",
+        "compact latex": "",
+        "definitions latex": "",
+        "symbolic": "TOF = 2 TOFmax / (1 + exp((F / (R T)) * (Ethermo - Eredox - eta))); y = log10(TOF)",
+        "resolved": "",
+        "compact": "",
+        "definitions": "",
+    }
+
+
+def _tafel_parameter_table(
+    tof_values,
+    thermodynamic_potential,
+    redox_potential,
+    overpotential_range,
+    temperatures,
+    options=None,
+):
+    options = {} if options is None else options
+    sig_figs = options.get("sig figs", 4)
+    unique_tof = list(dict.fromkeys(float(value) for value in tof_values))
+    unique_temperatures = list(dict.fromkeys(float(value) for value in temperatures))
+    tof_value = (
+        _format_sevcik_value(unique_tof[0], sig_figs=sig_figs, unit="s^-1")
+        if len(unique_tof) == 1
+        else "per CV"
+    )
+    temperature_value = (
+        _format_sevcik_value(unique_temperatures[0], sig_figs=sig_figs, unit="K")
+        if len(unique_temperatures) == 1
+        else "per CV"
+    )
+    eta_start, eta_end = overpotential_range
+    return _analysis_parameter_table(
+        [
+            ("Maximum Turnover Frequency", "TOFmax", tof_value),
+            ("Thermodynamic Potential", "Ethermo", _format_sevcik_value(thermodynamic_potential, sig_figs=sig_figs, unit="V")),
+            ("Redox Potential", "Eredox", _format_sevcik_value(redox_potential, sig_figs=sig_figs, unit="V")),
+            ("Temperature", "T", temperature_value),
+            (
+                "Overpotential Range",
+                "η",
+                (
+                    f"{_format_fit_model_display_value(eta_start, sig_figs=sig_figs)} to "
+                    f"{_format_fit_model_display_value(eta_end, sig_figs=sig_figs)} V"
+                ),
+            ),
+        ]
+    )
+
+
+def _tafel_summary_display_table(summary, options=None):
+    options = {} if options is None else options
+    sig_figs = options.get("sig figs", 4)
+    display = summary.copy()
+    for column, unit in [
+        ("TOFmax", "s^-1"),
+        ("Temperature", "K"),
+        ("Thermodynamic Potential", "V"),
+        ("Redox Potential", "V"),
+    ]:
+        if column in display:
+            display[column] = [
+                _format_sevcik_value(value, sig_figs=sig_figs, unit=unit)
+                for value in display[column]
+            ]
+    if len(display) == 1:
+        row = display.iloc[0].to_dict()
+        return pd.DataFrame(
+            [
+                {"Metric": "Label", "Value": row.get("Label", "")},
+                {"Metric": "TOFmax", "Value": row.get("TOFmax", "")},
+                {"Metric": "Temperature", "Value": row.get("Temperature", "")},
+                {"Metric": "Thermodynamic Potential", "Value": row.get("Thermodynamic Potential", "")},
+                {"Metric": "Redox Potential", "Value": row.get("Redox Potential", "")},
+            ]
+        )
+    return display
+
+
+def _display_tafel_report(summary, options, *, tof_values, thermodynamic_potential, redox_potential, overpotential_range):
+    if not options.get("print", True):
+        return
+    temperatures = summary["Temperature"].tolist() if "Temperature" in summary else [298]
+    parameter_table = _tafel_parameter_table(
+        tof_values,
+        thermodynamic_potential,
+        redox_potential,
+        overpotential_range,
+        temperatures,
+        options,
+    )
+    _display_table(
+        parameter_table,
+        options,
+        title="Tafel Analysis Parameters",
+        rich_table=_analysis_parameter_rich_table(parameter_table),
+        escape=None,
+        index=False,
+    )
+    equation = _tafel_equation_bundle()
+    if _rich_table_output_enabled(options):
+        _display_analysis_equation(
+            r"\text{Tafel analysis equations:}",
+            "Tafel Analysis Equations",
+            equation,
+            resolved=False,
+            compact=False,
+            include_definitions=False,
+        )
+    else:
+        print("Tafel Analysis Equations:")
+        print("  " + equation["symbolic"])
+    _display_table(
+        _tafel_summary_display_table(summary, options),
+        options,
+        title="Tafel Analysis Summary",
+        index=False,
+    )
+
+
 def tafel_analysis(cv, TOF_max, thermodynamic_potential, redox_potential, options=None):
     """Compute and plot Tafel-style turnover-frequency data for one or more CVs.
     
@@ -11158,13 +11455,18 @@ def tafel_analysis(cv, TOF_max, thermodynamic_potential, redox_potential, option
     raw_options = {} if options is None else options
     raw_mapping = raw_options.to_options_dict() if isinstance(raw_options, TafelAnalysisOptions) else raw_options
     tafel_options = _tafel_options_from_mapping(raw_options)
+    display_options = {} if raw_mapping is None else dict(raw_mapping)
+    display_options.setdefault("print", True)
+    display_options.setdefault("pretty print", True)
+    display_options.setdefault("sig figs", 4)
+    do_plot = bool(display_options.get("plot", True))
     cvs = _coerce_tafel_cv_list(cv)
     tof_values = _coerce_tafel_tof_values(TOF_max, len(cvs))
 
     start, end = tafel_options["overpotential range"]
     overpotential = np.linspace(float(start), float(end), 1000)
 
-    if len(cvs) > 1:
+    if do_plot and len(cvs) > 1:
         plot_options = _multiplot_options_from_mapping(raw_mapping)
         style = _prepare_multiplot_style(cvs, plot_options)
         ax = style["ax"]
@@ -11172,11 +11474,18 @@ def tafel_analysis(cv, TOF_max, thermodynamic_potential, redox_potential, option
         plot_labels = color_spec["labels"]
         line_colors = color_spec["line colors"]
         display_labels = style["display labels"]
-    else:
+    elif do_plot:
         fig, ax = plt.subplots()
         plot_labels = [None]
         line_colors = [tafel_options["color"]]
         display_labels = [getattr(cvs[0], "name", "CV")]
+        plot_options = _multiplot_options_from_mapping(raw_mapping)
+        style = None
+    else:
+        ax = None
+        plot_labels = [None] * len(cvs)
+        line_colors = [tafel_options["color"]] * len(cvs)
+        display_labels = [getattr(cv_obj, "name", f"CV {i + 1}") for i, cv_obj in enumerate(cvs)]
         plot_options = _multiplot_options_from_mapping(raw_mapping)
         style = None
 
@@ -11193,12 +11502,13 @@ def tafel_analysis(cv, TOF_max, thermodynamic_potential, redox_potential, option
             temperature,
         )
         label = display_labels[i]
-        ax.plot(
-            overpotential,
-            log_tof,
-            color=line_colors[i],
-            label=plot_labels[i],
-        )
+        if ax is not None:
+            ax.plot(
+                overpotential,
+                log_tof,
+                color=line_colors[i],
+                label=plot_labels[i],
+            )
 
         summary_rows.append({
             "Index": i,
@@ -11223,8 +11533,9 @@ def tafel_analysis(cv, TOF_max, thermodynamic_potential, redox_potential, option
             for eta, tof_value, log_value in zip(overpotential, tof, log_tof)
         )
 
-    ax.set_xlabel(r"$\eta$ (V)")
-    ax.set_ylabel(r"$\log_{10}(\mathrm{TOF}\ (s^{-1}))$")
+    if ax is not None:
+        ax.set_xlabel(r"$\eta$ (V)")
+        ax.set_ylabel(r"$\log_{10}(\mathrm{TOF}\ (s^{-1}))$")
 
     if style is not None:
         _finish_multiplot_style(cvs, plot_options, style)
@@ -11232,13 +11543,21 @@ def tafel_analysis(cv, TOF_max, thermodynamic_potential, redox_potential, option
     data = pd.DataFrame(data_rows)
     summary = pd.DataFrame(summary_rows)
     data.attrs["summary"] = summary
+    _display_tafel_report(
+        summary,
+        display_options,
+        tof_values=tof_values,
+        thermodynamic_potential=thermodynamic_potential,
+        redox_potential=redox_potential,
+        overpotential_range=(start, end),
+    )
     return analysis_result_from_table(
         data,
         analysis="tafel",
         summary={"table": summary},
         values={"summary": summary, "axes": ax},
         axes=ax,
-        figure=ax.figure,
+        figure=ax.figure if ax is not None else None,
     )
 
 

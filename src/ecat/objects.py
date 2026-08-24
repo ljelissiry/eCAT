@@ -11,9 +11,10 @@ from .options import *  # noqa: F401,F403
 from .parsers import (
     ParseResult,
     exp_type_short as _exp_type_short,
-    _format_file_for_warning,
     parse_text_file_to_result as _parse_text_file_to_result,
 )
+from ._file_formats import validate_default_text_input
+from ._cv_direction import cv_segment_scan_direction
 from ._plot_style import _active_plot_style_value
 from .results import AnalysisResult
 
@@ -267,57 +268,6 @@ _ELECTRODE_DISPLAY_ALIASES = {
     "agagno3": "AgAgNO3",
     "ag/agno3": "Ag/AgNO3",
 }
-
-
-def _parse_scan_rate_from_name_text(name):
-    text = str(name)
-    match = re.search(
-        r"(\d+(?:\.\d+)?)\s*([numμm]?)\s*V\s*/?\s*s",
-        text,
-        flags=re.IGNORECASE,
-    )
-    if not match:
-        return None
-    value = float(match.group(1))
-    prefix = match.group(2).lower()
-    factor = {
-        "": 1.0,
-        "m": 1e-3,
-        "u": 1e-6,
-        "μ": 1e-6,
-        "n": 1e-9,
-    }.get(prefix, 1.0)
-    return value * factor
-
-
-def _format_scan_rate_for_warning(scan_rate):
-    value = abs(float(scan_rate))
-    if value < 1:
-        return f"{value * 1000:g} mV/s"
-    return f"{value:g} V/s"
-
-
-def _warn_if_scan_rate_mismatch(filepath, header_scan_rate, filename_scan_rate, display_root=None):
-    if header_scan_rate is None or filename_scan_rate is None:
-        return None
-    try:
-        header_value = float(header_scan_rate)
-        filename_value = float(filename_scan_rate)
-    except (TypeError, ValueError):
-        return None
-    if not (math.isfinite(header_value) and math.isfinite(filename_value)):
-        return None
-    if math.isclose(header_value, filename_value, rel_tol=1e-9, abs_tol=1e-12):
-        return None
-
-    display_name = _format_file_for_warning(filepath, display_root)
-    message = (
-        f"Scan rate mismatch for {display_name}: header reports "
-        f"{_format_scan_rate_for_warning(header_value)}, but filename suggests "
-        f"{_format_scan_rate_for_warning(filename_value)}; using header value."
-    )
-    warnings.warn(message, UserWarning, stacklevel=3)
-    return message
 
 
 _STANDARD_AXIS_UNITS = {
@@ -701,26 +651,65 @@ class CVAnalysisResult(AnalysisResult):
         diagnostics=None,
         figure=None,
         axes=None,
+        cv_obj=None,
+        display_rows=None,
+        display_options=None,
     ):
         super().__init__(
             values,
-            table=table if table is not None else pd.DataFrame(columns=["Metric", "Value"]),
+            table=table,
             summary=summary,
             diagnostics=diagnostics,
             figure=figure,
             axes=axes,
         )
         self.primary = primary
+        self._cv_obj = cv_obj
+        self._display_rows = list(display_rows or [])
+        self._display_options = dict(display_options or {})
+
+    @property
+    def table(self):
+        """Human-readable table generated from raw display rows."""
+        if getattr(self, "_cv_obj", None) is not None and getattr(self, "_display_rows", None):
+            return _cv_analysis_table(
+                self._cv_obj,
+                self._display_rows,
+                getattr(self, "_display_options", {}),
+            )
+        table = getattr(self, "_table", None)
+        if table is None:
+            return pd.DataFrame(columns=["Metric", "Value"])
+        return table
+
+    @table.setter
+    def table(self, value):
+        self._table = value
+
+    def _merged_display_options(self, options=None):
+        merged = dict(getattr(self, "_display_options", {}) or {})
+        merged.update({} if options is None else dict(options))
+        return merged
+
+    def _display_table(self, options=None):
+        if getattr(self, "_cv_obj", None) is not None and getattr(self, "_display_rows", None):
+            return _cv_analysis_table(
+                self._cv_obj,
+                self._display_rows,
+                self._merged_display_options(options),
+            )
+        return self.table
 
     def show(self, options=None):
         """Display or print the human-readable analysis table."""
-        options = {} if options is None else dict(options)
+        options = self._merged_display_options(options)
         pretty_print = bool(options.get("pretty print", True))
         header = options.get("header", True)
         if header is True:
             header = _cv_analysis_title(self.summary.get("analysis"))
+        display_table = self._display_table(options)
         if pretty_print and display is not None:
-            display_table = _cv_analysis_pretty_table(self.table)
+            display_table = _cv_analysis_pretty_table(display_table)
             styled = (
                 display_table.style
                 .hide(axis="index")
@@ -747,8 +736,8 @@ class CVAnalysisResult(AnalysisResult):
         else:
             if header:
                 print(f"{header}:")
-            print(self.table.to_string(index=False))
-        return self.table
+            print(display_table.to_string(index=False))
+        return display_table
 
 
 def _cv_analysis_title(analysis):
@@ -757,6 +746,7 @@ def _cv_analysis_title(analysis):
     labels = {
         "peak_potential": "Peak Potential",
         "peak_current": "Peak Current",
+        "peak_width": "Peak Width",
         "half_peak_potential": "Half-Peak Potential",
         "half_wave_potential": "Half-Wave Potential",
         "peak_info": "Peak Info",
@@ -773,7 +763,25 @@ def _cv_analysis_metric_label(metric):
         "ip": "i<sub>p</sub>",
         "Ep/2": "E<sub>p/2</sub>",
         "Δ(Ep - Ep/2)": "Δ(E<sub>p</sub> - E<sub>p/2</sub>)",
+        "E leading": "E<sub>leading</sub>",
+        "E trailing": "E<sub>trailing</sub>",
         "E(1/2)": "E<sub>1/2</sub>",
+        "level current": "Level Current",
+        "width": "Width",
+        "W1/2": "W<sub>1/2</sub>",
+        "Width Status": "Width Status",
+        "ΔE": "ΔE<sub>p</sub>",
+        "Epc": "E<sub>p,c</sub>",
+        "Epa": "E<sub>p,a</sub>",
+        "ipc": "i<sub>p,c</sub>",
+        "ipa": "i<sub>p,a</sub>",
+        "Ep/2,c": "E<sub>p/2,c</sub>",
+        "Ep/2,a": "E<sub>p/2,a</sub>",
+        "Δ(Epc - Ep/2,c)": "Δ(E<sub>p,c</sub> - E<sub>p/2,c</sub>)",
+        "Δ(Epa - Ep/2,a)": "Δ(E<sub>p,a</sub> - E<sub>p/2,a</sub>)",
+        "W1/2,c": "W<sub>1/2,c</sub>",
+        "W1/2,a": "W<sub>1/2,a</sub>",
+        "|ipa/ipc|": "|i<sub>p,a</sub>/i<sub>p,c</sub>|",
         "P1 Ep": "P1 E<sub>p</sub>",
         "P1 ip": "P1 i<sub>p</sub>",
         "P2 Ep": "P2 E<sub>p</sub>",
@@ -845,6 +853,63 @@ def _resolve_half_wave_segments(cv_obj, options):
     return seg1, seg2
 
 
+def _interpolate_cv_level_crossing(x0, y0, x1, y1, target):
+    x0 = float(x0)
+    y0 = float(y0)
+    x1 = float(x1)
+    y1 = float(y1)
+    target = float(target)
+    if not all(np.isfinite(value) for value in (x0, y0, x1, y1, target)):
+        return None
+    if y0 == y1:
+        return x0 if abs(y0 - target) <= abs(y1 - target) else x1
+    fraction = (target - y0) / (y1 - y0)
+    fraction = float(np.clip(fraction, 0, 1))
+    return x0 + fraction * (x1 - x0)
+
+
+def _cv_level_delta(value, target, sign):
+    return float(sign) * (float(value) - float(target))
+
+
+def _find_cv_level_crossing(x, corrected_y, peak_index, target, direction):
+    sign = 1.0 if float(target) >= 0 else -1.0
+    n_points = len(corrected_y)
+
+    if direction < 0:
+        indices = range(int(peak_index) - 1, -1, -1)
+        for idx in indices:
+            baseline_delta = _cv_level_delta(corrected_y[idx], target, sign)
+            peak_delta = _cv_level_delta(corrected_y[idx + 1], target, sign)
+            if not np.isfinite(baseline_delta) or not np.isfinite(peak_delta):
+                continue
+            if baseline_delta <= 0 <= peak_delta:
+                return _interpolate_cv_level_crossing(
+                    x[idx],
+                    corrected_y[idx],
+                    x[idx + 1],
+                    corrected_y[idx + 1],
+                    target,
+                )
+        return None
+
+    indices = range(int(peak_index) + 1, n_points)
+    for idx in indices:
+        peak_delta = _cv_level_delta(corrected_y[idx - 1], target, sign)
+        baseline_delta = _cv_level_delta(corrected_y[idx], target, sign)
+        if not np.isfinite(baseline_delta) or not np.isfinite(peak_delta):
+            continue
+        if baseline_delta <= 0 <= peak_delta:
+            return _interpolate_cv_level_crossing(
+                x[idx - 1],
+                corrected_y[idx - 1],
+                x[idx],
+                corrected_y[idx],
+                target,
+            )
+    return None
+
+
 def _cv_analysis_unit_text(unit):
     if unit is None:
         return ""
@@ -863,28 +928,75 @@ def _cv_analysis_format_number(value, sig_figs):
         return str(value)
     if not np.isfinite(numeric):
         return str(numeric)
-    return f"{round_sigfigs(numeric, sig_figs):g}"
+    return format_sigfigs(numeric, sig_figs)
 
 
-def _cv_analysis_display_value(cv_obj, value, row, options):
+def _cv_analysis_row_scale_key(cv_obj, row, options):
+    kind = row.get("kind")
+    unit = row.get("unit")
+    if kind == "potential":
+        x_name = cv_obj.x(options).name
+        unit = cv_obj.units.get(x_name, unit or "V")
+        return kind, x_name, unit, options.get("x unit", "auto")
+    elif kind == "current":
+        y_name = cv_obj.y(options).name
+        unit = cv_obj.units.get(y_name, unit or "A")
+        return kind, y_name, unit, options.get("y unit", "auto")
+    return None
+
+
+def _cv_analysis_display_context(cv_obj, rows, options):
+    grouped = {}
+    row_keys = {}
+    for index, row in enumerate(rows):
+        key = _cv_analysis_row_scale_key(cv_obj, row, options)
+        if key is None:
+            continue
+        try:
+            value = float(row.get("value"))
+        except (TypeError, ValueError):
+            continue
+        if not np.isfinite(value):
+            continue
+        row_keys[index] = key
+        grouped.setdefault(key, []).append(value)
+
+    context = {}
+    for key, values in grouped.items():
+        kind, column_name, unit, selected_unit = key
+        values = np.asarray(values, dtype=float)
+        if kind == "potential":
+            scale, display_unit = _cv_analysis_potential_scale(values, unit, selected_unit)
+        elif kind == "current":
+            scale, display_unit = cv_obj.scale_axis(values, column_name, unit, selected_unit)
+        else:
+            continue
+        context[key] = (scale, display_unit)
+    return row_keys, context
+
+
+def _cv_analysis_potential_scale(values, unit, selected_unit):
+    return scale_axis(np.asarray(values, dtype=float), unit, selected_unit)
+
+
+def _cv_analysis_display_value(cv_obj, value, row, options, *, scale_info=None):
     kind = row.get("kind")
     sig_figs = options.get("sig figs", 4)
     unit = row.get("unit")
     scale = 1.0
 
-    if kind == "potential":
-        x = cv_obj.x(options)
-        x_name = x.name
+    if scale_info is not None:
+        scale, unit = scale_info
+    elif kind == "potential":
+        x_name = cv_obj.x(options).name
         unit = cv_obj.units.get(x_name, unit or "V")
-        scale, unit = cv_obj.scale_axis(
+        scale, unit = _cv_analysis_potential_scale(
             np.asarray([value], dtype=float),
-            x_name,
             unit,
             options.get("x unit", "auto"),
         )
     elif kind == "current":
-        y = cv_obj.y(options)
-        y_name = y.name
+        y_name = cv_obj.y(options).name
         unit = cv_obj.units.get(y_name, unit or "A")
         scale, unit = cv_obj.scale_axis(
             np.asarray([value], dtype=float),
@@ -907,6 +1019,7 @@ def _cv_analysis_display_value(cv_obj, value, row, options):
 
 def _cv_analysis_table(cv_obj, rows, options):
     rows = list(rows or [])
+    row_scale_keys, display_context = _cv_analysis_display_context(cv_obj, rows, options)
     segment_values = [
         str(row.get("segment"))
         for row in rows
@@ -918,7 +1031,15 @@ def _cv_analysis_table(cv_obj, rows, options):
         display_row = {"Metric": row.get("metric", "")}
         if include_segment:
             display_row["Segment"] = "" if row.get("segment") is None else str(row.get("segment"))
-        display_row["Value"] = _cv_analysis_display_value(cv_obj, row.get("value"), row, options)
+        row_index = len(display_rows)
+        scale_key = row_scale_keys.get(row_index)
+        display_row["Value"] = _cv_analysis_display_value(
+            cv_obj,
+            row.get("value"),
+            row,
+            options,
+            scale_info=display_context.get(scale_key),
+        )
         display_rows.append(display_row)
     columns = ["Metric", "Segment", "Value"] if include_segment else ["Metric", "Value"]
     return pd.DataFrame(display_rows, columns=columns)
@@ -940,10 +1061,13 @@ def _cv_analysis_result(
     return CVAnalysisResult(
         values,
         primary=values.get(primary_key),
-        table=_cv_analysis_table(cv_obj, rows, options),
+        table=None,
         summary=summary_data,
         diagnostics={} if diagnostics is None else diagnostics,
         axes=plt.gca() if plt.get_fignums() else None,
+        cv_obj=cv_obj,
+        display_rows=rows,
+        display_options=options,
     )
 
 
@@ -968,8 +1092,10 @@ class echem:
         Read up to `num_lines` header lines from a text file.
         Returns a list of stripped lines.
         """
-        if filepath is None or not str(filepath).endswith(".txt"):
+        if filepath is None:
             return []
+
+        validate_default_text_input(filepath)
 
         header_lines = []
         with open(filepath, "r", encoding=encoding) as f:
@@ -1202,6 +1328,8 @@ class echem:
         return super().__new__(cls)
 
     def __init__(self, filepath=None, options=None):
+        if filepath is not None:
+            filepath = os.fspath(filepath)
         self.filepath = filepath
         internal_options = options if isinstance(options, dict) else {}
         preparsed_result = internal_options.get("_preparsed_result")
@@ -2614,10 +2742,12 @@ class cv(echem):
         >>> current = cv_obj.y({"y axis": "i/ip0", "ip0": 1e-5})
         """
         options = {} if options is None else dict(options)
-        options['y axis'] = options.get(
-            'y axis',
-            _default_normalized_axis(self, "y") or self._default_cv_axis_column("y") or 'Current',
-        )
+        if options.get('y axis') in (None, ''):
+            options['y axis'] = (
+                _default_normalized_axis(self, "y")
+                or self._default_cv_axis_column("y")
+                or 'Current'
+            )
 
         requested_y_axis = str(options.get('y axis', '')).strip().lower()
         if requested_y_axis.startswith('current density'):
@@ -3220,9 +3350,14 @@ class cv(echem):
 
                 trace_spec = {key: value for key, value in spec.items() if key != "segment"}
                 line_color = segment_colors.get(segment_number, options.get("color", "k"))
+                arrow_options = {
+                    "directional arrows": trace_spec,
+                    "noise window": options.get("noise window", "auto"),
+                    "noise polyorder": options.get("noise polyorder", "auto"),
+                }
                 _add_directional_arrows(
                     ax,
-                    {"directional arrows": trace_spec},
+                    arrow_options,
                     xs,
                     ys,
                     line_color=line_color,
@@ -3692,10 +3827,13 @@ class cv(echem):
         result = CVAnalysisResult(
             results,
             primary=primary,
-            table=_cv_analysis_table(self, rows, options),
+            table=None,
             summary={"analysis": "current_at_potential", "target potential": potential},
             diagnostics={},
             axes=plt.gca() if plt.get_fignums() else None,
+            cv_obj=self,
+            display_rows=rows,
+            display_options=options,
         )
         if do_print:
             result.show(options)
@@ -3733,7 +3871,7 @@ class cv(echem):
         # exact-potential mode should bypass extrema finding entirely
         if exact_potential is not None:
             peak_index = int(np.argmin(np.abs(x - float(exact_potential))))
-            peak_potential = round_sigfigs(x[peak_index], options["sig figs"])
+            peak_potential = float(x[peak_index])
 
             if options["plot"]:
                 if not options.get("internal call") and options.get("plot cv", True):
@@ -3812,7 +3950,7 @@ class cv(echem):
             # Sign-agnostic: choose the most prominent extremum, not largest |current|.
             peak_index = max(candidate_extrema, key=lambda idx: prom_map.get(int(idx), 0.0))
 
-        peak_potential = round_sigfigs(x[peak_index], options["sig figs"])
+        peak_potential = float(x[peak_index])
         extremum_kind = extrema_kind_map.get(int(peak_index))
 
         if options["plot"]:
@@ -4501,7 +4639,7 @@ class cv(echem):
                         "the selected segment contains no data."
                     ) from exc
                 idx_E_peak = int(np.nanargmax(np.abs(y_fallback)))
-                E_peak = round_sigfigs(x_fallback[idx_E_peak], options["sig figs"])
+                E_peak = float(x_fallback[idx_E_peak])
                 peak_result = {
                     "Ep": E_peak,
                     "index": idx_E_peak,
@@ -4533,7 +4671,7 @@ class cv(echem):
         tanline = [m, b]
 
         base_current = m * E_peak + b
-        peak_current = round_sigfigs(y[idx_E_peak] - base_current, options["sig figs"])
+        peak_current = float(y[idx_E_peak] - base_current)
 
         if options["plot"]:
             x_scale, y_scale = self.xy_scale(options)
@@ -4688,8 +4826,8 @@ class cv(echem):
 
         # convert back to global index & potential
         idx_half_peak = (np.arange(len(x))[idx_window])[local_idx]
-        E_half_peak = round_sigfigs(x[idx_half_peak], options["sig figs"])
-        delta = round_sigfigs(E_peak - E_half_peak, options["sig figs"])
+        E_half_peak = float(x[idx_half_peak])
+        delta = float(E_peak - E_half_peak)
 
         if options["plot"]:
             x_scale, y_scale = self.xy_scale(options)
@@ -4722,6 +4860,157 @@ class cv(echem):
             "Ep/2",
             options,
             diagnostics={"Ep index": idx_E_peak, "peak current": current_result},
+        )
+        if options["print"]:
+            result.show(options)
+        return result
+
+    def peak_width(self, guess_or_options=None, options=None, **kwargs):
+        """Measure tangent-corrected full peak width for a selected CV wave.
+
+        Parameters
+        ----------
+        options : dict or PeakWidthOptions, optional
+            Peak, tangent-line, fractional level, plot, and print options. See
+            ``e.describe_options("cv.peak_width")``.
+
+        Returns
+        -------
+        CVAnalysisResult
+            Dictionary-compatible result with ``width``, ``E leading``,
+            ``E trailing``, ``Ep``, and tangent diagnostics.
+
+        Examples
+        --------
+        >>> result = cv_obj.peak_width({"guess potential": -1.5, "segment": 1})
+        """
+        options = _coerce_guess_potential_call_options(guess_or_options, options, kwargs)
+        typed_options = PeakWidthOptions.from_options(options)
+        options = self._cv_analysis_options(typed_options.to_options_dict())
+        do_plot = bool(options.get("plot", True))
+        plot_all = bool(options.get("plot all", False))
+
+        if do_plot and not options.get("internal call") and options.get("plot cv", True):
+            self._plot_from_analysis_options(options)
+            options["new plot"] = False
+
+        internal_current_options = replace(
+            typed_options.for_peak_current(),
+            plot=do_plot and plot_all,
+            print=typed_options.print_all,
+            internal_call=True,
+            new_plot=False,
+        )
+        current_result = self.peak_current(internal_current_options)
+
+        x, y = self.analysis_segment_data(options)
+        if len(x) == 0:
+            raise ValueError("peak_width could not analyze an empty selected segment.")
+
+        idx_E_peak = int(current_result["Ep index"])
+        if idx_E_peak <= 0 or idx_E_peak >= len(x) - 1:
+            raise ValueError("peak_width requires a peak with data on both sides.")
+
+        m, b = current_result["tangent line"]
+        y_tangent = m * x + b
+        corrected_y = y - y_tangent
+        corrected_peak_current = float(corrected_y[idx_E_peak])
+        if not np.isfinite(corrected_peak_current) or corrected_peak_current == 0:
+            raise ValueError("peak_width requires a nonzero tangent-corrected peak current.")
+
+        level = float(options.get("level", 0.5))
+        level_current = level * corrected_peak_current
+        E_leading_raw = _find_cv_level_crossing(
+            x,
+            corrected_y,
+            idx_E_peak,
+            level_current,
+            direction=-1,
+        )
+        E_trailing_raw = _find_cv_level_crossing(
+            x,
+            corrected_y,
+            idx_E_peak,
+            level_current,
+            direction=1,
+        )
+        if E_leading_raw is None or E_trailing_raw is None:
+            raise ValueError(
+                "peak_width could not find two level crossings in the tangent-corrected trace. "
+                "Try a different segment, guess potential, peak kind, tangent range, or level."
+            )
+
+        width_raw = abs(float(E_trailing_raw) - float(E_leading_raw))
+        E_leading = float(E_leading_raw)
+        E_trailing = float(E_trailing_raw)
+        width = float(width_raw)
+        level_current_display = float(level_current)
+        corrected_peak_display = float(corrected_peak_current)
+
+        if do_plot:
+            x_scale, y_scale = self.xy_scale(options)
+            offset = options.get("offset", 0)
+            E_crossings = np.array([E_leading_raw, E_trailing_raw], dtype=float)
+            y_crossings = m * E_crossings + b + level_current
+            color = "tab:purple"
+            plt.plot(
+                E_crossings * x_scale,
+                y_crossings * y_scale + offset,
+                color=color,
+                linestyle="--",
+            )
+            plt.scatter(
+                E_crossings * x_scale,
+                y_crossings * y_scale + offset,
+                color=color,
+                zorder=4,
+            )
+
+        values = {
+            "width": width,
+            "E leading": E_leading,
+            "E trailing": E_trailing,
+            "Ep": current_result["Ep"],
+            "Ep index": idx_E_peak,
+            "ip": current_result["ip"],
+            "level": level,
+            "level current": level_current_display,
+            "corrected peak current": corrected_peak_display,
+            "baseline current": current_result["baseline current"],
+            "tangent line": current_result["tangent line"],
+            "tangent slope": current_result["tangent slope"],
+            "tangent intercept": current_result["tangent intercept"],
+            "tangent start": current_result["tangent start"],
+            "fit indices": current_result.get("fit indices"),
+            "segment slice": current_result.get("segment slice"),
+            "peak source": current_result.get("peak source"),
+        }
+        result = _cv_analysis_result(
+            self,
+            "peak_width",
+            values,
+            [
+                {"metric": "width", "value": width, "kind": "potential"},
+                {"metric": "E leading", "value": E_leading, "kind": "potential"},
+                {"metric": "E trailing", "value": E_trailing, "kind": "potential"},
+                {"metric": "Ep", "value": current_result["Ep"], "kind": "potential"},
+                {"metric": "ip", "value": current_result["ip"], "kind": "current"},
+                {"metric": "level", "value": level, "kind": "plain"},
+                {"metric": "level current", "value": level_current_display, "kind": "current"},
+            ],
+            "width",
+            options,
+            diagnostics={
+                "E leading raw": float(E_leading_raw),
+                "E trailing raw": float(E_trailing_raw),
+                "width raw": width_raw,
+                "level current raw": level_current,
+                "corrected peak current raw": corrected_peak_current,
+                "peak current": current_result,
+                "tangent line": current_result["tangent line"],
+                "fit indices": current_result.get("fit indices"),
+                "segment slice": current_result.get("segment slice"),
+            },
         )
         if options["print"]:
             result.show(options)
@@ -4760,11 +5049,43 @@ class cv(echem):
         _x, y = self.analysis_segment_data(options)
         y_E_peak = y[idx_E_peak]
 
+        width_status = "ok"
+        width_value = np.nan
+        width_diagnostics = {}
+        try:
+            width_options = options.copy()
+            width_options["level"] = 0.5
+            width_options["print"] = do_print and options.get("print all", False)
+            width_options["plot"] = do_plot
+            width_options["plot all"] = options.get("plot all", False)
+            width_options["plot cv"] = False
+            width_options["internal call"] = True
+            width_options["new plot"] = False
+            width_result = self.peak_width(width_options)
+            width_value = width_result["width"]
+            width_diagnostics = {
+                "status": "ok",
+                **dict(width_result.diagnostics),
+            }
+        except (ValueError, IndexError) as exc:
+            width_status = "Unavailable"
+            width_diagnostics = {
+                "status": "Unavailable",
+                "reason": str(exc),
+            }
+            warnings.warn(
+                f"W1/2 is unavailable for '{self.name}': {exc}",
+                UserWarning,
+                stacklevel=2,
+            )
+
         peak_info = {
             "Ep": E_peak,
             "ip": peak_current,
             "Ep/2": E_half_peak,
-            "Δ(Ep - Ep/2)":delta
+            "Δ(Ep - Ep/2)": delta,
+            "W1/2": width_value,
+            "width status": width_status,
         }
         diagnostics = {
             "Ep idx": idx_E_peak,
@@ -4772,6 +5093,7 @@ class cv(echem):
             "Ep y": y_E_peak,
             "peak current": current_result,
             "half peak": half_peak_result,
+            "peak width": width_diagnostics,
         }
 
         values = {
@@ -4780,16 +5102,25 @@ class cv(echem):
             "tanline": tanline,
             "Ep y": y_E_peak,
         }
+        display_rows = [
+            {"metric": "Ep", "value": E_peak, "kind": "potential"},
+            {"metric": "ip", "value": peak_current, "kind": "current"},
+            {"metric": "Ep/2", "value": E_half_peak, "kind": "potential"},
+            {"metric": "Δ(Ep - Ep/2)", "value": delta, "kind": "potential"},
+            {
+                "metric": "W1/2",
+                "value": width_value if width_status == "ok" else "Unavailable",
+                "kind": "potential" if width_status == "ok" else "plain",
+            },
+        ]
+        if width_status != "ok":
+            display_rows.append({"metric": "Width Status", "value": width_status, "kind": "plain"})
+
         result = _cv_analysis_result(
             self,
             "peak_info",
             values,
-            [
-                {"metric": "Ep", "value": E_peak, "kind": "potential"},
-                {"metric": "ip", "value": peak_current, "kind": "current"},
-                {"metric": "Ep/2", "value": E_half_peak, "kind": "potential"},
-                {"metric": "Δ(Ep - Ep/2)", "value": delta, "kind": "potential"},
-            ],
+            display_rows,
             "Ep",
             options,
             diagnostics=diagnostics,
@@ -4873,8 +5204,8 @@ class cv(echem):
         x2, y2 = self.analysis_segment_data(seg2_options)
         y_E_peak2 = y2[idx2]
 
-        ΔE = round_sigfigs(abs(E_peak1 - E_peak2), options["sig figs"])
-        E_half = midpoint_potential(E_peak1, E_peak2, options["sig figs"])
+        ΔE = float(abs(E_peak1 - E_peak2))
+        E_half = float((E_peak1 + E_peak2) / 2)
 
         peak_data1 = {
             "segment": seg1,
@@ -4886,6 +5217,13 @@ class cv(echem):
             "Ep": E_peak2,
             "Ep y": y_E_peak2,
         }
+        for peak_data, segment in ((peak_data1, seg1), (peak_data2, seg2)):
+            try:
+                scan_direction = cv_segment_scan_direction(self, segment)
+            except ValueError:
+                continue
+            peak_data["scan direction"] = scan_direction
+            peak_data["branch"] = "anodic" if scan_direction == "increasing" else "cathodic"
 
         if options.get("plot", True):
             offset = options.get('offset', 0)
@@ -5016,6 +5354,30 @@ class cv(echem):
 
         peak_info2 = self.peak_info(peak2_options)
 
+        def resolved_branch(segment, half_wave_peak):
+            branch = half_wave_peak.get("branch")
+            if branch in {"anodic", "cathodic"}:
+                return branch
+            direction = cv_segment_scan_direction(self, segment)
+            return "anodic" if direction == "increasing" else "cathodic"
+
+        branch1 = resolved_branch(seg1, hw_peak1)
+        branch2 = resolved_branch(seg2, hw_peak2)
+        if branch1 == branch2:
+            raise ValueError(
+                "wave_info requires one cathodic and one anodic peak; "
+                f"segments {seg1} and {seg2} were both identified as {branch1}."
+            )
+        peak_by_branch = {
+            branch1: (seg1, peak_info1),
+            branch2: (seg2, peak_info2),
+        }
+        cathodic_segment, cathodic_peak = peak_by_branch["cathodic"]
+        anodic_segment, anodic_peak = peak_by_branch["anodic"]
+        ipc = float(cathodic_peak["ip"])
+        ipa = float(anodic_peak["ip"])
+        current_ratio = abs(ipa / ipc) if ipc != 0 else np.nan
+
         wave_info = {
             "E(1/2)": E_half,
             "ΔE": ΔE,
@@ -5025,13 +5387,57 @@ class cv(echem):
             "P1 ip": peak_info1["ip"],
             "P1 Ep/2": peak_info1["Ep/2"],
             "P1 Δ(Ep - Ep/2)": peak_info1["Δ(Ep - Ep/2)"],
+            "P1 W1/2": peak_info1["W1/2"],
+            "P1 width status": peak_info1["width status"],
+            "P1 branch": branch1,
 
             "P2 segment": seg2,
             "P2 Ep": peak_info2["Ep"],
             "P2 ip": peak_info2["ip"],
             "P2 Ep/2": peak_info2["Ep/2"],
             "P2 Δ(Ep - Ep/2)": peak_info2["Δ(Ep - Ep/2)"],
+            "P2 W1/2": peak_info2["W1/2"],
+            "P2 width status": peak_info2["width status"],
+            "P2 branch": branch2,
+
+            "cathodic segment": cathodic_segment,
+            "anodic segment": anodic_segment,
+            "Epc": cathodic_peak["Ep"],
+            "Epa": anodic_peak["Ep"],
+            "ipc": ipc,
+            "ipa": ipa,
+            "Epc/2": cathodic_peak["Ep/2"],
+            "Epa/2": anodic_peak["Ep/2"],
+            "Δ(Epc - Epc/2)": cathodic_peak["Δ(Ep - Ep/2)"],
+            "Δ(Epa - Epa/2)": anodic_peak["Δ(Ep - Ep/2)"],
+            "W1/2,c": cathodic_peak["W1/2"],
+            "W1/2,a": anodic_peak["W1/2"],
+            "cathodic width status": cathodic_peak["width status"],
+            "anodic width status": anodic_peak["width status"],
+            "|ipa/ipc|": current_ratio,
         }
+
+        branch_suffix = {"cathodic": "c", "anodic": "a"}
+
+        def peak_rows(segment, peak_info, branch):
+            suffix = branch_suffix[branch]
+            return [
+                {"metric": f"Ep{suffix}", "segment": segment, "value": peak_info["Ep"], "kind": "potential"},
+                {"metric": f"ip{suffix}", "segment": segment, "value": peak_info["ip"], "kind": "current"},
+                {"metric": f"Ep/2,{suffix}", "segment": segment, "value": peak_info["Ep/2"], "kind": "potential"},
+                {
+                    "metric": f"Δ(Ep{suffix} - Ep/2,{suffix})",
+                    "segment": segment,
+                    "value": peak_info["Δ(Ep - Ep/2)"],
+                    "kind": "potential",
+                },
+                {
+                    "metric": f"W1/2,{suffix}",
+                    "segment": segment,
+                    "value": peak_info["W1/2"] if peak_info["width status"] == "ok" else "Unavailable",
+                    "kind": "potential" if peak_info["width status"] == "ok" else "plain",
+                },
+            ]
 
         result = _cv_analysis_result(
             self,
@@ -5040,28 +5446,28 @@ class cv(echem):
             [
                 {"metric": "E(1/2)", "value": E_half, "kind": "potential"},
                 {"metric": "ΔE", "value": ΔE, "kind": "potential"},
-                {"metric": "Ep", "segment": seg1, "value": peak_info1["Ep"], "kind": "potential"},
-                {"metric": "ip", "segment": seg1, "value": peak_info1["ip"], "kind": "current"},
-                {"metric": "Ep/2", "segment": seg1, "value": peak_info1["Ep/2"], "kind": "potential"},
+                *peak_rows(seg1, peak_info1, branch1),
+                *peak_rows(seg2, peak_info2, branch2),
                 {
-                    "metric": "Δ(Ep - Ep/2)",
-                    "segment": seg1,
-                    "value": peak_info1["Δ(Ep - Ep/2)"],
-                    "kind": "potential",
-                },
-                {"metric": "Ep", "segment": seg2, "value": peak_info2["Ep"], "kind": "potential"},
-                {"metric": "ip", "segment": seg2, "value": peak_info2["ip"], "kind": "current"},
-                {"metric": "Ep/2", "segment": seg2, "value": peak_info2["Ep/2"], "kind": "potential"},
-                {
-                    "metric": "Δ(Ep - Ep/2)",
-                    "segment": seg2,
-                    "value": peak_info2["Δ(Ep - Ep/2)"],
-                    "kind": "potential",
+                    "metric": "|ipa/ipc|",
+                    "value": current_ratio,
+                    "kind": "plain",
                 },
             ],
             "E(1/2)",
             options,
-            diagnostics={"peak 1": peak_info1, "peak 2": peak_info2},
+            diagnostics={
+                "peak 1": peak_info1,
+                "peak 2": peak_info2,
+                "current ratio": {
+                    "value": current_ratio,
+                    "source": "tangent corrected",
+                    "anodic segment": anodic_segment,
+                    "cathodic segment": cathodic_segment,
+                    "ipa": ipa,
+                    "ipc": ipc,
+                },
+            },
         )
         if do_print:
             result.show(options)
@@ -5113,7 +5519,11 @@ class cv(echem):
                 "V/s",
                 selected_unit=options.get("scan rate unit", "auto"),
             )
-            stats["scan rate"] = f"{scaled:g} {label}"
+            if math.isfinite(float(scaled)):
+                scaled = round_sigfigs(float(scaled), options.get("sig figs", 3))
+                stats["scan rate"] = f"{scaled:g} {label}"
+            else:
+                stats.pop("scan rate", None)
 
         low_E = stats.pop("low E", None)
         high_E = stats.pop("high E", None)
@@ -5338,12 +5748,23 @@ class dpv(echem):
             else:
                 peak_index = max(extrema, key=lambda idx: prom_map.get(int(idx), 0.0))
 
-        peak_potential = round_sigfigs(x[peak_index], options["sig figs"])
+        peak_potential = float(x[peak_index])
 
         if options["print"]:
-            x_name = self.x(options).name
-            x_unit = self.units.get(x_name, "")
-            print(f"Ep: {peak_potential} {x_unit}".strip())
+            result = _cv_analysis_result(
+                self,
+                "peak_potential",
+                {
+                    "Ep": peak_potential,
+                    "index": peak_index,
+                    "current": y[peak_index],
+                },
+                [{"metric": "Ep", "value": peak_potential, "kind": "potential"}],
+                "Ep",
+                options,
+                diagnostics={"index": peak_index, "current": y[peak_index]},
+            )
+            result.show(options)
 
         if options["plot"]:
             if not options.get("internal call"):
@@ -6721,7 +7142,7 @@ class ca(echem):
             return str(value)
         if not np.isfinite(numeric):
             return str(numeric)
-        return f"{round_sigfigs(numeric, options.get('sig figs', 4)):g}"
+        return format_sigfigs(numeric, options.get('sig figs', 4))
 
     def _chrono_format_value(self, value, unit, options, *, kind="plain"):
         if value is None:
@@ -7267,12 +7688,6 @@ class ca(echem):
         else:
             x_unit_lbl = self.units.get("Time", "s")
 
-        if options.get("print", True):
-            print(f"Final charge: {round_sigfigs(float(Q[-1]), options.get('sig figs', 4))} C")
-            if target_charge is not None and t_at is not None:
-                pretty_t = round_sigfigs(t_at, options.get("sig figs", 4))
-                print(f"t({target_charge:g} C) = {pretty_t} {self.units.get('Time', 's')}")
-
         values = {
             "time": pd.Series(t, name="Time"),
             "charge": pd.Series(Q, name="Charge"),
@@ -7294,7 +7709,21 @@ class ca(echem):
                 "final corrected charge": float(baseline["corrected charge"][-1]) if len(Q) else np.nan,
                 "removed charge": pd.Series(baseline["removed charge"], name="Removed Charge"),
             })
-        return ChronoAnalysisResult(values, axes=ax)
+        rows = [("Final Charge", values["final charge"], "C", "plain")]
+        if baseline is not None:
+            rows.append(("Final Corrected Charge", values.get("final corrected charge"), "C", "plain"))
+        if target_charge is not None:
+            rows.append(("Target Charge", target_charge, "C", "plain"))
+        if t_at is not None:
+            rows.append(("Time At Target Charge", t_at, self.units.get("Time", "s"), "time"))
+        table = self._chrono_table(rows, options)
+        self._print_chrono_table("Charge", [], table, options)
+        return ChronoAnalysisResult(
+            values,
+            table=table,
+            summary={"analysis": "charge"},
+            axes=ax,
+        )
 
     def plot(self, options=None, **mpl_kwargs):
         """Plot chronoamperometry current versus time.
@@ -7451,11 +7880,14 @@ class ca(echem):
 
         t_at_plot = float(np.interp(target_charge, Q, t_scaled))
 
-        sig_figs = options.get('sig figs', 4)
-        if options.get("print", True):
-            pretty_t = round_sigfigs(t_at_plot, sig_figs)
-            unit_lbl = x_unit_lbl or x_unit_raw
-            print(f"t({target_charge:g} C) = {pretty_t} {unit_lbl}")
+        table = self._chrono_table(
+            [
+                ("Target Charge", target_charge, "C", "plain"),
+                ("Time", t_at, x_unit_raw, "time"),
+            ],
+            options,
+        )
+        self._print_chrono_table("Time At Charge", [], table, options)
 
         ax = None
         if options.get("plot", False):
@@ -7490,6 +7922,8 @@ class ca(echem):
                 "time unit": x_unit_raw,
                 "display time unit": x_unit_lbl,
             },
+            table=table,
+            summary={"analysis": "time_at_charge"},
             axes=ax,
         )
 

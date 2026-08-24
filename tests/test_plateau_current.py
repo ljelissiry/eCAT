@@ -119,7 +119,7 @@ def test_plateau_current_accepts_n_cat_and_n_turn_aliases(ecat_module):
     assert result.summary["kobs"] == pytest.approx(expected)
 
 
-def test_plateau_and_fowa_equations_use_literature_n_with_option_definitions(ecat_module):
+def test_plateau_equation_is_symbolic_and_labels_carry_symbols(ecat_module):
     values = {
         "catalyst electrons": 2,
         "turnover electrons": 4,
@@ -134,8 +134,8 @@ def test_plateau_and_fowa_equations_use_literature_n_with_option_definitions(eca
         {"catalyst electrons": 2, "turnover electrons": 4, "sigma": 1}
     )
 
-    assert "n_cat" in plateau_equation["definitions"]
-    assert "n_turn" in plateau_equation["definitions"]
+    assert plateau_equation["definitions"] == ""
+    assert plateau_equation["definitions latex"] == ""
     assert "n_cat" not in plateau_equation["symbolic"]
     assert "n_turn" not in plateau_equation["symbolic"]
     assert "n'" in plateau_equation["symbolic"]
@@ -144,6 +144,35 @@ def test_plateau_and_fowa_equations_use_literature_n_with_option_definitions(eca
     assert "n'" in fowa_equation["symbolic"]
     assert "n = 2 (n_cat" in fowa_equation["definitions"]
     assert "n' = 4 (n_turn" in fowa_equation["definitions"]
+
+    summary_table = ecat_module._plateau_summary_display_table(
+        {
+            **values,
+            "formula mode": "normalized",
+            "ilim source": "manual",
+            "ip0 source": "manual",
+            "plateau validation": "not tested",
+        },
+        {"valid plateau": None},
+        [],
+    )
+    assert summary_table.columns.tolist() == ["Parameter", "Symbol", "Value"]
+    parameter_symbols = dict(zip(summary_table["Parameter"], summary_table["Symbol"]))
+    assert parameter_symbols["Catalyst Electrons"] == "n"
+    assert parameter_symbols["Turnover Electrons"] == "n'"
+    assert parameter_symbols["Temperature"] == "T"
+
+    metric_table = ecat_module._plateau_result_table(
+        {
+            **values,
+            "formula mode": "normalized",
+            "kobs": 1.0,
+            "ilim source": "manual",
+            "ip0 source": "manual",
+        },
+        transpose=True,
+    )
+    assert "ip0 Scan Rate (ν_ip0)" in metric_table["Metric"].tolist()
 
 
 def test_plateau_current_slope_normalized_equation_manual(ecat_module):
@@ -430,9 +459,9 @@ def test_plateau_print_all_prints_compact_output_and_diagnostics(ecat_module, ca
     )
 
     out = capsys.readouterr().out
-    assert "### Plateau Current Summary ###" in out
-    assert "Plateau Current Results" in out
-    assert "Plateau Current Diagnostics" in out
+    assert "Plateau Current Parameters:" in out
+    assert "Plateau Current Summary" in out
+    assert "Plateau Current Data" in out
     assert "plateau subset cvs" in out
     assert "Catalytic Current Diagnostics" not in out
     assert "ip0 Current Diagnostics" not in out
@@ -716,10 +745,40 @@ def test_plateau_grouped_output_feeds_fit_rate(ecat_module, monkeypatch):
     assert "kobs" in plateau.table
     assert plateau.table["kobs"].dtype.kind in "fc"
     assert "Substrate Concentration (M)" in plateau.table
+    assert "Name" not in plateau.table
     assert "full_results_df" in plateau.table.attrs
     assert "Substrate Concentration (M)" in plateau.table.attrs["full_results_df"]
     assert fit_input.table["x kind"].eq("concentration").all()
     assert fit_input.table["x raw"].tolist() == pytest.approx([0.001, 0.002, 0.003])
+
+
+def test_plateau_nested_duplicate_context_uses_condition_not_name(ecat_module, monkeypatch):
+    groups = []
+    for index, current in enumerate((-5e-5, -6e-5), start=1):
+        cv = FakePeakCV(
+            f"condition {index}",
+            scan_rate=0.1,
+            current=current,
+        )
+        cv.compounds = ["Cat", "Substrate"]
+        cv.concentrations = ["1 mM", "2 mM"]
+        groups.append([cv])
+
+    monkeypatch.setattr(ecat_module, "multiplot", lambda cvs, options=None: None)
+    result = ecat_module.plateau_current(
+        groups,
+        _opts(
+            **{
+                "ip0": 1e-5,
+                "ip0 scan rate": 0.1,
+                "validate plateau": False,
+                "print": False,
+            }
+        ),
+    )
+
+    assert result.table.columns[0] == "Condition"
+    assert "Name" not in result.table.columns
 
 
 def test_plateau_grouped_prints_summary_equation_and_hides_peak_tables(
@@ -760,11 +819,25 @@ def test_plateau_grouped_prints_summary_equation_and_hides_peak_tables(
     )
 
     out = capsys.readouterr().out
-    assert "### Plateau Current Summary ###" in out
-    assert "[Plateau kobs equation]" in out
-    assert "n' = 2 (n_turn, turnover electron count)" in out
-    assert "### Plateau Current Results ###" in out
-    assert "### Plateau Current Diagnostics ###" in out
+    assert "Plateau Current Parameters:" in out
+    assert "[Plateau Current Equations]" in out
+    assert "Turnover Electrons" in out
+    assert "Symbol" in out
+    assert "n'" in out
+    assert "n' = n_turn (turnover electron count)" not in out
+    assert "n' = 2 (n_turn, turnover electron count)" not in out
+    assert "v_ip0 = 0.1 V/s" not in out
+    assert "Plateau Current Summary:" in out
+    assert "Plateau Current Data:" in out
+    assert out.index("Plateau Current Parameters:") < out.index(
+        "[Plateau Current Equations]"
+    )
+    assert out.index("[Plateau Current Equations]") < out.index(
+        "Plateau Current Summary:"
+    )
+    assert out.index("Plateau Current Summary:") < out.index(
+        "Plateau Current Data:"
+    )
     assert "Catalytic Current Diagnostics" not in out
     assert "ip0 Current Diagnostics" not in out
     assert "extraction potential" not in out
@@ -825,8 +898,8 @@ def test_plateau_tangent_equations_are_promoted_to_results(ecat_module):
     assert "ilim tangent" in metrics
     assert "ip0 tangent" in metrics
     details = result.diagnostics["plateau details"]
-    assert details.loc[0, "ilim tangent"] == "y = 0x + 0"
-    assert details.loc[0, "ip0 tangent"] == "y = 0x + 0"
+    assert details.loc[0, "ilim tangent"] == "y = 0.000x + 0.000"
+    assert details.loc[0, "ip0 tangent"] == "y = 0.000x + 0.000"
 
 
 def test_plateau_nested_lists_define_explicit_validation_groups(

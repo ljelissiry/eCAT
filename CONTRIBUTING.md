@@ -34,5 +34,7 @@ same branch, coordinate before rebasing.
 - Add or update focused tests for behavior changes.
 - Update documentation when public APIs, options, parser behavior, plotting, or
   analysis outputs change.
+- Follow the [analysis output contract](docs/analysis_output_contract.md) when
+  adding or changing notebook-facing analysis reports.
 - Include notebook screenshots or short notes when changing notebook-facing plots
   or printed output.

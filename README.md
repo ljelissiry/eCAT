@@ -119,6 +119,13 @@ peak = cv.peak_potential({"plot": False, "print": False})
 print(peak)
 ```
 
+Other single-CV metric helpers include `cv.peak_current()` and
+`cv.peak_width()` when you need current or tangent-corrected full-width values.
+`cv.peak_info()` and `cv.wave_info()` also report tangent-corrected full width
+at half peak current; `wave_info()` identifies the cathodic and anodic segment
+numbers and reports $i_{p,\mathrm{c}}$, $i_{p,\mathrm{a}}$, and
+$|i_{p,\mathrm{a}}/i_{p,\mathrm{c}}|$ as evidence for chemical reversibility.
+
 For multiple CVs:
 
 ```python
@@ -132,16 +139,56 @@ grouped = e.sort_and_group(
 e.multiplot(grouped[0], {"legend": "auto", "title": False})
 ```
 
+For one chemical condition measured across scan rates, use the cautious
+series-level reversibility assessment:
+
+```python
+result = e.reversibility_analysis(
+    scan_rate_series,
+    {
+        "phase": "bulk",
+        "guess potential": -1.0,
+        "num electrons": 1,
+        "D": 1e-5,
+    },
+)
+```
+
+Surface-confined loading and coverage use a separate physical workflow:
+
+```python
+coverage = e.surface_coverage_analysis(
+    scan_rate_series,
+    {"segments": [1, 2], "guess potential": [-0.1, -0.1]},
+)
+```
+
+The numbered quickstarts keep these physical models separate:
+
+- [`07_reversibility_analysis.ipynb`](notebooks/07_reversibility_analysis.ipynb)
+  uses a bundled real Fe/Fc scan-rate series to compare reversible and
+  quasi-reversible waves.
+- [`08_surface_confined_cv.ipynb`](notebooks/08_surface_confined_cv.ipynb)
+  imports a pre-generated eCAT Excel workbook and recovers surface coverage
+  plus total electroactive loading.
+- [`09_advanced_analysis.ipynb`](notebooks/09_advanced_analysis.ipynb) covers
+  normalization, catalytic analysis, and general fitting before the simulation
+  sequence begins in notebook 10.
+
+See [the API reference](docs/api_reference.md#reversibility-decision-tree)
+for the exact bulk/surface decision tree, kinetic eligibility ranges, and
+chemical-reversibility labels.
+
 ## Beta Scope
 
 See [docs/beta_scope.md](docs/beta_scope.md) for the supported file/technique matrix, known limitations, and recommended beta-user guidance.
 
 In short:
 
-- Recommended beta path: CH, BASI, and EC-Lab CV text exports.
+- Recommended beta path: CH and BASI `.txt` exports plus EC-Lab ASCII `.mpt` or compatible `.txt` exports.
 - Limited path: CH CA, CH CP, EC-Lab CA/CP/GCPL text exports, and NOVA ASCII CV text exports.
 - Fallback path: generic numeric/header text files with parser warnings available through `obj.parse_result.warnings`.
-- Unsupported for beta: binary files and untested vendor formats.
+- Unsupported for beta: binary files, including BioLogic `.mpr`, and untested vendor formats. eCAT rejects `.mpr` before text parsing and recommends exporting EC-Lab ASCII `.mpt` or converting externally.
 
 ## Reporting Issues
 

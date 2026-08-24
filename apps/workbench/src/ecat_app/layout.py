@@ -2357,22 +2357,7 @@ def _multi_cv_controls(dcc, html):
                     html.Div(
                         id="ecat-sevcik-options",
                         style={"display": "none"},
-                        children=[
-                            _analysis_labeled_control(
-                                html,
-                                "Mode",
-                                dcc.Dropdown(
-                                    id="ecat-sevcik-mode",
-                                    value="homogeneous",
-                                    clearable=False,
-                                    searchable=False,
-                                    options=[
-                                        {"label": "Homogeneous", "value": "homogeneous"},
-                                        {"label": "Heterogeneous", "value": "heterogeneous"},
-                                    ],
-                                ),
-                            ),
-                        ],
+                        children=[],
                     ),
                     html.Div(
                         id="ecat-multi-fit-wrap",

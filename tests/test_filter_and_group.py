@@ -735,3 +735,26 @@ def test_cv_txt_stats_supports_potential_rounding_option(ecat_module, cv_factory
 
     exactish_display_stats = obj.txt_stats({"potential rounding": None, "sig figs": 6})
     assert exactish_display_stats["scan window"] == "[-2.19818, -1.49994]"
+
+
+def test_show_objects_applies_sig_figs_to_scaled_scan_rates(ecat_module, cv_factory):
+    objects = [
+        cv_factory(name="100mVs_scan_rate_rounding_run01"),
+        cv_factory(name="100mVs_scan_rate_rounding_run02"),
+    ]
+    objects[0].scan_rate = 0.0249997
+    objects[1].scan_rate = 0.499999
+
+    table = ecat_module.show(
+        objects,
+        {
+            "pretty print": False,
+            "print conditions": False,
+            "return": True,
+            "sig figs": 3,
+        },
+    )
+
+    assert table["Scan Rate"].tolist() == ["25 mV/s", "500 mV/s"]
+    assert objects[0].scan_rate == pytest.approx(0.0249997)
+    assert objects[1].scan_rate == pytest.approx(0.499999)

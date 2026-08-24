@@ -236,6 +236,78 @@ def _display_table(
     return table
 
 
+def _conditional_analysis_name_column(
+    table,
+    identity_columns,
+    options=None,
+    *,
+    name_column=None,
+):
+    """Show ``Name`` only when visible context does not uniquely identify rows.
+
+    Uniqueness is evaluated after numeric context values are formatted with the
+    configured significant figures. This keeps replicate names visible when two
+    instrument values render as the same scan rate or concentration.
+    """
+    if not isinstance(table, pd.DataFrame):
+        return table
+
+    result = table.copy()
+    lower_columns = {str(column).strip().lower(): column for column in result.columns}
+    if name_column is None:
+        resolved_name = lower_columns.get("name")
+    else:
+        resolved_name = lower_columns.get(str(name_column).strip().lower())
+    if resolved_name is None:
+        return result
+
+    resolved_identity = []
+    for column in identity_columns or []:
+        resolved = lower_columns.get(str(column).strip().lower())
+        if resolved is not None and resolved != resolved_name and resolved not in resolved_identity:
+            resolved_identity.append(resolved)
+
+    sig_figs = int((options or {}).get("sig figs", 4))
+
+    def display_key(value):
+        if isinstance(value, (bool, np.bool_)):
+            return str(bool(value))
+        if isinstance(value, (int, float, np.integer, np.floating)):
+            numeric = float(value)
+            if np.isnan(numeric):
+                return "<missing>"
+            if np.isfinite(numeric):
+                return f"{numeric:.{sig_figs}g}"
+            return str(numeric)
+        try:
+            if pd.isna(value):
+                return "<missing>"
+        except (TypeError, ValueError):
+            pass
+        if isinstance(value, (list, tuple, dict, set, np.ndarray)):
+            return repr(value)
+        return str(value).strip()
+
+    keep_name = len(result) > 1 and not resolved_identity
+    if resolved_identity:
+        identity = pd.DataFrame(
+            {
+                str(column): [display_key(value) for value in result[column]]
+                for column in resolved_identity
+            },
+            index=result.index,
+        )
+        keep_name = bool(identity.duplicated(keep=False).any())
+
+    if not keep_name:
+        return result.drop(columns=[resolved_name])
+
+    if resolved_name != "Name":
+        result = result.rename(columns={resolved_name: "Name"})
+    ordered = ["Name"] + [column for column in result.columns if column != "Name"]
+    return result.loc[:, ordered]
+
+
 def _print_scatter_fit_statistics(title, fit_table):
     if fit_table is None or len(fit_table) == 0:
         return
@@ -528,6 +600,10 @@ class ScatterFitResult(AnalysisResult):
         figure=None,
         axes=None,
         summary=None,
+        diagnostics=None,
+        warnings=None,
+        units=None,
+        figures=None,
     ):
         super().__init__(
             table=table,
@@ -539,6 +615,10 @@ class ScatterFitResult(AnalysisResult):
             figure=figure,
             axes=axes,
             summary=summary,
+            diagnostics=diagnostics,
+            warnings=warnings,
+            units=units,
+            figures=figures,
         )
 
     def __iter__(self):
@@ -1701,6 +1781,9 @@ def _pretty_table_header_html_label(column):
         return f"{_pretty_table_header_html_label(base)} / {_pretty_unit_html_label(unit)}"
     key = text.lower()
     header_html_map = {
+        "e1/2": "E<sub>1/2</sub>",
+        "ep": "E<sub>p</sub>",
+        "ep/2": "E<sub>p/2</sub>",
         "kobs": "k<sub>obs</sub>",
         "tofmax": "TOF<sub>max</sub>",
         "tof max": "TOF<sub>max</sub>",
@@ -1721,6 +1804,26 @@ def _pretty_table_header_html_label(column):
         "ecat/2 - e1/2": "E<sub>cat/2</sub> - E<sub>1/2</sub>",
         "r2": "R<sup>2</sup>",
         "fowa fit": "FOWA Fit",
+        "epc": "E<sub>p,c</sub>",
+        "epa": "E<sub>p,a</sub>",
+        "ipc": "i<sub>p,c</sub>",
+        "ipa": "i<sub>p,a</sub>",
+        "|ipc|": "|i<sub>p,c</sub>|",
+        "|ipa|": "|i<sub>p,a</sub>|",
+        "|ipa/ipc|": "|i<sub>p,a</sub>/i<sub>p,c</sub>|",
+        "epc-epc/2": "|E<sub>p,c</sub> - E<sub>p/2,c</sub>|",
+        "epa-epa/2": "|E<sub>p,a</sub> - E<sub>p/2,a</sub>|",
+        "w1/2,c": "W<sub>1/2,c</sub>",
+        "w1/2,a": "W<sub>1/2,a</sub>",
+        "delta ep": "ΔE<sub>p</sub>",
+        "n delta ep": "nΔE<sub>p</sub>",
+        "psi": "ψ",
+        "lambda": "Λ",
+        "gamma": "Γ",
+        "gamma slope": "Γ<sub>slope</sub>",
+        "gamma charge": "Γ<sub>charge</sub>",
+        "q": "Q",
+        "k0": "k<sup>0</sup>",
     }
     return header_html_map.get(key, column)
 
@@ -1733,6 +1836,7 @@ def _pretty_unit_html_label(unit):
         "²": "<sup>2</sup>",
         "³": "<sup>3</sup>",
         "^-1": "<sup>-1</sup>",
+        "^-2": "<sup>-2</sup>",
         "^1/2": "<sup>1/2</sup>",
         "^2": "<sup>2</sup>",
         "^3": "<sup>3</sup>",
@@ -2904,10 +3008,11 @@ def _build_gradient_norm(values, gradient_by, options):
     return mpl.colors.Normalize(vmin=vmin, vmax=vmax), "linear"
 
 
-def _format_gradient_tick_value(value, unit, raw_value=None):
+def _format_gradient_tick_value(value, unit, raw_value=None, sig_figs=4):
     if raw_value not in (None, "") and np.isclose(float(value), 0.0):
         return str(raw_value).strip()
     scaled, scaled_unit = scale_value(float(value), unit, selected_unit="auto")
+    scaled = round_sigfigs(float(scaled), sig_figs)
     if isinstance(scaled_unit, str) and scaled_unit.startswith("u"):
         scaled_unit = "μ" + scaled_unit[1:]
     return f"{scaled:g} {scaled_unit}".strip()
@@ -2932,7 +3037,12 @@ def _build_gradient_ticks(values, unit, options, tick_positions=None, raw_values
         pass
     elif tick_mode == "all":
         all_ticklabels = [
-            _format_gradient_tick_value(v, unit, raw_value=raw)
+            _format_gradient_tick_value(
+                v,
+                unit,
+                raw_value=raw,
+                sig_figs=options.get("sig figs", 4),
+            )
             for v, raw in zip(values, raw_values)
         ]
     else:
@@ -2940,11 +3050,13 @@ def _build_gradient_ticks(values, unit, options, tick_positions=None, raw_values
             values[0],
             unit,
             raw_value=raw_values[0],
+            sig_figs=options.get("sig figs", 4),
         )
         all_ticklabels[-1] = _format_gradient_tick_value(
             values[-1],
             unit,
             raw_value=raw_values[-1],
+            sig_figs=options.get("sig figs", 4),
         )
 
     if len(tick_positions) == 1:
@@ -5504,6 +5616,17 @@ def _coerce_multiplot_options(options):
     return coerced
 
 
+def _resolve_multiplot_offsets(offset, trace_count):
+    if isinstance(offset, list):
+        if len(offset) != trace_count:
+            raise OptionError(
+                "'offset' must contain one value per trace: "
+                f"expected {trace_count}, received {len(offset)}."
+            )
+        return [float(value) for value in offset]
+    return [float(offset) * index for index in range(trace_count)]
+
+
 def multiplot(echem_list, options=None):
     """Plot a list of electrochemistry objects on one shared axes.
     
@@ -5552,13 +5675,14 @@ def multiplot(echem_list, options=None):
 
     style = _prepare_multiplot_style(echem_list, options)
     color_spec = style["color spec"]
+    trace_offsets = _resolve_multiplot_offsets(options.get("offset", 0), len(echem_list))
 
     for i, echem_object in enumerate(echem_list):
         plot_options = options.copy()
         plot_options['legend'] = False
         plot_options["segment color mode"] = "off"
         plot_options["scale bar"] = False
-        plot_options["offset"] *= i
+        plot_options["offset"] = trace_offsets[i]
         plot_options["color"] = color_spec["line colors"][i]
         plot_options["label"] = color_spec["labels"][i]
         plot_options["label alterations"] = None

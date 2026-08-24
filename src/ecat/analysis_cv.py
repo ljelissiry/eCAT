@@ -372,7 +372,7 @@ def _normalization_parameter_display_value(value, sig_figs):
     if isinstance(value, (int, float, np.integer, np.floating)):
         if not np.isfinite(float(value)):
             return str(value)
-        return f"{round_sigfigs(float(value), sig_figs):g}"
+        return format_sigfigs(float(value), sig_figs)
     return str(value)
 
 
@@ -997,7 +997,7 @@ def _normalize_current_source_label(cvs, options, index):
 
 
 def _format_ip0_summary_value(ip0, sig_figs):
-    return f"{round_sigfigs(float(ip0), sig_figs):g} A"
+    return f"{format_sigfigs(float(ip0), sig_figs)} A"
 
 
 def _print_normalize_current_summary(cv_list, ip0_values, options):
@@ -1195,7 +1195,7 @@ def scale_current(cvs, options=None):
             print_options["print conditions"] = options.get("print conditions", True)
             display_df, _meta = build_object_table(cv_list, print_options)
             display_df["Scale Factor"] = [
-                round_sigfigs(scale, options.get("sig figs", 4))
+                format_sigfigs(scale, options.get("sig figs", 4))
                 for scale in scales
             ]
             display_object_table(
