@@ -6,7 +6,7 @@ __pycache__/
 *.egg-info/
 build/
 dist/
-packaging/
+packaging/**/__pycache__/
 .DS_Store
 .idea/
 .ipynb_checkpoints/
