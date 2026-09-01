@@ -2378,12 +2378,18 @@ def test_fit_peak_current_passes_per_cv_potential_options(
             "print": False,
             "guess potentials": [-0.11, -0.22],
             "tangent potentials": [-0.31, -0.42],
+            "peak kind": "max",
+            "peak fallback": None,
+            "plot peak potential": False,
             "x transform": "identity",
         },
     )
 
     assert [opts["guess potential"] for opts in observed] == pytest.approx([-0.11, -0.22])
     assert [opts["tangent potential"] for opts in observed] == pytest.approx([-0.31, -0.42])
+    assert all(opts["peak kind"] == "max" for opts in observed)
+    assert all(opts["peak fallback"] is None for opts in observed)
+    assert all(opts["plot peak potential"] is False for opts in observed)
 
 
 def test_fit_peak_current_infers_varying_mole_fraction_with_constant_molar_species(
@@ -2774,6 +2780,45 @@ def test_sevcik_passes_per_cv_potential_options(
 
     assert [opts["guess potential"] for opts in observed] == pytest.approx([-0.11, -0.22])
     assert [opts["tangent potential"] for opts in observed] == pytest.approx([-0.31, -0.42])
+
+
+def test_sevcik_forwards_peak_selection_and_fallback_options(
+    ecat_module,
+    cv_factory,
+    monkeypatch,
+):
+    cvs = [
+        cv_factory(name="50mVs_sample_CO2_MeCN_10mM_Fc_run01"),
+        cv_factory(name="100mVs_sample_CO2_MeCN_10mM_Fc_run02"),
+    ]
+    observed = []
+
+    def fake_peak_current(self, options=None):
+        observed.append(dict(options or {}))
+        return {
+            "ip": float(self.scan_rate) * 1e-6,
+            "tangent line": [0.0, 0.0],
+            "tangent start": 0,
+        }
+
+    monkeypatch.setattr(ecat_module.cv, "peak_current", fake_peak_current)
+
+    ecat_module.sevcik_analysis(
+        cvs,
+        {
+            "plot": False,
+            "print": False,
+            "segment": 1,
+            "peak kind": "max",
+            "peak fallback": None,
+            "plot peak potential": False,
+        },
+    )
+
+    assert len(observed) == len(cvs)
+    assert all(options["peak kind"] == "max" for options in observed)
+    assert all(options["peak fallback"] is None for options in observed)
+    assert all(options["plot peak potential"] is False for options in observed)
 
 
 def test_sevcik_auto_selects_one_segment_from_anchor(
@@ -3880,6 +3925,30 @@ def test_tafel_accepts_options_and_preserves_user_color(ecat_module):
     assert line.get_xdata()[0] == pytest.approx(0)
     assert line.get_xdata()[-1] == pytest.approx(0.5)
     assert result["data"]["TOFmax"].iloc[0] == pytest.approx(10)
+    assert result["axes"] is plt.gca()
+
+
+def test_tafel_raw_mapping_preserves_case_and_underscore_option_spellings(ecat_module):
+    class DummyCV:
+        temperature = 298
+
+    result = ecat_module.tafel_analysis(
+        DummyCV(),
+        TOF_max=10,
+        thermodynamic_potential=0.2,
+        redox_potential=0.0,
+        options={
+            "Overpotential_Range": [0.1, 0.4],
+            "Color": "tab:purple",
+            "plot": True,
+            "print": False,
+        },
+    )
+
+    line = plt.gca().lines[0]
+    assert line.get_color() == "tab:purple"
+    assert line.get_xdata()[0] == pytest.approx(0.1)
+    assert line.get_xdata()[-1] == pytest.approx(0.4)
     assert result["axes"] is plt.gca()
 
 

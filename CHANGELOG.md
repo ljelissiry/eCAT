@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Added old BASI-Epsilon `.dat` CV text import support, including folder discovery and headerless potential/current table handling.
+- Fixed delegated option routing so Sevcik and peak-current fitting preserve `peak kind`, `peak fallback`, and peak-marker controls; Tafel and nested plot/analysis helpers now also preserve accepted case, underscore, and registered-alias spellings instead of silently reverting them to defaults.
 
 ## 0.1.0b4 - Beta Parser, Plotting, Analysis, Simulation, And App Refresh - 2026-08-24
 

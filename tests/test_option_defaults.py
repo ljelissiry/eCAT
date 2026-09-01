@@ -135,7 +135,7 @@ def test_describe_options_pretty_print_hides_empty_display_columns(ecat_module, 
 
     monkeypatch.setattr(ecat_module, "display", capture_display)
 
-    result = ecat_module.describe_options("peak_current")
+    result = ecat_module.describe_options("normalize_current")
 
     assert result is None
     assert "Choices" not in displayed["df"].columns
@@ -388,6 +388,8 @@ def test_describe_options_documents_auto_retrieval_and_algorithmic_auto_behavior
     assert "'auto' chooses an odd Savitzky-Golay window" in _option_row(cv_analysis_schema, "noise window")["Description"]
     assert "'auto' chooses a pre-peak baseline region" in _option_row(peak_schema, "tangent range")["Description"]
     assert "largest absolute current" in _option_row(peak_schema, "peak fallback")["Description"]
+    assert _option_row(peak_schema, "peak kind")["Choices"] == "both, infer, max, min"
+    assert _option_row(peak_schema, "peak fallback")["Choices"] == "highest current, guess potential, None"
 
     assert "uses CV or reference-CV temperature metadata" in _option_row(plateau_schema, "temperature")["Description"]
     assert "uses the catalytic CV's electrode_area" in _option_row(plateau_schema, "electrode area")["Description"]
@@ -1298,6 +1300,24 @@ def test_multiplot_passes_default_expanded_options_to_each_curve(
     assert observed_options[1]["offset"] == pytest.approx(
         ecat_module.MultiplotOptions.from_options({}).offset
     )
+
+
+def test_plot_routing_preserves_case_and_registered_option_aliases():
+    from ecat.plotting import _multiplot_options_from_mapping, _plot_options_from_mapping
+
+    source = {
+        "Legend Outside": True,
+        "sig_fig": 6,
+        "Invert Y": True,
+    }
+
+    single = _plot_options_from_mapping(source)
+    multiple = _multiplot_options_from_mapping(source)
+
+    for routed in (single, multiple):
+        assert routed["legend outside"] is True
+        assert routed["sig figs"] == 6
+        assert routed["invert y axis"] is True
 
 
 def test_multiplot_accepts_explicit_per_trace_offsets(

@@ -7,6 +7,7 @@ import warnings
 
 from .utils import *  # noqa: F401,F403
 from .options import *  # noqa: F401,F403
+from .options import _project_options
 from .analysis_cv import (
     _resolve_manual_ip0_values,
     _coerce_cv_list,
@@ -6262,6 +6263,8 @@ def _extract_current_with_peak_current(cv_obj, options, role, fallback_potential
         exact_potential = exact
     elif fallback_potential is not None:
         exact_potential = fallback_potential
+    if exact_potential is not None:
+        guess = None
 
     plot_peak_diagnostics = bool(options.get("_plot_peak_diagnostics", options.get("plot all", False)))
     internal = {
@@ -8682,6 +8685,7 @@ def _resolve_catalytic_half_peak_for_shift_check(cat_cv, ref_cv, options, intern
                 ref_peak_options["print"] = False
                 ref_peak_options["new plot"] = False
                 ref_Ep = ref_cv.peak_potential(ref_peak_options)["Ep"]
+                ecat_options["guess potential"] = None
                 ecat_options["exact potential"] = float(ref_Ep)
             except Exception:
                 pass
@@ -8694,6 +8698,7 @@ def _resolve_catalytic_half_peak_for_shift_check(cat_cv, ref_cv, options, intern
             cat_peak_options["print"] = False
             cat_peak_options["new plot"] = False
             cat_Ep = cat_cv.peak_potential(cat_peak_options)["Ep"]
+            ecat_options["guess potential"] = None
             ecat_options["exact potential"] = float(cat_Ep)
         except Exception as exc:
             raise ValueError(
@@ -8706,16 +8711,10 @@ def _resolve_catalytic_half_peak_for_shift_check(cat_cv, ref_cv, options, intern
 
 
 def _analysis_options_for(option_cls, source):
-    routed = {}
-    valid = {field.name for field in fields(option_cls)}
-    plot_only = {"plot_segment", "plot_segments"}
-    for key, value in (source or {}).items():
-        norm = normalize_key(key)
-        if norm in plot_only:
-            continue
-        if norm in valid:
-            routed[norm] = value
-    return option_cls.from_options(routed).to_options_dict()
+    routed = _project_options(option_cls, source).to_options_dict()
+    routed.pop("plot segment", None)
+    routed.pop("plot segments", None)
+    return routed
 
 
 _COMPLEX_POTENTIAL_PLURAL_KEYS = {
@@ -9177,12 +9176,7 @@ def _plot_fowa_normalized_diagnostics(
             if call["kind"] == "peak_potential"
             else PeakCurrentOptions
         )
-        allowed_options = {normalize_key(field.name) for field in fields(option_model)}
-        diag_options = {
-            key: value
-            for key, value in call["options"].items()
-            if normalize_key(key) in allowed_options
-        }
+        diag_options = _analysis_options_for(option_model, call["options"])
         diag_options["y axis"] = "i/ip0"
         diag_options["y unit"] = None
         diag_options["ylabel"] = "$i / i_p^0$"
@@ -9192,6 +9186,7 @@ def _plot_fowa_normalized_diagnostics(
         diag_options["print all"] = False
         diag_options["internal call"] = True
         diag_options["new plot"] = False
+        diag_options["plot cv"] = False
         diag_options["offset"] = object_offsets.get(id(original), 0)
         if (
             call["kind"] == "peak_current"
@@ -11266,10 +11261,7 @@ def _tafel_options_from_mapping(options):
             "tafel_analysis options must be a dict or TafelAnalysisOptions, "
             f"not {type(options).__name__}."
         )
-    tafel_keys = {"overpotential range", "overpotential_range", "color"}
-    return TafelAnalysisOptions.from_options(
-        {key: value for key, value in options.items() if key in tafel_keys}
-    ).to_options_dict()
+    return _project_options(TafelAnalysisOptions, options).to_options_dict()
 
 
 def _coerce_tafel_cv_list(cv_or_list):

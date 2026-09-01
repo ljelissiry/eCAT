@@ -8,6 +8,7 @@ import warnings
 
 from .utils import *  # noqa: F401,F403
 from .options import *  # noqa: F401,F403
+from .options import _project_options
 from .parsers import (
     ParseResult,
     exp_type_short as _exp_type_short,
@@ -3794,14 +3795,12 @@ class cv(echem):
             results[seg] = (p, i)
 
             if do_plot:
-                plot_keys = {field.name.replace("_", " ") for field in fields(PlotOptions)}
-                plot_opts = {
-                    key: value
-                    for key, value in seg_opts.items()
-                    if key in plot_keys
-                }
-                plot_opts["plot segment"] = seg
-                plot_opts.pop("plot segments", None)
+                plot_opts = _project_options(
+                    PlotOptions,
+                    seg_opts,
+                    plot_segment=seg,
+                    plot_segments=None,
+                ).to_options_dict()
                 if options.get("plot cv", True):
                     self.plot(plot_opts)
                 x_scale, y_scale = self.xy_scale(plot_opts)
@@ -5166,16 +5165,8 @@ class cv(echem):
             guess2 = None
 
         def peak_potential_child_options(source):
-            routed = {}
-            for field in fields(PeakPotentialOptions):
-                option_key = field.name.replace("_", " ")
-                if option_key in source:
-                    routed[option_key] = source[option_key]
-                elif field.name in source:
-                    routed[field.name] = source[field.name]
-            if source.get("internal call"):
-                routed["plot"] = False
-            return PeakPotentialOptions.from_options(routed)
+            overrides = {"plot": False} if source.get("internal call") else {}
+            return _project_options(PeakPotentialOptions, source, **overrides)
 
         # -------- Peak 1 --------
         seg1_options = internal_options.copy()
