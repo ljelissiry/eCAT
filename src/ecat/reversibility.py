@@ -380,6 +380,28 @@ def _format_scan_rate_axis(axis, scan_rates, *, sig_figs=4):
     return axis
 
 
+def _format_plain_y_axis(axis, values, *, sig_figs=4):
+    formatter = ScalarFormatter(useOffset=False)
+    formatter.set_scientific(False)
+    axis.yaxis.set_major_formatter(formatter)
+
+    finite = np.asarray(values, dtype=float)
+    finite = finite[np.isfinite(finite)]
+    if finite.size == 0:
+        return axis
+    span = float(np.ptp(finite))
+    center = float(np.mean(finite))
+    magnitude = max(abs(center), float(np.max(np.abs(finite))))
+    if span <= max(magnitude, 1.0) * 1e-10:
+        if magnitude:
+            resolution = 10 ** (np.floor(np.log10(magnitude)) - int(sig_figs) + 1)
+        else:
+            resolution = 10 ** (-int(sig_figs))
+        padding = max(magnitude * 0.01, 2 * resolution, 1e-6)
+        axis.set_ylim(center - padding, center + padding)
+    return axis
+
+
 def _agreement_status(first, second, *, tolerance):
     """Return agreement state and symmetric fractional disagreement."""
     a = _finite_float(first)
@@ -1505,16 +1527,21 @@ def reversibility_analysis(cvs, options=None):
             layout="constrained",
         )
         scan_rates = rate_means["scan rate / V s^-1"]
-        plot_axes[0].scatter(scan_rates, rate_means["n Delta Ep / mV"])
+        peak_separations = rate_means["n Delta Ep / mV"]
+        current_ratios = rate_means["|ipa/ipc|"]
+        plot_axes[0].scatter(scan_rates, peak_separations)
         plot_axes[0].set_ylabel(r"$n\Delta E_p$ (mV)")
-        plot_axes[1].scatter(scan_rates, rate_means["|ipa/ipc|"])
+        plot_axes[1].scatter(scan_rates, current_ratios)
         plot_axes[1].axhline(1, color="black", linestyle="--", linewidth=1)
         _format_scan_rate_axis(
             plot_axes[1], scan_rates, sig_figs=resolved.get("sig figs", 4)
         )
-        ratio_formatter = ScalarFormatter(useOffset=False)
-        ratio_formatter.set_scientific(False)
-        plot_axes[1].yaxis.set_major_formatter(ratio_formatter)
+        _format_plain_y_axis(
+            plot_axes[0], peak_separations, sig_figs=resolved.get("sig figs", 4)
+        )
+        _format_plain_y_axis(
+            plot_axes[1], current_ratios, sig_figs=resolved.get("sig figs", 4)
+        )
         plot_axes[1].set_xlabel(r"Scan Rate (V s$^{-1}$)")
         plot_axes[1].set_ylabel(r"$|i_{p,\mathrm{a}}/i_{p,\mathrm{c}}|$")
         figures.append(figure)

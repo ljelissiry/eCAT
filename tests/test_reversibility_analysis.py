@@ -433,6 +433,23 @@ def test_reversibility_print_and_plot_report_units_and_diagnostics(
     ]
 
 
+def test_reversibility_peak_separation_axis_suppresses_numeric_offset(ecat_module):
+    cvs = [
+        _WaveCV(rate, delta_ep=0.007007007007 + index * 1e-16, ratio=1.0)
+        for index, rate in enumerate((0.025, 0.05, 0.1, 0.2, 0.5))
+    ]
+
+    result = ecat_module.reversibility_analysis(
+        cvs,
+        {"phase": "surface", "plot": True, "print": False},
+    )
+
+    upper_axis = result.figures[0].axes[0]
+    result.figures[0].canvas.draw()
+    assert upper_axis.yaxis.get_offset_text().get_text() == ""
+    assert upper_axis.get_ylim()[1] - upper_axis.get_ylim()[0] > 0.01
+
+
 def test_bulk_reversibility_equations_are_labeled_and_conditional(
     ecat_module,
     capsys,
