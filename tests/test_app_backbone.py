@@ -6,6 +6,9 @@ from pathlib import Path
 import pytest
 
 
+pytest.importorskip("dash", reason="app tests require the optional ecat[app] extra")
+
+
 APP_SRC = Path(__file__).resolve().parents[1] / "apps" / "workbench" / "src"
 if str(APP_SRC) not in sys.path:
     sys.path.insert(0, str(APP_SRC))

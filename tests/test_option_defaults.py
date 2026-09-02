@@ -399,6 +399,9 @@ def test_describe_options_documents_auto_retrieval_and_algorithmic_auto_behavior
     assert "uses each CV's temperature" in _option_row(trumpet_schema, "temperature")["Description"]
     assert "potential scan direction" in _option_row(trumpet_schema, "segment")["Description"]
     assert "either order" in _option_row(trumpet_schema, "segments")["Description"]
+    assert "peak fallback" not in set(trumpet_schema["Option"])
+    assert "tangent range" not in set(trumpet_schema["Option"])
+    assert "tangent potential" not in set(trumpet_schema["Option"])
     assert "filename metadata parser" in _option_row(get_data_schema, "custom parser")["Description"]
     assert "built-in filename parser" in _option_row(get_data_schema, "custom parser mode")["Description"]
     assert "prefer file metadata" in _option_row(get_data_schema, "parser settings")["Description"]

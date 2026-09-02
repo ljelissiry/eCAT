@@ -63,3 +63,31 @@ def test_example_data_root_can_resolve_from_frozen_bundle(monkeypatch, tmp_path)
     monkeypatch.setattr(sys, "_MEIPASS", str(bundle_root), raising=False)
 
     assert defaults.repo_root_path() == bundle_root
+
+
+def test_example_data_root_can_resolve_from_installed_prefix(monkeypatch, tmp_path):
+    app_src = ROOT / "apps" / "workbench" / "src"
+    if str(app_src) not in sys.path:
+        sys.path.insert(0, str(app_src))
+    from ecat_app import defaults
+
+    installed_prefix = tmp_path / "installed"
+    (installed_prefix / "examples" / "data" / "fe_phoh_cv").mkdir(parents=True)
+    fake_module = installed_prefix / "lib" / "python3.14" / "site-packages" / "ecat_app" / "defaults.py"
+    fake_module.parent.mkdir(parents=True)
+
+    monkeypatch.delenv("ECAT_APP_REPO_ROOT", raising=False)
+    monkeypatch.delattr(sys, "_MEIPASS", raising=False)
+    monkeypatch.setattr(sys, "prefix", str(installed_prefix))
+    monkeypatch.setattr(defaults, "__file__", str(fake_module))
+
+    assert defaults.repo_root_path() == installed_prefix
+    assert defaults.default_fe_phoh_path().is_dir()
+
+
+def test_wheel_configuration_includes_app_example_folders():
+    pyproject = (ROOT / "pyproject.toml").read_text()
+
+    assert '"examples/data/fe_phoh_cv"' in pyproject
+    assert '"examples/data/chrono_ca"' in pyproject
+    assert '"examples/data/chrono_cp"' in pyproject

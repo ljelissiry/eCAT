@@ -5,6 +5,8 @@ import inspect
 from pprint import pformat
 import warnings
 
+from scipy.optimize import OptimizeWarning
+
 from .utils import *  # noqa: F401,F403
 from .options import *  # noqa: F401,F403
 from .options import _project_options
@@ -1002,15 +1004,27 @@ def _fit_model_xy(x, y, model="power", options=None, label=None):
                 f"operators, and supported functions: {allowed}."
             ) from exc
 
+    covariance_warning = False
+    covariance_message = ""
     try:
-        popt, pcov = curve_fit(
-            fit_func,
-            x_fit,
-            fit_target,
-            p0=p0_array,
-            bounds=(np.asarray(lower, dtype=float), np.asarray(upper, dtype=float)),
-            **curve_options,
+        with warnings.catch_warnings(record=True) as fit_warnings:
+            warnings.simplefilter("always", OptimizeWarning)
+            popt, pcov = curve_fit(
+                fit_func,
+                x_fit,
+                fit_target,
+                p0=p0_array,
+                bounds=(np.asarray(lower, dtype=float), np.asarray(upper, dtype=float)),
+                **curve_options,
+            )
+        covariance_warning = any(
+            issubclass(item.category, OptimizeWarning) for item in fit_warnings
         )
+        if covariance_warning:
+            covariance_message = (
+                "Fit parameter covariance could not be estimated; standard errors "
+                "are unavailable."
+            )
     except KeyError as exc:
         if model == "custom":
             equation = model_spec.get("equation", options.get("fit model", "custom"))
@@ -1106,6 +1120,8 @@ def _fit_model_xy(x, y, model="power", options=None, label=None):
         "fit method": _curve_fit_method_display(curve_options),
         "show fit method": _curve_fit_options_are_nondefault(options, curve_options),
         "curve fit options": dict(curve_options),
+        "covariance warning": covariance_warning,
+        "covariance message": covariance_message,
     }
 
 
@@ -1339,6 +1355,8 @@ def _fit_model_details_display_table(model_result):
     ]
     if model_result.get("show fit method", False):
         rows.insert(3, ("Fit Method", model_result.get("fit method", "curve_fit / auto")))
+    if model_result.get("covariance warning", False):
+        rows.append(("Fit Warning", model_result.get("covariance message", "")))
     return pd.DataFrame(
         [
             {"Setting": setting, "Value": _format_fit_model_display_value(value, sig_figs=sig_figs)}
@@ -1373,6 +1391,8 @@ def _fit_model_display_table(model_result):
     ]
     if model_result.get("show fit method", False):
         rows.insert(3, ("Fit Method", model_result.get("fit method", "curve_fit / auto")))
+    if model_result.get("covariance warning", False):
+        rows.append(("Fit Warning", model_result.get("covariance message", "")))
     for name in model_result["names"]:
         rows.append(
             (
@@ -1419,6 +1439,8 @@ def _fit_model_summary_dict(model_result):
         "fit_parameters": list(model_result.get("names", ())),
         "fit_parameter_count": len(model_result.get("names", ())),
         "fit_method": model_result.get("fit method"),
+        "covariance_warning": model_result.get("covariance warning", False),
+        "covariance_message": model_result.get("covariance message", ""),
         "x_range": [
             float(np.nanmin(model_result["x"])),
             float(np.nanmax(model_result["x"])),
@@ -4693,34 +4715,12 @@ def _fit_peak_potential_payload(cvs, options=None):
     else:
         internal_options["peak kind"] = user_peak_kind
 
-    has_guess_singular, guess_singular_value, _guess_singular_key = _raw_option_value(
-        raw_options,
-        "guess potential",
-    )
-    has_guess_plural, guess_plural_value, _guess_plural_key = _raw_option_value(
-        raw_options,
-        "guess potentials",
-    )
-    if has_guess_plural:
-        raw_guess_value = guess_plural_value
-    elif has_guess_singular:
-        raw_guess_value = guess_singular_value
-    else:
-        raw_guess_value = options.get("guess potential")
-    scalar_guess_tracks = (
-        raw_guess_value is not None
-        and not _is_option_sequence(raw_guess_value)
-        and not any(value is not None for value in potential_series["exact potential"])
-    )
-
     # If plotting all intermediate work, first show the CVs together
     if options.get("plot all", False):
         multiplot(cvs, options=_plot_all_multiplot_options(options, raw_options))
 
     rows = []
     x_name = None
-    series_running_guess_by_segment = {}
-    series_peak_kind_by_segment = {}
 
     # Organize by CV first so follow E1/2 is actually tracked within a CV
     for i, cv_obj in enumerate(cvs):
@@ -4748,17 +4748,8 @@ def _fit_peak_potential_payload(cvs, options=None):
             else:
                 seg_options.pop("segment", None)
 
-            segment_key = seg if seg is not None else None
             guess_for_call = running_guess
             peak_kind_for_call = user_peak_kind
-
-            if scalar_guess_tracks and exact_potential is None:
-                if segment_key in series_running_guess_by_segment:
-                    guess_for_call = series_running_guess_by_segment[segment_key]
-                    if peak_kind_for_call is None:
-                        peak_kind_for_call = series_peak_kind_by_segment.get(segment_key)
-                elif running_guess is not None:
-                    guess_for_call = running_guess
 
             if exact_potential is not None:
                 seg_options["exact potential"] = exact_potential
@@ -4778,9 +4769,6 @@ def _fit_peak_potential_payload(cvs, options=None):
             # One segment at a time so peak_potential does not search across combined segments
             peak_result = cv_obj.peak_potential(seg_options)
             Ep = peak_result["Ep"]
-            extremum_kind = None
-            if hasattr(peak_result, "get"):
-                extremum_kind = peak_result.get("extremum kind")
             if options.get("plot all", False) and exact_potential is not None:
                 x_scale, y_scale = cv_obj.xy_scale(seg_options)
                 plt.scatter(
@@ -4799,13 +4787,8 @@ def _fit_peak_potential_payload(cvs, options=None):
                 row[f"Seg {seg} Ep ({ep_unit})"] = scaled_Ep
                 ep_by_segment[seg] = Ep
 
-            # Default behavior: use the most recent Ep as the next guess
+            # Within each CV, use the most recent segment's Ep as the next guess.
             running_guess = Ep
-            if scalar_guess_tracks:
-                series_running_guess_by_segment[segment_key] = Ep
-                if user_peak_kind is None and extremum_kind in {"max", "min"}:
-                    series_peak_kind_by_segment[segment_key] = extremum_kind
-
         # Interpret "follow E1/2" as:
         # for sequential segments, compute and store the half-wave potential
         # between segment n and n+1 using the already collected Ep values.
@@ -5330,9 +5313,6 @@ def fit_peak_current(cvs, options=None):
         payload,
         summary=_summary_with_segment_selection({"analysis": "peak current fit"}, payload),
     )
-
-import warnings
-
 
 def _fowa_summary_table(cvs, results, plot_data, ref_cvs, options=None):
     """

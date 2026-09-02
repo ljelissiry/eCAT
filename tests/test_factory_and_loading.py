@@ -214,7 +214,7 @@ def test_get_data_derives_electrode_area_from_diameter_when_area_is_omitted(
         {
             "folder path": str(tmp_path),
             "recursive search": False,
-            "print": False,
+            "print": True,
             "reference mode": "none",
             "electrode diameter": 0.3,
         }
@@ -278,7 +278,7 @@ def test_get_data_root_files_store_empty_folderpath(
         {
             "folder path": str(tmp_path),
             "recursive search": False,
-            "print": False,
+            "print": True,
             "reference mode": "none",
             "sort keys": ["name"],
         }
@@ -360,7 +360,7 @@ def test_get_data_warns_and_skips_files_that_cannot_be_converted(
         {
             "folder path": str(tmp_path),
             "recursive search": False,
-            "print": False,
+            "print": True,
             "reference mode": "none",
             "sort keys": ["name"],
         }
@@ -391,7 +391,7 @@ def test_get_data_returns_empty_list_when_no_files_convert(
         {
             "folder path": str(tmp_path),
             "recursive search": False,
-            "print": False,
+            "print": True,
             "reference mode": "none",
         }
     )

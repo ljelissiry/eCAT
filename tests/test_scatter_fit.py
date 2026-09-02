@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 import matplotlib.pyplot as plt
+import warnings
 from matplotlib.collections import PolyCollection
 
 
@@ -1218,6 +1219,24 @@ def test_fit_model_curve_fit_method_and_passthrough_print_when_used(ecat_module,
     assert "curve_fit / trf" in printed
 
 
+def test_fit_model_translates_scipy_covariance_warning(ecat_module, capsys):
+    from scipy.optimize import OptimizeWarning
+
+    with warnings.catch_warnings(record=True) as captured:
+        warnings.simplefilter("always")
+        result = ecat_module.fit_model(
+            [1.0, 2.0, 3.0],
+            [2.0, 4.0, 6.0],
+            options={"plot": False, "print": True},
+        )
+
+    model_result = result.fit_model_results["Model"]
+    assert not any(issubclass(item.category, OptimizeWarning) for item in captured)
+    assert model_result["covariance warning"] is True
+    assert "standard errors are unavailable" in model_result["covariance message"]
+    assert "standard errors are unavailable" in capsys.readouterr().out
+
+
 def test_fit_model_rejects_curve_fit_passthrough_owned_by_ecat(ecat_module):
     x = np.asarray([0.0, 1.0, 2.0])
     y = 1.0 + 2.0 * x
@@ -2109,7 +2128,7 @@ def test_fit_peak_potential_per_cv_guesses_seed_running_guess(
     assert observed[5] == (cvs[2].name, 2, pytest.approx(-0.32))
 
 
-def test_fit_peak_potential_scalar_guess_tracks_across_cvs(
+def test_fit_peak_potential_scalar_guess_does_not_track_across_cvs(
     ecat_module,
     cv_factory,
     monkeypatch,
@@ -2146,9 +2165,48 @@ def test_fit_peak_potential_scalar_guess_tracks_across_cvs(
 
     assert observed == [
         (cvs[0].name, pytest.approx(-0.10), None),
-        (cvs[1].name, pytest.approx(-0.11), "max"),
-        (cvs[2].name, pytest.approx(-0.22), "max"),
+        (cvs[1].name, pytest.approx(-0.10), None),
+        (cvs[2].name, pytest.approx(-0.10), None),
     ]
+
+
+def test_fit_peak_potential_forwards_peak_prominence_none(
+    ecat_module,
+    cv_factory,
+    monkeypatch,
+):
+    cvs = [
+        cv_factory(name="50mVs_sample_CO2_MeCN_10mM_Fc_run01"),
+        cv_factory(name="100mVs_sample_CO2_MeCN_10mM_Fc_run02"),
+    ]
+    observed = []
+
+    def fake_peak_potential(self, options=None):
+        opts = dict(options or {})
+        observed.append(opts)
+        return {
+            "Ep": -0.1,
+            "index": 0,
+            "current": 0.0,
+            "extremum kind": "max",
+        }
+
+    monkeypatch.setattr(ecat_module.cv, "peak_potential", fake_peak_potential)
+
+    ecat_module.fit_peak_potential(
+        cvs,
+        {
+            "plot": False,
+            "print": False,
+            "segment": 1,
+            "guess potential": -0.10,
+            "peak prominence": None,
+        },
+    )
+
+    assert observed
+    assert all("peak prominence" in opts for opts in observed)
+    assert all(opts["peak prominence"] is None for opts in observed)
 
 
 def test_fit_peak_potential_forwards_infer_peak_kind(

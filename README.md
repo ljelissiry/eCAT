@@ -50,6 +50,10 @@ Then run:
 ecat-app
 ```
 
+The installed app includes the public Fe/PhOH CV, CA/CPE, and CP example
+folders shown in its example selector. Check the installed package version with
+`ecat-app --version`.
+
 From a notebook, launch the native app window with:
 
 ```python

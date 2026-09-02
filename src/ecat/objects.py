@@ -2406,7 +2406,7 @@ class echem:
         info.update(stats)
         return info
 
-    def combine_concs_chems(self, concentrations, compounds, options={'separate concentration': True}):
+    def combine_concs_chems(self, concentrations, compounds, options=None):
         if not compounds:
             return ''
 
@@ -6439,8 +6439,18 @@ class cp(echem):
             Q_ch_arr = _normalize_capacity(Q_ch_arr)
 
         # coulombic & energy efficiency
-        CE = Q_dis_arr / Q_ch_arr * 100
-        EE = E_dis_arr / E_ch_arr * 100
+        CE = np.divide(
+            Q_dis_arr,
+            Q_ch_arr,
+            out=np.full_like(Q_dis_arr, np.nan, dtype=float),
+            where=np.isfinite(Q_ch_arr) & (Q_ch_arr != 0),
+        ) * 100
+        EE = np.divide(
+            E_dis_arr,
+            E_ch_arr,
+            out=np.full_like(E_dis_arr, np.nan, dtype=float),
+            where=np.isfinite(E_ch_arr) & (E_ch_arr != 0),
+        ) * 100
 
         # build DataFrame
         df = pd.DataFrame({

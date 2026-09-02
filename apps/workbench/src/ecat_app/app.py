@@ -11,6 +11,8 @@ import threading
 from urllib.parse import unquote_to_bytes
 import webbrowser
 
+from ecat._version import __version__
+
 from .config import AppConfig
 
 
@@ -217,6 +219,7 @@ def _run_window_app(
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Run the local eCAT app.")
+    parser.add_argument("--version", action="version", version=f"ecat {__version__}")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", default=None, type=int)
     parser.add_argument(

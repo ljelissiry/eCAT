@@ -454,12 +454,21 @@ def test_fowa_peak_current_forwarding_preserves_supported_fallback_control():
         option_models.ReversibilityAnalysisOptions,
         option_models.SurfaceCoverageAnalysisOptions,
         option_models.FitPeakCurrentOptions,
-        option_models.TrumpetAnalysisOptions,
         option_models.NicholsonOptions,
     ],
 )
 def test_peak_current_based_analyses_default_to_highest_current_fallback(option_cls):
     assert option_cls.from_options({}).peak_fallback == "highest current"
+
+
+def test_trumpet_analysis_does_not_expose_peak_current_fallback():
+    options = option_models.TrumpetAnalysisOptions.from_options({})
+    resolved = options.to_options_dict()
+
+    assert not hasattr(options, "peak_fallback")
+    assert "peak fallback" not in resolved
+    with pytest.raises(option_models.OptionError, match="Unknown option 'peak fallback'"):
+        option_models.TrumpetAnalysisOptions.from_options({"peak fallback": None})
 
 
 def test_option_projection_preserves_aliases_and_rejects_duplicate_spellings():

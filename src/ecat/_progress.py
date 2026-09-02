@@ -136,11 +136,10 @@ class NotebookProgressDisplay:
     @staticmethod
     def _count_text(count, total, *, unit="items", approx_total=False):
         count = int(count)
-        unit_plural = unit if count == 1 and total is None else unit
         if total is None:
-            return f"{count} {unit_plural}"
+            return f"{count} {unit}"
         total_text = f"~{int(total)}" if approx_total else f"{int(total)}"
-        return f"{count} / {total_text} {unit_plural}"
+        return f"{count} / {total_text} {unit}"
 
     @staticmethod
     def _metric_text(metric, *, metric_label=None):

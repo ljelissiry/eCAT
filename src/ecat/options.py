@@ -203,7 +203,6 @@ _SECTION_OPTION_DISPLAY_OVERRIDES = {
     "trumpet_analysis": {
         "exact_potential": "exact potential(s)",
         "guess_potential": "guess potential(s)",
-        "tangent_potential": "tangent potential(s)",
     },
 }
 
@@ -620,7 +619,6 @@ _OPTION_CATEGORY_BY_KEY = {
     "s": "Units/normalization",
     "v": "Units/normalization",
     "n": "Units/normalization",
-    "num_electrons": "Units/normalization",
     "k_homo": "Units/normalization",
     "k0": "Units/normalization",
     "formula_mode": "Units/normalization",
@@ -913,7 +911,6 @@ OPTION_DESCRIPTIONS = {
     "baseline_tail_fraction": "Final fraction of a CA trace used for tail baseline correction.",
     "baseline_threshold": "Current threshold in A used for threshold CA baseline correction.",
     "corrected_current": "Use the baseline-corrected CA current trace for CA plotting or current extraction when baseline correction is enabled.",
-    "method": "Filtering method: savgol, gaussian, median, butterworth, or moving average.",
     "column": "Data column to filter; matching is case-insensitive.",
     "window": "Point window for Savitzky-Golay or moving-average filtering; 'auto' resolves to a valid odd window.",
     "polyorder": "Polynomial order for Savitzky-Golay filtering.",
@@ -2192,7 +2189,7 @@ def _option_default_registry():
         (ReversibilityAnalysisOptions, ["plot", "cv_selection", "cv_analysis", "peak_current", "reversibility_analysis"]),
         (SurfaceCoverageAnalysisOptions, ["plot", "cv_selection", "cv_analysis", "peak_current", "surface_coverage_analysis"]),
         (FitPeakCurrentOptions, ["plot", "cv_selection", "cv_analysis", "peak_current", "fit_peak_current"]),
-        (TrumpetAnalysisOptions, ["plot", "cv_selection", "cv_analysis", "peak_current", "trumpet_analysis"]),
+        (TrumpetAnalysisOptions, ["plot", "cv_selection", "cv_analysis", "trumpet_analysis"]),
         (NicholsonOptions, ["plot", "cv_selection", "cv_analysis", "peak_current", "nicholson"]),
         (PlateauCurrentOptions, ["plot", "cv_selection", "cv_analysis", "peak_current", "fowa", "plateau_current"]),
         (SortGroupOptions, ["sort_group"]),
@@ -4612,7 +4609,7 @@ class FitPeakCurrentOptions(PeakCurrentOptions):
 
 
 @dataclass(frozen=True, slots=True)
-class TrumpetAnalysisOptions(PeakCurrentOptions):
+class TrumpetAnalysisOptions(PeakPotentialOptions):
     segment: int | None = 1
     fit_indices: object | None = None
     plot_fit: bool = True
@@ -4632,7 +4629,7 @@ class TrumpetAnalysisOptions(PeakCurrentOptions):
 
     @classmethod
     def from_options(cls, options=None):
-        return _coerce_options(cls, options, ["plot", "cv_selection", "cv_analysis", "peak_current", "trumpet_analysis"])
+        return _coerce_options(cls, options, ["plot", "cv_selection", "cv_analysis", "trumpet_analysis"])
 
     def validate(self):
         _validate_common_cv(self)
@@ -4647,7 +4644,7 @@ class TrumpetAnalysisOptions(PeakCurrentOptions):
         _validate_fit_band_options(self)
 
     def to_options_dict(self):
-        data = PeakCurrentOptions.to_options_dict(self)
+        data = PeakPotentialOptions.to_options_dict(self)
         if self.segment is None and self.segments is not None:
             data["segment"] = _resolve_trumpet_base_segment(self.segment, self.segments)
             data["segments"] = None
