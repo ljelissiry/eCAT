@@ -100,3 +100,16 @@ sample-data workflows.
   they should not be mass-fixed without behavior tests.
 - App callback, export/import, result-display, and preprocessing coverage remain
   the clearest test-expansion opportunities.
+
+## Follow-Up Infrastructure
+
+The follow-up change adds two native `windows-latest` jobs: a Python 3.13 core
+suite and a clean-wheel app job that checks packaged examples, the installed CLI,
+the Dash test client, and app-focused tests. These jobs require their first remote
+GitHub Actions run before Windows support can be considered verified.
+
+Ruff is now available through the `dev` extra. CI blocks only on a narrow set of
+high-confidence correctness rules and prints a non-blocking statistical summary of
+the 563 findings in the stabilized advisory profile. This keeps new correctness
+regressions out without treating all existing maintainability and formatting
+findings as release blockers.

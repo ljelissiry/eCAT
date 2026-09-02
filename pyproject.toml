@@ -54,6 +54,14 @@ all = [
     "pywebview",
     "electrokitty",
 ]
+dev = [
+    "build",
+    "nbclient",
+    "nbformat",
+    "pytest",
+    "pytest-cov",
+    "ruff>=0.9",
+]
 
 [project.scripts]
 ecat-app = "ecat_app.app:main"
@@ -80,4 +88,29 @@ ecat_app = ["assets/*.css", "assets/*.svg", "assets/*.js"]
 "examples/data/chrono_cp" = [
     "examples/data/chrono_cp/*.txt",
     "examples/data/chrono_cp/README.md",
+]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+extend-exclude = [
+    ".compat-venvs",
+    ".venv",
+    "build",
+    "dist",
+    "tmp_docx_render*",
+]
+
+[tool.ruff.lint]
+# This initial blocking profile contains only high-confidence correctness rules.
+# The broader advisory scan is visible in CI while existing debt is reduced.
+select = [
+    "B006",
+    "E9",
+    "F601",
+    "F63",
+    "F7",
+    "F811",
+    "F82",
+    "RUF034",
 ]
