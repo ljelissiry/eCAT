@@ -1302,10 +1302,10 @@ def _build_option_metadata():
             "description": "Scan rate in V/s assigned to imported objects when the parser or file metadata does not provide one.",
         },
         "reference_mode": {
-            "description": "'auto' searches imported files with reference keywords; 'keyword', 'file', and 'manual' use the corresponding explicit reference source.",
+            "description": "'auto' searches imported files with reference keywords; 'keyword', 'file', and 'manual' use the corresponding explicit reference source. Automatic peak pairing requires adjacent, opposite-direction CV segments.",
         },
         "reference_guess": {
-            "description": "'auto' locates the reference wave automatically; a numeric value searches near that potential.",
+            "description": "'auto' locates the reference wave automatically and raises when multiple adjacent-segment couples are indistinguishable; a numeric value ranks physical pairs near that potential.",
         },
         "reference_keywords": {
             "description": "Reference keywords tried by reference mode 'auto'; the first successful keyword defines the shift source.",
@@ -1319,8 +1319,23 @@ def _build_option_metadata():
         "reference_map": {
             "description": "Explicit target-to-reference object index mapping; overrides automatic reference assignment for those objects.",
         },
+        "reference_window": {
+            "description": "Half-width in V around a numeric reference guess used to admit segment-local extrema; each candidate segment must sample the guess itself.",
+        },
+        "reference_smooth": {
+            "description": "Smooth each complete CV segment independently before reference extrema are detected; smoothing never crosses a switching vertex.",
+        },
+        "reference_max_delta_ep": {
+            "description": "Largest allowed Epa - Epc separation in V for an adjacent-segment reference pair.",
+        },
+        "reference_target_delta_ep": {
+            "description": "Preferred Epa - Epc separation in V used to rank otherwise valid adjacent-segment reference pairs.",
+        },
         "peak_prominence": {
-            "description": "Minimum peak prominence for automatic reference-wave detection; None lets peak detection use its internal default.",
+            "description": "Minimum peak prominence for reference extrema on each segment; None estimates a separate threshold from each segment's search region.",
+        },
+        "troubleshoot": {
+            "description": "Print import diagnostics plus reference segment/candidate tables and display the segment-colored reference-pair plot.",
         },
         "software": {
             "description": "Instrument software/parser. If omitted, import tries to infer the parser from file contents and extension.",

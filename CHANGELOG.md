@@ -4,6 +4,7 @@
 
 ## 0.1.0b5 - Beta Reliability, Peak Tracking, And CI - 2026-09-02
 
+- Made automatic reference correction segment-aware: reference couples now require adjacent, opposite-direction sweeps, remain invariant to current inversion, use resolution-aware physical ranking, fail explicitly on ambiguous automatic choices, retain selected-pair provenance, and expose segment/candidate diagnostics through `troubleshoot=True`.
 - Fixed delegated option routing so Sevcik and peak-current fitting preserve `peak kind`, `peak fallback`, and peak-marker controls; Tafel and nested plot/analysis helpers now also preserve accepted case, underscore, and registered-alias spellings instead of silently reverting them to defaults.
 - Added explicit `fit_peak_potential()` tracking modes for independent, within-CV, series-consensus, and strict series-consensus peak selection, with per-row tracking diagnostics.
 - Hardened installed-package and app behavior: packaged example folders now ship in wheels, `ecat-app --version` uses the canonical package version, folder status no longer scrapes console output, and `get_data(..., {"print": False})` is quiet unless troubleshooting is requested.

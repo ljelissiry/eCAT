@@ -79,6 +79,16 @@ Every loaded object exposes `obj.parse_result`, a `ParseResult` with a consisten
 
 `get_data(..., {"print": False})` suppresses folder discovery, unsupported-file, conversion, reference, warning, and object-summary output. Set `troubleshoot=True` when you intentionally want per-file diagnostic output; troubleshoot output remains visible even when the ordinary summary is disabled.
 
+### Automatic Reference-Couple Pairing
+
+Automatic reference correction detects extrema independently on each complete CV segment. A valid reference couple must use adjacent acquisition-order segments with opposite potential-scan directions and exactly one maximum and one minimum. eCAT assigns `Epa` to the increasing-potential segment and `Epc` to the decreasing-potential segment, independent of current-sign convention, then requires `Epa > Epc` and applies `reference max delta ep`.
+
+With a numeric `reference guess`, both segments must sample the guess and candidate extrema must fall within `guess ± reference window`. All valid adjacent pairs are ranked by midpoint proximity, proximity to `reference target delta ep`, normalized prominence, and prominence balance. With `reference guess="auto"`, midpoint proximity is omitted; indistinguishable couples raise a targeted ambiguity error instead of being selected by row order. Supply a numeric guess to resolve that case.
+
+Smoothing is applied to each full segment separately before the potential search mask, so it cannot cross switching vertices or create mask-edge peaks. `peak prominence=None` estimates a separate prominence threshold for every segment. Set `troubleshoot=True` to print segment, candidate, rejection, and selected-pair summaries and display a segment-colored diagnostic plot.
+
+Referenced imported objects retain the selected provenance in `obj.reference_pair_details`. It includes `Epa`, `Epc`, `delta_ep`, midpoint, anodic/cathodic segment numbers and scan directions, extremum kinds, currents, prominences, rejection counts, and the selection mode. The same dictionary is available in `obj.parse_result.metadata["reference_pair_details"]`. Raw potential remains available through `obj.x({"x axis": "Potential"})`; reference detection always uses that raw axis even if the object already has a virtual referenced axis.
+
 Text importers use the parser contract before object promotion for tested CH, BASI, EC-Lab-style, limited NOVA ASCII, and generic numeric/header text paths. These importers preserve raw header/column metadata and nonfatal warnings on `obj.parse_result`. Header and filename scan rates are normalized to V/s before comparison; differences within 0.1% or `1e-6 V/s` are treated as rounding noise, while genuine mismatches warn and retain the measured header value. Generic files with only potential/current columns can promote as CV-like fallbacks; ambiguous generic files containing time, potential, and current columns remain generic `echem` objects unless a vendor or user-supplied technique marker resolves the technique. IviumSoft text and DPV text beyond existing CH/private-fixture coverage still need representative files before they are treated as beta-supported workflows.
 
 ## eCAT App

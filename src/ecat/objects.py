@@ -1307,6 +1307,7 @@ class echem:
             "reference_label": "reference_label",
             "reference_mode": "reference_mode",
             "reference_source_file": "reference_source_file",
+            "reference_pair_details": "reference_pair_details",
         }
         for metadata_key, attr in field_map.items():
             if metadata_key in parsed.metadata:
@@ -1372,6 +1373,7 @@ class echem:
         self.reference_label = getattr(self, "reference_label", None)
         self.reference_mode = getattr(self, "reference_mode", "none")
         self.reference_source_file = getattr(self, "reference_source_file", None)
+        self.reference_pair_details = getattr(self, "reference_pair_details", None)
         self.reference_failure_message = getattr(self, "reference_failure_message", None)
         self.parse_result = getattr(self, "parse_result", None)
         self._parser_details = getattr(self, "_parser_details", {})

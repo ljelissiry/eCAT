@@ -17,10 +17,13 @@
 
 ## Reference Shift Looks Wrong
 
-- Inspect `obj.reference_mode`, `obj.reference_shift`, `obj.reference_label`, and `obj.reference_source_file`.
+- Inspect `obj.reference_mode`, `obj.reference_shift`, `obj.reference_label`, `obj.reference_source_file`, and `obj.reference_pair_details`.
 - Use `"reference mode": "none"` to compare raw potentials.
 - Use `"x axis": "Potential"` to request raw potential explicitly.
 - Use the shifted default axis only after confirming the reference source.
+- Automatic pairing accepts only extrema from adjacent, opposite-direction CV segments; it never combines two features from one sweep or nonadjacent sweeps.
+- If `reference guess="auto"` reports ambiguity, plot the reference scan and supply a numeric `reference guess` near the intended couple.
+- Set `troubleshoot=True` to print segment spans, candidate extrema, rejection reasons, and the selected pair and to display the segment-colored reference diagnostic.
 
 ## No Peak Is Found
 

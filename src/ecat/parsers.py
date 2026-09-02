@@ -985,6 +985,7 @@ def _base_metadata(filepath, software, exp_type, technique):
         "reference_label": None,
         "reference_mode": "none",
         "reference_source_file": None,
+        "reference_pair_details": None,
     }
 
 
@@ -1277,6 +1278,7 @@ def _object_metadata(obj):
         "reference_label",
         "reference_mode",
         "reference_source_file",
+        "reference_pair_details",
         "reference_failure_message",
         "ir_comp_resistance",
         "ir_uncomp_resistance",

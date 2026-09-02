@@ -253,6 +253,7 @@ class SimulatedCV(_EcatCV):
         self.reference_label = None
         self.reference_mode = "none"
         self.reference_source_file = None
+        self.reference_pair_details = None
         self.reference_failure_message = None
         self.folderpath = "."
         self.scan_rate = self._scan_rate()

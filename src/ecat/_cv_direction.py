@@ -5,6 +5,81 @@ from __future__ import annotations
 import numpy as np
 
 
+def split_cv_potential_segments(potential):
+    """Split a potential program into monotonic acquisition-order segments.
+
+    Repeated potential values at a switching vertex stay with the preceding
+    segment. Each source row belongs to exactly one returned segment.
+    """
+    potential = np.asarray(potential, dtype=float)
+    if potential.ndim != 1:
+        raise ValueError("potential must be one-dimensional")
+    if len(potential) < 2:
+        raise ValueError("potential has fewer than two points")
+    if not np.isfinite(potential).all():
+        raise ValueError("potential contains non-finite values")
+
+    differences = np.diff(potential)
+    scale = max(float(np.ptp(potential)), float(np.max(np.abs(potential))), 1.0)
+    tolerance = max(scale * 1e-9, 1e-12)
+    signs = np.zeros(len(differences), dtype=int)
+    signs[differences > tolerance] = 1
+    signs[differences < -tolerance] = -1
+
+    nonzero = np.flatnonzero(signs)
+    if len(nonzero) == 0:
+        raise ValueError("potential has no resolvable movement")
+
+    segments = []
+    start = 0
+    direction_sign = int(signs[nonzero[0]])
+    for diff_index, sign in enumerate(signs):
+        if sign == 0:
+            continue
+        if sign == direction_sign:
+            continue
+
+        stop = diff_index + 1
+        segment_potential = potential[start:stop]
+        segment_differences = np.diff(segment_potential)
+        nonzero_steps = np.abs(segment_differences[np.abs(segment_differences) > tolerance])
+        segments.append(
+            {
+                "segment": len(segments) + 1,
+                "start": int(start),
+                "stop": int(stop),
+                "direction": "increasing" if direction_sign > 0 else "decreasing",
+                "potential_min": float(np.min(segment_potential)),
+                "potential_max": float(np.max(segment_potential)),
+                "points": int(len(segment_potential)),
+                "median_potential_step": (
+                    float(np.median(nonzero_steps)) if len(nonzero_steps) else np.nan
+                ),
+            }
+        )
+        start = stop
+        direction_sign = int(sign)
+
+    segment_potential = potential[start:]
+    segment_differences = np.diff(segment_potential)
+    nonzero_steps = np.abs(segment_differences[np.abs(segment_differences) > tolerance])
+    segments.append(
+        {
+            "segment": len(segments) + 1,
+            "start": int(start),
+            "stop": int(len(potential)),
+            "direction": "increasing" if direction_sign > 0 else "decreasing",
+            "potential_min": float(np.min(segment_potential)),
+            "potential_max": float(np.max(segment_potential)),
+            "points": int(len(segment_potential)),
+            "median_potential_step": (
+                float(np.median(nonzero_steps)) if len(nonzero_steps) else np.nan
+            ),
+        }
+    )
+    return segments
+
+
 def cv_segment_scan_direction(cv_obj, segment):
     """Return ``"increasing"`` or ``"decreasing"`` for one CV segment."""
     try:

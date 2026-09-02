@@ -124,6 +124,7 @@ def _blank_echem_object(ecat_module, cls):
     obj.reference_label = None
     obj.reference_mode = "none"
     obj.reference_source_file = None
+    obj.reference_pair_details = None
     obj.reference_failure_message = None
     obj.zero_concentration_compounds = []
     obj.zero_concentrations = []

@@ -5,6 +5,7 @@ import json
 import os
 import re
 import warnings
+from copy import deepcopy
 
 import numpy as np
 import pandas as pd
@@ -231,6 +232,7 @@ def _make_cv_object_from_dataframe(
     obj.reference_label = reference_label
     obj.reference_mode = "manual" if reference_shift is not None else "none"
     obj.reference_source_file = None
+    obj.reference_pair_details = None
     obj.reference_failure_message = None
 
     # Parse metadata from the raw first-row header, not the display name
@@ -468,6 +470,7 @@ def _make_object_from_excel_manifest(class_key, name, data, units, row, lookup, 
     obj.reference_label = _manifest_value(row, lookup, "Reference Label", default=None)
     obj.reference_mode = _manifest_value(row, lookup, "Reference Mode", default="none")
     obj.reference_source_file = _manifest_value(row, lookup, "Reference Source", default=None)
+    obj.reference_pair_details = None
     obj.reference_failure_message = None
     obj.ir_comp_resistance = _manifest_float(row, lookup, "IR Comp Resistance", default=None)
     obj.ir_uncomp_resistance = _manifest_float(row, lookup, "IR Uncomp Resistance", default=None)
@@ -955,12 +958,15 @@ def get_data(options=None):
         "ref_name": None,
         "ref_mapping": {},
         "ref_shift_guess": {},
+        "ref_pair_details": {},
         "self_ref_shift_guess": {},
+        "self_ref_pair_details": {},
         "self_ref_failures": {},
         "chosen_keyword": None,
     }
     explicit_reference_file = None
     explicit_reference_shift = None
+    explicit_reference_pair_details = None
 
     if reference_mode == "keyword":
         reference_options = options.copy()
@@ -1022,7 +1028,11 @@ def get_data(options=None):
                 print(last_error)
 
     elif reference_mode == "file":
-        explicit_reference_file, explicit_reference_shift = (
+        (
+            explicit_reference_file,
+            explicit_reference_shift,
+            explicit_reference_pair_details,
+        ) = (
             _run_with_captured_import_warnings(
                 import_warnings,
                 _compute_explicit_reference_file_shift,
@@ -1036,7 +1046,9 @@ def get_data(options=None):
     ref_name = reference_info["ref_name"]
     ref_mapping = reference_info["ref_mapping"]
     ref_shift_guess = reference_info["ref_shift_guess"]
+    ref_pair_details = reference_info["ref_pair_details"]
     self_ref_shift_guess = reference_info["self_ref_shift_guess"]
+    self_ref_pair_details = reference_info["self_ref_pair_details"]
     self_ref_failures = reference_info["self_ref_failures"]
 
     # ---------------------------
@@ -1055,6 +1067,7 @@ def get_data(options=None):
             "mode": "none",
             "ref_file": None,
             "shift": None,
+            "pair_details": None,
             "failure_message": None,
         }
 
@@ -1066,6 +1079,7 @@ def get_data(options=None):
             record["mode"] = "file"
             record["ref_file"] = explicit_reference_file
             record["shift"] = explicit_reference_shift
+            record["pair_details"] = deepcopy(explicit_reference_pair_details)
 
         if use_reference_files:
             folder_abs = os.path.abspath(os.path.dirname(filepath_abs))
@@ -1091,6 +1105,9 @@ def get_data(options=None):
                     record["mode"] = "self"
                     record["ref_file"] = filepath_abs
                     record["shift"] = shift_guess
+                    record["pair_details"] = deepcopy(
+                        self_ref_pair_details.get(filepath_abs)
+                    )
                     
                 else:
                     # Self-reference failed -> fall back to the designated nearest-ancestor reference
@@ -1110,6 +1127,9 @@ def get_data(options=None):
                     record["mode"] = "fallback"
                     record["ref_file"] = assigned_ref_file
                     record["shift"] = fallback_shift
+                    record["pair_details"] = deepcopy(
+                        ref_pair_details.get(assigned_ref_file)
+                    )
                     record["failure_message"] = failure_message
 
             else:
@@ -1128,6 +1148,9 @@ def get_data(options=None):
                             record["mode"] = "folder"
                             record["ref_file"] = assigned_ref_file
                         record["shift"] = shift_guess
+                        record["pair_details"] = deepcopy(
+                            ref_pair_details.get(assigned_ref_file)
+                        )
                     except KeyError as exc:
                         display_name = _format_reference_display(assigned_ref_file, root_abs, quote=True)
                         raise ValueError(
@@ -1142,7 +1165,12 @@ def get_data(options=None):
         echem_object.reference_label = reference_label
         echem_object.reference_mode = record["mode"]
         echem_object.reference_source_file = record["ref_file"]
+        echem_object.reference_pair_details = deepcopy(record["pair_details"])
         echem_object.reference_failure_message = record["failure_message"]
+        if getattr(echem_object, "parse_result", None) is not None:
+            echem_object.parse_result.metadata["reference_pair_details"] = deepcopy(
+                record["pair_details"]
+            )
 
         reference_records.append(record)
 
