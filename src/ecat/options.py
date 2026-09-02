@@ -720,6 +720,7 @@ _OPTION_CATEGORY_BY_KEY = {
     "alpha": "Fitting/analysis",
     "agreement_tolerance": "Fitting/analysis",
     "current_ratio_tolerance": "Fitting/analysis",
+    "peak_tracking": "Fitting/analysis",
     "peak_separation_tolerance": "Fitting/analysis",
     "integration_range": "Fitting/analysis",
 
@@ -1069,6 +1070,7 @@ OPTION_DESCRIPTIONS = {
     "peak_fallback": "Fallback used by peak_current when peak_potential cannot find a local extremum.",
     "peak_kind": "Extremum kind used for peak-potential selection: both, infer, max, or min. The default 'both' considers maxima and minima because the current sign convention determines which one is cathodic or anodic. 'infer' maps increasing selected current to maxima and decreasing selected current to minima.",
     "peak_prominence": "Minimum peak prominence for automatic peak detection. None uses the automatic noise estimate.",
+    "peak_tracking": "Peak-location tracking mode for fit_peak_potential.",
     "parser_settings": "Advanced settings for filename metadata parsing such as prefer file metadata, compound stopwords, and recognized gases/solvents.",
     "percent_threshold": "Percent threshold used in peak or tangent selection.",
     "plateau_average_method": "Average method used to combine accepted plateau currents.",
@@ -1230,6 +1232,7 @@ OPTION_CHOICES = {
     "segment_color_mode": ["auto", "off", "discrete", "discrete gradient", "continuous gradient"],
     "transform_mode": ["log-log", "lineweaver-burk"],
     "y_mode": ["raw", "delta", "negative delta", "ratio", "enhancement"],
+    "peak_tracking": [None, "within cv", "series", "series strict"],
 }
 
 OPTION_CHOICES_BY_SECTION = {
@@ -1981,6 +1984,10 @@ def _build_option_metadata():
     update("fit_peak_potential", {
         **cv_auto,
         **scatter_fit_auto,
+        "peak_tracking": {
+            "choices": [None, "within cv", "series", "series strict"],
+            "description": "Peak-location tracking for fit_peak_potential. None uses each CV/segment independently; 'within cv' reuses each segment's Ep as the next segment guess inside the same CV; 'series' retries failed or outlier peaks from a robust series consensus; 'series strict' raises if consensus tracking cannot resolve a CV.",
+        },
         "follow_e1_2": {
             "description": "When True, follows paired peak-potential behavior using resolved E1/2-style values.",
         },
@@ -4206,6 +4213,7 @@ class FitRateOptions:
 @dataclass(frozen=True, slots=True)
 class FitPeakPotentialOptions(PeakPotentialOptions):
     follow_e1_2: bool = False
+    peak_tracking: str | None = None
     fit: bool = True
     x_unit: str | None = "auto"
     y_unit: str | None = "auto"
@@ -4248,6 +4256,8 @@ class FitPeakPotentialOptions(PeakPotentialOptions):
 
     def validate(self):
         _validate_common_cv(self)
+        if self.peak_tracking not in (None, "within cv", "series", "series strict"):
+            raise OptionError("'peak tracking' must be None, 'within cv', 'series', or 'series strict'.")
         if not 0 <= float(self.fit_alpha) <= 1:
             raise OptionError("'fit alpha' must be between 0 and 1.")
         _validate_fit_band_options(self)
@@ -4255,6 +4265,7 @@ class FitPeakPotentialOptions(PeakPotentialOptions):
     def to_options_dict(self):
         data = PeakPotentialOptions.to_options_dict(self)
         data["follow e1/2"] = self.follow_e1_2
+        data["peak tracking"] = self.peak_tracking
         data["fit"] = self.fit
         data["x unit"] = self.x_unit
         data["y unit"] = self.y_unit

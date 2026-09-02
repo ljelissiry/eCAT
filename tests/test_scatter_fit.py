@@ -2089,7 +2089,7 @@ def test_fit_peak_potential_plot_all_accepts_plot_segment_without_analysis_leak(
     assert "plot segment" not in peak_calls[0]
 
 
-def test_fit_peak_potential_per_cv_guesses_seed_running_guess(
+def test_fit_peak_potential_default_does_not_track_between_segments(
     ecat_module,
     cv_factory,
     monkeypatch,
@@ -2121,11 +2121,49 @@ def test_fit_peak_potential_per_cv_guesses_seed_running_guess(
     )
 
     assert observed[0] == (cvs[0].name, 1, pytest.approx(-0.11))
+    assert observed[1] == (cvs[0].name, 2, pytest.approx(-0.11))
+    assert observed[2] == (cvs[1].name, 1, pytest.approx(-0.22))
+    assert observed[3] == (cvs[1].name, 2, pytest.approx(-0.22))
+    assert observed[4] == (cvs[2].name, 1, pytest.approx(-0.33))
+    assert observed[5] == (cvs[2].name, 2, pytest.approx(-0.33))
+
+
+def test_fit_peak_potential_peak_tracking_within_cv_tracks_between_segments(
+    ecat_module,
+    cv_factory,
+    monkeypatch,
+):
+    cvs = [
+        cv_factory(name="50mVs_sample_CO2_MeCN_10mM_Fc_run01"),
+        cv_factory(name="100mVs_sample_CO2_MeCN_10mM_Fc_run02"),
+    ]
+    observed = []
+
+    def fake_peak_potential(self, options=None):
+        opts = dict(options or {})
+        observed.append((self.name, opts.get("segment"), opts.get("guess potential")))
+        guess = float(opts.get("guess potential", 0.0))
+        ep = guess + (0.01 if opts.get("segment") == 1 else 0.02)
+        return {"Ep": ep, "index": 0, "current": 0.0}
+
+    monkeypatch.setattr(ecat_module.cv, "peak_potential", fake_peak_potential)
+
+    result = ecat_module.fit_peak_potential(
+        cvs,
+        {
+            "plot": False,
+            "print": False,
+            "segments": [1, 2],
+            "guess potentials": [-0.11, -0.22],
+            "peak tracking": "within CV",
+        },
+    )
+
+    assert observed[0] == (cvs[0].name, 1, pytest.approx(-0.11))
     assert observed[1] == (cvs[0].name, 2, pytest.approx(-0.10))
     assert observed[2] == (cvs[1].name, 1, pytest.approx(-0.22))
     assert observed[3] == (cvs[1].name, 2, pytest.approx(-0.21))
-    assert observed[4] == (cvs[2].name, 1, pytest.approx(-0.33))
-    assert observed[5] == (cvs[2].name, 2, pytest.approx(-0.32))
+    assert result.table["Peak Tracking"].tolist() == ["within cv", "within cv"]
 
 
 def test_fit_peak_potential_scalar_guess_does_not_track_across_cvs(
@@ -2168,6 +2206,161 @@ def test_fit_peak_potential_scalar_guess_does_not_track_across_cvs(
         (cvs[1].name, pytest.approx(-0.10), None),
         (cvs[2].name, pytest.approx(-0.10), None),
     ]
+
+
+def test_fit_peak_potential_series_tracking_retries_failed_cv_from_consensus(
+    ecat_module,
+    cv_factory,
+    monkeypatch,
+):
+    cvs = [
+        cv_factory(name="50mVs_sample_CO2_MeCN_10mM_Fc_run01"),
+        cv_factory(name="100mVs_sample_CO2_MeCN_10mM_Fc_run02"),
+        cv_factory(name="200mVs_sample_CO2_MeCN_10mM_Fc_run03"),
+    ]
+    observed = []
+
+    def fake_peak_potential(self, options=None):
+        opts = dict(options or {})
+        observed.append((self.name, opts.get("guess potential")))
+        if self is cvs[1] and len([name for name, _guess in observed if name == self.name]) == 1:
+            raise ValueError("no first-pass peak")
+        if self is cvs[0]:
+            ep = -0.50
+        elif self is cvs[1]:
+            ep = float(opts["guess potential"])
+        else:
+            ep = -0.51
+        return {
+            "Ep": ep,
+            "index": 0,
+            "current": 0.0,
+            "extremum kind": "max",
+            "source": "peak",
+        }
+
+    monkeypatch.setattr(ecat_module.cv, "peak_potential", fake_peak_potential)
+
+    result = ecat_module.fit_peak_potential(
+        cvs,
+        {
+            "plot": False,
+            "print": False,
+            "segment": 1,
+            "guess potential": -0.10,
+            "peak tracking": "series",
+        },
+    )
+
+    assert observed == [
+        (cvs[0].name, pytest.approx(-0.10)),
+        (cvs[1].name, pytest.approx(-0.10)),
+        (cvs[2].name, pytest.approx(-0.10)),
+        (cvs[1].name, pytest.approx(-0.505)),
+    ]
+    assert result.table["Seg 1 Ep (V)"].tolist() == pytest.approx([-0.50, -0.505, -0.51])
+    assert result.table["Peak Tracking"].tolist() == [
+        "independent",
+        "consensus retry",
+        "independent",
+    ]
+    assert "Initial Ep" not in result.table.columns
+
+
+def test_fit_peak_potential_series_tracking_retries_outlier_from_consensus(
+    ecat_module,
+    cv_factory,
+    monkeypatch,
+):
+    cvs = [
+        cv_factory(name="50mVs_sample_CO2_MeCN_10mM_Fc_run01"),
+        cv_factory(name="100mVs_sample_CO2_MeCN_10mM_Fc_run02"),
+        cv_factory(name="200mVs_sample_CO2_MeCN_10mM_Fc_run03"),
+    ]
+    call_counts = {cv.name: 0 for cv in cvs}
+    observed = []
+
+    def fake_peak_potential(self, options=None):
+        opts = dict(options or {})
+        call_counts[self.name] += 1
+        observed.append((self.name, opts.get("guess potential")))
+        if self is cvs[0]:
+            ep = -0.50
+        elif self is cvs[1] and call_counts[self.name] == 1:
+            ep = 0.20
+        elif self is cvs[1]:
+            ep = float(opts["guess potential"])
+        else:
+            ep = -0.52
+        return {
+            "Ep": ep,
+            "index": 0,
+            "current": 0.0,
+            "extremum kind": "max",
+            "source": "peak",
+        }
+
+    monkeypatch.setattr(ecat_module.cv, "peak_potential", fake_peak_potential)
+
+    result = ecat_module.fit_peak_potential(
+        cvs,
+        {
+            "plot": False,
+            "print": False,
+            "segment": 1,
+            "guess potential": -0.10,
+            "peak tracking": "series",
+        },
+    )
+
+    assert observed[-1] == (cvs[1].name, pytest.approx(-0.51))
+    assert result.table["Seg 1 Ep (V)"].tolist() == pytest.approx([-0.50, -0.51, -0.52])
+    assert result.table["Peak Tracking"].tolist() == [
+        "independent",
+        "consensus retry",
+        "independent",
+    ]
+
+
+def test_fit_peak_potential_series_strict_errors_when_consensus_retry_fails(
+    ecat_module,
+    cv_factory,
+    monkeypatch,
+):
+    cvs = [
+        cv_factory(name="50mVs_sample_CO2_MeCN_10mM_Fc_run01"),
+        cv_factory(name="100mVs_sample_CO2_MeCN_10mM_Fc_run02"),
+        cv_factory(name="200mVs_sample_CO2_MeCN_10mM_Fc_run03"),
+    ]
+
+    def fake_peak_potential(self, options=None):
+        if self is cvs[1]:
+            raise ValueError("still missing peak")
+        ep = -0.50 if self is cvs[0] else -0.51
+        return {
+            "Ep": ep,
+            "index": 0,
+            "current": 0.0,
+            "extremum kind": "max",
+            "source": "peak",
+        }
+
+    monkeypatch.setattr(ecat_module.cv, "peak_potential", fake_peak_potential)
+
+    with pytest.raises(
+        ValueError,
+        match=r"series strict.*100mVs_sample_CO2_MeCN_10mM_Fc_run02.*segment 1",
+    ):
+        ecat_module.fit_peak_potential(
+            cvs,
+            {
+                "plot": False,
+                "print": False,
+                "segment": 1,
+                "guess potential": -0.10,
+                "peak tracking": "series strict",
+            },
+        )
 
 
 def test_fit_peak_potential_forwards_peak_prominence_none(

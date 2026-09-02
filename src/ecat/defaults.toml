@@ -385,6 +385,7 @@ noise_polyorder = "auto"
 peak_prominence = null
 sig_figs = 4
 follow_e1_2 = false
+peak_tracking = null
 fit = true
 x_unit = "auto"
 y_unit = "auto"

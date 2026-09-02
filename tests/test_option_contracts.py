@@ -471,6 +471,21 @@ def test_trumpet_analysis_does_not_expose_peak_current_fallback():
         option_models.TrumpetAnalysisOptions.from_options({"peak fallback": None})
 
 
+def test_fit_peak_potential_accepts_documented_peak_tracking_modes():
+    default_options = option_models.FitPeakPotentialOptions.from_options({})
+    within_cv = option_models.FitPeakPotentialOptions.from_options({"peak tracking": "within CV"})
+    series = option_models.FitPeakPotentialOptions.from_options({"peak tracking": "series"})
+    strict = option_models.FitPeakPotentialOptions.from_options({"peak tracking": "series-strict"})
+
+    assert default_options.peak_tracking is None
+    assert within_cv.peak_tracking == "within cv"
+    assert series.peak_tracking == "series"
+    assert strict.peak_tracking == "series strict"
+
+    with pytest.raises(option_models.OptionError, match="'peak tracking' must be"):
+        option_models.FitPeakPotentialOptions.from_options({"peak tracking": "previous cv"})
+
+
 def test_option_projection_preserves_aliases_and_rejects_duplicate_spellings():
     projected = option_models._project_options(
         option_models.PeakCurrentOptions,

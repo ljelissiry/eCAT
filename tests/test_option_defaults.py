@@ -931,6 +931,7 @@ def test_canonical_collection_options_accept_multiple_values(ecat_module):
 
 def test_describe_options_uses_plural_capable_labels_without_duplicate_alias_rows(ecat_module):
     fit_schema = ecat_module.describe_options("fit_peak_current", {"print": False, "return": True})
+    fit_peak_potential_schema = ecat_module.describe_options("fit_peak_potential", {"print": False, "return": True})
     fowa_schema = ecat_module.describe_options("fowa", {"print": False, "return": True})
     plateau_schema = ecat_module.describe_options("plateau_current", {"print": False, "return": True})
     nicholson_schema = ecat_module.describe_options("nicholson", {"print": False, "return": True})
@@ -947,6 +948,11 @@ def test_describe_options_uses_plural_capable_labels_without_duplicate_alias_row
 
     assert "guess potential(s)" in set(fit_schema["Option"])
     assert "tangent potential(s)" in set(fit_schema["Option"])
+    assert "peak tracking" in set(fit_peak_potential_schema["Option"])
+    peak_tracking_row = _option_row(fit_peak_potential_schema, "peak tracking")
+    assert peak_tracking_row["Category"] == "Fitting/analysis"
+    assert "within cv" in peak_tracking_row["Choices"]
+    assert "series strict" in peak_tracking_row["Choices"]
     assert "guess potential" in set(cv_peak_potential_schema["Option"])
     assert "tangent potential" in set(cv_schema["Option"])
     assert "guess potential(s)" not in set(cv_peak_potential_schema["Option"])
