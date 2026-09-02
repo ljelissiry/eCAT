@@ -751,14 +751,12 @@ def _load_one_file(path: Path, import_options: dict | None = None) -> tuple[obje
         return None, f"Warning: could not convert {path.name}: {exc}"
 
 
-def _status_from_stdout(output: str) -> str:
-    for line in output.splitlines():
-        stripped = line.strip()
-        if "supported text file" in stripped and "found" in stripped:
-            return stripped
-        if stripped.startswith("No files were found") or stripped.startswith("Found "):
-            return stripped
-    return ""
+def _folder_load_status(objects) -> str:
+    count = len(objects or [])
+    if count == 0:
+        return ""
+    noun = "file" if count == 1 else "files"
+    return f"{count} supported text {noun} found."
 
 
 def load_local_path(path, recursive: bool = False, import_options: dict | None = None) -> LoadResult:
@@ -773,20 +771,23 @@ def load_local_path(path, recursive: bool = False, import_options: dict | None =
     warnings: list[str] = []
 
     if path.is_dir():
-        stdout = io.StringIO()
         try:
-            with contextlib.redirect_stdout(stdout):
-                objects = e.get_data(
-                    {
-                        "folder path": str(path),
-                        "recursive search": recursive,
-                        "sort keys": ["subfolder", "timestamp"],
-                        **import_options,
-                    }
-                )
+            objects = e.get_data(
+                {
+                    "folder path": str(path),
+                    "recursive search": recursive,
+                    "sort keys": ["subfolder", "timestamp"],
+                    **import_options,
+                }
+            )
         except Exception as exc:
             return LoadResult([], [f"Warning: could not load folder {path}: {exc}"], workflow)
-        return LoadResult(list(objects or []), warnings, workflow, status=_status_from_stdout(stdout.getvalue()))
+        return LoadResult(
+            list(objects or []),
+            warnings,
+            workflow,
+            status=_folder_load_status(objects),
+        )
 
     obj, warning = _load_one_file(path, import_options)
     if warning:

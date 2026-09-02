@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 
 from .options import ReversibilityAnalysisOptions, SurfaceCoverageAnalysisOptions
-from .options import PeakCurrentOptions
+from .options import PeakCurrentOptions, _project_options
 from .plotting import (
     ScatterFitResult,
     _conditional_analysis_name_column,
@@ -1599,26 +1599,26 @@ def _surface_guesses(options, segments):
 
 
 def _surface_peak_options(typed, *, segment, potential_key, potential):
-    peak_option_keys = set(PeakCurrentOptions().to_options_dict())
-    data = {
-        key: value
-        for key, value in typed.to_options_dict().items()
-        if key in peak_option_keys
+    potential_overrides = {
+        "guess_potential": None,
+        "exact_potential": None,
     }
-    data["plot"] = False
-    data["print"] = False
-    data["plot all"] = False
-    data["print all"] = False
-    data["internal call"] = True
-    data["new plot"] = False
-    data["plot cv"] = False
-    data["segments"] = None
-    data["segment"] = int(segment)
-    data.pop("guess potential", None)
-    data.pop("exact potential", None)
     if potential is not None:
-        data[potential_key] = potential
-    return data
+        potential_overrides[potential_key] = potential
+    return _project_options(
+        PeakCurrentOptions,
+        typed,
+        plot=False,
+        print=False,
+        plot_all=False,
+        print_all=False,
+        internal_call=True,
+        new_plot=False,
+        plot_cv=False,
+        segments=None,
+        segment=int(segment),
+        **potential_overrides,
+    ).to_options_dict()
 
 
 def _surface_integration_indices(potential, corrected, peak_index, integration_range):

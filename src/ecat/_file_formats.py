@@ -3,7 +3,7 @@
 from pathlib import Path
 
 
-SUPPORTED_TEXT_SUFFIXES = frozenset({".mpt", ".txt"})
+SUPPORTED_TEXT_SUFFIXES = frozenset({".dat", ".mpt", ".txt"})
 UNSUPPORTED_BINARY_SUFFIXES = frozenset({".mpr"})
 
 _BIOLOGIC_MPR_MAGIC = b"BIO-LOGIC MODULAR FILE"

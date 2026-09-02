@@ -19,7 +19,7 @@ outputs become confusing.
 
 ## What Is In Scope
 
-- CH and BASI `.txt` CV exports plus EC-Lab ASCII `.mpt` or compatible `.txt` exports. BioLogic binary `.mpr` files must be exported as `.mpt` or converted externally.
+- CH `.txt`, BASI `.txt` or old BASI-Epsilon `.dat` CV exports, plus EC-Lab ASCII `.mpt` or compatible `.txt` exports. BioLogic binary `.mpr` files must be exported as `.mpt` or converted externally.
 - Limited CH CA/CP and EC-Lab GCPL/CP loading/plotting.
 - Folder loading, filtering, grouping, plotting, reference shifting, normalization, peak analysis, and export smoke behavior.
 

@@ -34,7 +34,13 @@ def repo_root_path(repo_root=None) -> Path:
     bundle_root = getattr(sys, "_MEIPASS", None)
     if bundle_root and (Path(bundle_root) / "examples" / "data").exists():
         return Path(bundle_root)
-    return Path(__file__).resolve().parents[4]
+    source_root = Path(__file__).resolve().parents[4]
+    if (source_root / "examples" / "data").exists():
+        return source_root
+    installed_root = Path(sys.prefix)
+    if (installed_root / "examples" / "data").exists():
+        return installed_root
+    return source_root
 
 
 def default_fe_phoh_path(repo_root=None) -> Path:

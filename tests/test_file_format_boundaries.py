@@ -98,7 +98,7 @@ def test_get_data_discovers_txt_and_mpt_and_skips_mpr(
             "folder path": str(tmp_path),
             "recursive search": False,
             "reference mode": "none",
-            "print": False,
+            "print": True,
         }
     )
 

@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Added old BASI-Epsilon `.dat` CV text import support, including folder discovery and headerless potential/current table handling.
+- Fixed delegated option routing so Sevcik and peak-current fitting preserve `peak kind`, `peak fallback`, and peak-marker controls; Tafel and nested plot/analysis helpers now also preserve accepted case, underscore, and registered-alias spellings instead of silently reverting them to defaults.
+
 ## 0.1.0b4 - Beta Parser, Plotting, Analysis, Simulation, And App Refresh - 2026-08-24
 
 - Added `reversibility_analysis()` for cautious, series-level bulk or surface-confined electron-transfer assessment plus a separate chemical-reversibility conclusion, with documented Matsuda-Ayabe, Nicholson, Sevcik, trumpet/Laviron, and irreversible-asymptote eligibility rules.

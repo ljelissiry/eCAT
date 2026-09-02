@@ -229,6 +229,70 @@ def test_basi_parser_handles_tab_delimiter_and_missing_switching_potential_2(
     assert obj.segments == 2
 
 
+def test_old_basi_epsilon_dat_cv_without_data_header_loads_as_cv(
+    ecat_module,
+    tmp_path,
+    capsys,
+):
+    path = tmp_path / "old_basi_cv_100mVs.dat"
+    path.write_text(
+        "\n".join(
+            [
+                "       Experiment Type : Cyclic Voltammetry (CV)",
+                "                 Title : CV Run for BASi-Epsilon",
+                "        Data File Name : old_basi_cv_100mVs",
+                "Date & Time of the run : 5/12/2011 4:31:58 AM",
+                "",
+                "    Display Convention : IUPAC",
+                " Number of data points : 4",
+                "     Initial Potential : 0 (mV)",
+                " Switching Potential 1 : 1200 (mV)",
+                " Switching Potential 2 : 0 (mV)",
+                "       Final Potential : 100 (mV)",
+                "    Number of segments : 2",
+                "             Scan rate : 100 (mV/s)",
+                "       Sample Interval : 1 mV",
+                "Notes :",
+                "",
+                " 1.000E-0003,-7.17174E-0007",
+                " 2.000E-0003,-6.98863E-0007",
+                " 3.000E-0003,-6.77500E-0007",
+                " 4.000E-0003,-6.65293E-0007",
+            ]
+        )
+        + "\n",
+        encoding="ISO-8859-1",
+    )
+
+    obj = ecat_module.echem.from_file(str(path), {})
+
+    assert type(obj).__name__ == "cv"
+    assert obj.software == "BASI"
+    assert obj.type == "Cyclic Voltammetry"
+    assert list(obj.data.columns) == ["Potential", "Current"]
+    assert obj.units == {"Potential": "V", "Current": "A"}
+    assert obj.data["Potential"].tolist() == pytest.approx([0.001, 0.002, 0.003, 0.004])
+    assert obj.data["Current"].tolist() == pytest.approx(
+        [-7.17174e-7, -6.98863e-7, -6.77500e-7, -6.65293e-7]
+    )
+    assert obj.scan_rate == pytest.approx(0.1)
+    assert obj.segments == 2
+    capsys.readouterr()
+
+    loaded = ecat_module.get_data(
+        {
+            "folder path": str(tmp_path),
+            "recursive search": False,
+            "reference mode": "none",
+            "print": False,
+        }
+    )
+
+    assert [type(item).__name__ for item in loaded] == ["cv"]
+    assert [item.software for item in loaded] == ["BASI"]
+    assert capsys.readouterr().out == ""
+
+
 def test_eclab_parser_converts_mA_to_A_and_reads_cv_metadata(ecat_module, fixtures_dir):
     obj = ecat_module.echem.from_file(str(fixtures_dir / "eclab_cv_mA_metadata.txt"), {})
 

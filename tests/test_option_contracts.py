@@ -411,6 +411,169 @@ def test_option_forwarding_helpers_preserve_selector_contracts(option_cls):
     assert forwarded_options["segment"] == options.segment
 
 
+@pytest.mark.parametrize(
+    "option_cls",
+    [
+        option_models.PeakWidthOptions,
+        option_models.SevcikAnalysisOptions,
+        option_models.FitPeakCurrentOptions,
+    ],
+)
+def test_peak_current_subclass_forwarding_preserves_peak_selection_controls(option_cls):
+    options = option_cls.from_options(
+        {
+            "peak kind": "max",
+            "peak fallback": None,
+            "plot peak potential": False,
+        }
+    )
+
+    forwarded = options.for_peak_current().to_options_dict()
+
+    assert forwarded["peak kind"] == "max"
+    assert forwarded["peak fallback"] is None
+    assert forwarded["plot peak potential"] is False
+
+
+def test_fowa_peak_current_forwarding_preserves_supported_fallback_control():
+    options = option_models.FOWAOptions.from_options({"peak fallback": None})
+
+    forwarded = options.for_peak_current().to_options_dict()
+
+    assert forwarded["peak fallback"] is None
+
+
+@pytest.mark.parametrize(
+    "option_cls",
+    [
+        option_models.PeakCurrentOptions,
+        option_models.PeakWidthOptions,
+        option_models.FOWAOptions,
+        option_models.PlateauCurrentOptions,
+        option_models.SevcikAnalysisOptions,
+        option_models.ReversibilityAnalysisOptions,
+        option_models.SurfaceCoverageAnalysisOptions,
+        option_models.FitPeakCurrentOptions,
+        option_models.NicholsonOptions,
+    ],
+)
+def test_peak_current_based_analyses_default_to_highest_current_fallback(option_cls):
+    assert option_cls.from_options({}).peak_fallback == "highest current"
+
+
+def test_trumpet_analysis_does_not_expose_peak_current_fallback():
+    options = option_models.TrumpetAnalysisOptions.from_options({})
+    resolved = options.to_options_dict()
+
+    assert not hasattr(options, "peak_fallback")
+    assert "peak fallback" not in resolved
+    with pytest.raises(option_models.OptionError, match="Unknown option 'peak fallback'"):
+        option_models.TrumpetAnalysisOptions.from_options({"peak fallback": None})
+
+
+def test_fit_peak_potential_accepts_documented_peak_tracking_modes():
+    default_options = option_models.FitPeakPotentialOptions.from_options({})
+    within_cv = option_models.FitPeakPotentialOptions.from_options({"peak tracking": "within CV"})
+    series = option_models.FitPeakPotentialOptions.from_options({"peak tracking": "series"})
+    strict = option_models.FitPeakPotentialOptions.from_options({"peak tracking": "series-strict"})
+
+    assert default_options.peak_tracking is None
+    assert within_cv.peak_tracking == "within cv"
+    assert series.peak_tracking == "series"
+    assert strict.peak_tracking == "series strict"
+
+    with pytest.raises(option_models.OptionError, match="'peak tracking' must be"):
+        option_models.FitPeakPotentialOptions.from_options({"peak tracking": "previous cv"})
+
+
+def test_option_projection_preserves_aliases_and_rejects_duplicate_spellings():
+    projected = option_models._project_options(
+        option_models.PeakCurrentOptions,
+        {
+            "Peak Kind": "max",
+            "Peak Fallback": None,
+            "sig_fig": 6,
+        },
+    )
+
+    assert projected.peak_kind == "max"
+    assert projected.peak_fallback is None
+    assert projected.sig_figs == 6
+
+    with pytest.raises(option_models.OptionError, match="both resolve to 'sig figs'"):
+        option_models._project_options(
+            option_models.PeakCurrentOptions,
+            {"sig figs": 4, "sig_fig": 6},
+        )
+
+
+@pytest.mark.parametrize(
+    "option_cls, intentional_overrides",
+    [
+        (option_models.PeakWidthOptions, set()),
+        (option_models.NormalizationOptions, {"print"}),
+        (option_models.ScaleCurrentOptions, {"print"}),
+        (option_models.FOWAOptions, {"plot", "print"}),
+        (option_models.SevcikAnalysisOptions, set()),
+        (option_models.FitPeakCurrentOptions, set()),
+    ],
+)
+def test_peak_current_forwarding_preserves_every_shared_field(
+    option_cls,
+    intentional_overrides,
+):
+    sample_values = {
+        "plot": True,
+        "print": True,
+        "pretty_print": False,
+        "plot_all": True,
+        "print_all": True,
+        "x_axis": "Potential",
+        "y_axis": "Current",
+        "x_unit": "mV",
+        "y_unit": "uA",
+        "xlabel": "Potential test",
+        "ylabel": "Current test",
+        "new_plot": True,
+        "plot_cv": False,
+        "derivative": 1,
+        "plot_segment": 2,
+        "plot_segments": None,
+        "segment": 2,
+        "segments": None,
+        "noise_window": 7,
+        "noise_polyorder": 2,
+        "sig_figs": 6,
+        "peak_prominence": 1e-7,
+        "peak_kind": "max",
+        "guess_potential": -0.25,
+        "exact_potential": None,
+        "troubleshoot": True,
+        "internal_call": True,
+        "offset": 0.2,
+        "tangent_range": [0.1, 0.2],
+        "tangent_min_points": 5,
+        "tangent_potential": -0.4,
+        "percent_threshold": 0.2,
+        "plot_peak_potential": False,
+        "peak_fallback": None,
+    }
+    source_fields = {field.name for field in fields(option_cls)}
+    source = option_cls.from_options(
+        {
+            key: value
+            for key, value in sample_values.items()
+            if key in source_fields
+        }
+    )
+    forwarded = source.for_peak_current()
+
+    for field in fields(option_models.PeakCurrentOptions):
+        if field.name not in source_fields or field.name in intentional_overrides:
+            continue
+        assert getattr(forwarded, field.name) == getattr(source, field.name), field.name
+
+
 def test_peak_current_forwarding_to_peak_potential_drops_peak_current_only_options():
     options = option_models.PeakCurrentOptions.from_options(
         {"guess potential": -0.25, "tangent range": [0.1, 0.2]}

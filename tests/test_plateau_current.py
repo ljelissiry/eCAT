@@ -386,7 +386,7 @@ def test_plateau_reference_fallback_potential_still_promotes_to_exact(ecat_modul
     assert result["current"] == pytest.approx(-1e-5)
     assert result["potential"] == pytest.approx(-0.9)
     assert cv.calls[-1]["exact potential"] == pytest.approx(-0.9)
-    assert cv.calls[-1]["guess potential"] == pytest.approx(-0.7)
+    assert "guess potential" not in cv.calls[-1]
 
 
 def test_plateau_single_cv_records_warning_without_python_warning(ecat_module):

@@ -8,6 +8,24 @@ permissions:
   contents: read
 
 jobs:
+  lint:
+    name: Lint / correctness and advisory report
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install development tools
+        run: python -m pip install --upgrade pip && python -m pip install -e ".[dev]"
+      - name: Enforce high-confidence correctness rules
+        run: python -m ruff check src apps/workbench/src tests packaging
+      - name: Report broader lint debt without blocking
+        run: >-
+          python -m ruff check src apps/workbench/src tests packaging
+          --config ruff-advisory.toml --statistics --exit-zero
+
   release-metadata:
     name: Release metadata / app shortcuts
     runs-on: ubuntu-latest
@@ -40,7 +58,7 @@ jobs:
       - name: Run core test suite
         env:
           MPLBACKEND: Agg
-        run: pytest -q
+        run: pytest -q --ignore=tests/test_app_backbone.py --ignore=tests/test_app_launcher.py
 
   app-smoke:
     name: App extra / Python 3.13
@@ -89,3 +107,52 @@ jobs:
         env:
           MPLBACKEND: Agg
         run: pytest -q tests/test_simulation.py
+
+  windows-core:
+    name: Windows core / Python 3.13
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install core package and test runner
+        run: python -m pip install --upgrade pip pytest && python -m pip install -e .
+      - name: Run core test suite
+        env:
+          MPLBACKEND: Agg
+        run: pytest -q --ignore=tests/test_app_backbone.py --ignore=tests/test_app_launcher.py
+
+  windows-wheel-app:
+    name: Windows wheel + app / Python 3.13
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Build wheel and create clean environment
+        run: |
+          python -m pip install --upgrade pip build
+          python -m build
+          python -m venv .wheel-test
+      - name: Install wheel with app extra
+        shell: pwsh
+        run: |
+          $python = ".\.wheel-test\Scripts\python.exe"
+          & $python -m pip install --upgrade pip pytest
+          $wheel = (Get-ChildItem "dist\*.whl" | Select-Object -First 1).FullName
+          $wheelWithExtra = $wheel + "[app]"
+          & $python -m pip install $wheelWithExtra
+      - name: Verify installed wheel, examples, and browser app
+        shell: pwsh
+        env:
+          MPLBACKEND: Agg
+        run: |
+          $python = ".\.wheel-test\Scripts\python.exe"
+          & ".\.wheel-test\Scripts\ecat-app.exe" --version
+          & $python -c "from ecat_app.defaults import EXAMPLE_FOLDERS, example_folder_path; assert all(example_folder_path(key).is_dir() for key in EXAMPLE_FOLDERS)"
+          & $python -c "from ecat_app.app import create_app; app = create_app(); response = app.server.test_client().get('/'); assert response.status_code == 200"
+          & $python -m pytest -q tests/test_app_backbone.py tests/test_app_launcher.py tests/test_standalone_packaging.py

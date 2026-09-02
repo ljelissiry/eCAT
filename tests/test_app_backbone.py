@@ -6,6 +6,9 @@ from pathlib import Path
 import pytest
 
 
+pytest.importorskip("dash", reason="app tests require the optional ecat[app] extra")
+
+
 APP_SRC = Path(__file__).resolve().parents[1] / "apps" / "workbench" / "src"
 if str(APP_SRC) not in sys.path:
     sys.path.insert(0, str(APP_SRC))
@@ -2693,14 +2696,16 @@ def test_browser_model_mechanism_detail_edits_refresh_parameter_rows():
     assert any(row["path"] == "concentrations.bulk.A" for row in updated["parameters"])
 
 
-def test_browser_model_simulate_button_is_gated_by_mechanism_parse():
-    from ecat_app.callbacks import model_simulate_gate
+def test_browser_model_simulate_button_is_gated_by_mechanism_parse(monkeypatch):
+    import ecat_app.callbacks as callbacks
 
-    assert model_simulate_gate({"mechanism_valid": False}) == (
+    monkeypatch.setattr(callbacks, "simulation_backend_available", lambda: True)
+
+    assert callbacks.model_simulate_gate({"mechanism_valid": False}) == (
         True,
         "Choose a valid mechanism before simulating.",
     )
-    assert model_simulate_gate({"mechanism_valid": True}) == (False, "")
+    assert callbacks.model_simulate_gate({"mechanism_valid": True}) == (False, "")
 
 
 def test_browser_model_builds_simulation_params_from_tables():

@@ -203,7 +203,6 @@ _SECTION_OPTION_DISPLAY_OVERRIDES = {
     "trumpet_analysis": {
         "exact_potential": "exact potential(s)",
         "guess_potential": "guess potential(s)",
-        "tangent_potential": "tangent potential(s)",
     },
 }
 
@@ -620,7 +619,6 @@ _OPTION_CATEGORY_BY_KEY = {
     "s": "Units/normalization",
     "v": "Units/normalization",
     "n": "Units/normalization",
-    "num_electrons": "Units/normalization",
     "k_homo": "Units/normalization",
     "k0": "Units/normalization",
     "formula_mode": "Units/normalization",
@@ -722,6 +720,7 @@ _OPTION_CATEGORY_BY_KEY = {
     "alpha": "Fitting/analysis",
     "agreement_tolerance": "Fitting/analysis",
     "current_ratio_tolerance": "Fitting/analysis",
+    "peak_tracking": "Fitting/analysis",
     "peak_separation_tolerance": "Fitting/analysis",
     "integration_range": "Fitting/analysis",
 
@@ -913,7 +912,6 @@ OPTION_DESCRIPTIONS = {
     "baseline_tail_fraction": "Final fraction of a CA trace used for tail baseline correction.",
     "baseline_threshold": "Current threshold in A used for threshold CA baseline correction.",
     "corrected_current": "Use the baseline-corrected CA current trace for CA plotting or current extraction when baseline correction is enabled.",
-    "method": "Filtering method: savgol, gaussian, median, butterworth, or moving average.",
     "column": "Data column to filter; matching is case-insensitive.",
     "window": "Point window for Savitzky-Golay or moving-average filtering; 'auto' resolves to a valid odd window.",
     "polyorder": "Polynomial order for Savitzky-Golay filtering.",
@@ -1072,6 +1070,7 @@ OPTION_DESCRIPTIONS = {
     "peak_fallback": "Fallback used by peak_current when peak_potential cannot find a local extremum.",
     "peak_kind": "Extremum kind used for peak-potential selection: both, infer, max, or min. The default 'both' considers maxima and minima because the current sign convention determines which one is cathodic or anodic. 'infer' maps increasing selected current to maxima and decreasing selected current to minima.",
     "peak_prominence": "Minimum peak prominence for automatic peak detection. None uses the automatic noise estimate.",
+    "peak_tracking": "Peak-location tracking mode for fit_peak_potential.",
     "parser_settings": "Advanced settings for filename metadata parsing such as prefer file metadata, compound stopwords, and recognized gases/solvents.",
     "percent_threshold": "Percent threshold used in peak or tangent selection.",
     "plateau_average_method": "Average method used to combine accepted plateau currents.",
@@ -1233,6 +1232,7 @@ OPTION_CHOICES = {
     "segment_color_mode": ["auto", "off", "discrete", "discrete gradient", "continuous gradient"],
     "transform_mode": ["log-log", "lineweaver-burk"],
     "y_mode": ["raw", "delta", "negative delta", "ratio", "enhancement"],
+    "peak_tracking": [None, "within cv", "series", "series strict"],
 }
 
 OPTION_CHOICES_BY_SECTION = {
@@ -1593,9 +1593,11 @@ def _build_option_metadata():
             "description": "Minimum peak prominence for automatic peak detection; None uses an automatic noise estimate, local to the guess potential when one is provided.",
         },
         "peak_kind": {
+            "choices": ["both", "infer", "max", "min"],
             "description": "Extremum kind to consider for peak-potential selection. 'both' considers maxima and minima; 'infer' maps increasing selected current to maxima and decreasing selected current to minima; 'max' and 'min' force one kind.",
         },
         "peak_fallback": {
+            "choices": ["highest current", "guess potential", None],
             "description": "Fallback used by peak_current when no local peak is detected. 'highest current' uses the largest absolute current in the selected segment; 'guess potential' treats the guess as an exact potential; None/'none' keeps the strict error.",
         },
         "guess_potential": {
@@ -1982,6 +1984,10 @@ def _build_option_metadata():
     update("fit_peak_potential", {
         **cv_auto,
         **scatter_fit_auto,
+        "peak_tracking": {
+            "choices": [None, "within cv", "series", "series strict"],
+            "description": "Peak-location tracking for fit_peak_potential. None uses each CV/segment independently; 'within cv' reuses each segment's Ep as the next segment guess inside the same CV; 'series' retries failed or outlier peaks from a robust series consensus; 'series strict' raises if consensus tracking cannot resolve a CV.",
+        },
         "follow_e1_2": {
             "description": "When True, follows paired peak-potential behavior using resolved E1/2-style values.",
         },
@@ -2190,7 +2196,7 @@ def _option_default_registry():
         (ReversibilityAnalysisOptions, ["plot", "cv_selection", "cv_analysis", "peak_current", "reversibility_analysis"]),
         (SurfaceCoverageAnalysisOptions, ["plot", "cv_selection", "cv_analysis", "peak_current", "surface_coverage_analysis"]),
         (FitPeakCurrentOptions, ["plot", "cv_selection", "cv_analysis", "peak_current", "fit_peak_current"]),
-        (TrumpetAnalysisOptions, ["plot", "cv_selection", "cv_analysis", "peak_current", "trumpet_analysis"]),
+        (TrumpetAnalysisOptions, ["plot", "cv_selection", "cv_analysis", "trumpet_analysis"]),
         (NicholsonOptions, ["plot", "cv_selection", "cv_analysis", "peak_current", "nicholson"]),
         (PlateauCurrentOptions, ["plot", "cv_selection", "cv_analysis", "peak_current", "fowa", "plateau_current"]),
         (SortGroupOptions, ["sort_group"]),
@@ -2531,6 +2537,44 @@ def _coerce_options(cls, raw, sections):
     opts = cls(**kwargs)
     opts.validate()
     return opts
+
+
+def _project_options(option_cls, source=None, **overrides):
+    """Route the supported subset of one option mapping into another model."""
+    if source is None:
+        source_mapping = {}
+    elif hasattr(source, "to_options_dict"):
+        source_mapping = source.to_options_dict()
+    elif isinstance(source, dict):
+        source_mapping = dict(source)
+    else:
+        raise TypeError(
+            f"Cannot project options from {type(source).__name__}; expected a mapping "
+            "or typed options object."
+        )
+
+    valid = _field_names(option_cls)
+    routed = {
+        key: value
+        for key, value in source_mapping.items()
+        if _canonical_option_key(key) in valid
+    }
+
+    for key, value in overrides.items():
+        canonical = _canonical_option_key(key)
+        if canonical not in valid:
+            raise OptionError(
+                f"Cannot project unknown option '{_friendly_key(canonical)}' "
+                f"into {option_cls.__name__}."
+            )
+        routed = {
+            existing_key: existing_value
+            for existing_key, existing_value in routed.items()
+            if _canonical_option_key(existing_key) != canonical
+        }
+        routed[canonical] = value
+
+    return option_cls.from_options(routed)
 
 
 def _validate_fit_band_options(opts):
@@ -3427,12 +3471,7 @@ class PeakCurrentOptions(PeakPotentialOptions):
             )
 
     def for_peak_potential(self):
-        return PeakPotentialOptions(
-            **{
-                field.name: getattr(self, field.name)
-                for field in fields(PeakPotentialOptions)
-            }
-        )
+        return _project_options(PeakPotentialOptions, self)
 
     def to_options_dict(self):
         data = PeakPotentialOptions.to_options_dict(self)
@@ -3443,6 +3482,11 @@ class PeakCurrentOptions(PeakPotentialOptions):
         data["plot peak potential"] = self.plot_peak_potential
         data["peak fallback"] = self.peak_fallback
         return data
+
+
+def _forward_peak_current_options(source, **overrides):
+    """Project every supported peak-current field into a delegated child call."""
+    return _project_options(PeakCurrentOptions, source, **overrides)
 
 
 @dataclass(frozen=True, slots=True)
@@ -3467,12 +3511,7 @@ class PeakWidthOptions(PeakCurrentOptions):
             raise OptionError("'level' must be greater than 0 and less than 1.")
 
     def for_peak_current(self):
-        return PeakCurrentOptions(
-            **{
-                field.name: getattr(self, field.name)
-                for field in fields(PeakCurrentOptions)
-            }
-        )
+        return _forward_peak_current_options(self)
 
     def to_options_dict(self):
         data = PeakCurrentOptions.to_options_dict(self)
@@ -3663,28 +3702,16 @@ class NormalizationOptions:
             raise OptionError("Use only one ip0/reference source for normalize_current.")
 
     def for_peak_current(self):
-        return PeakCurrentOptions.from_options(
-            {
-                "plot": False,
-                "print": False,
-                "segment": self.segment,
-                "segments": self.segments,
-                "noise window": self.noise_window,
-                "noise polyorder": self.noise_polyorder,
-                "sig figs": self.sig_figs,
-                "peak prominence": self.peak_prominence,
-                "guess potential": (
-                    self.reference_guess_potential
-                    if self.reference_guess_potential is not None
-                    else self.guess_potential
-                ),
-                "exact potential": self.exact_potential,
-                "tangent range": self.tangent_range,
-                "tangent min points": self.tangent_min_points,
-                "tangent potential": self.tangent_potential,
-                "percent threshold": self.percent_threshold,
-                "internal call": True,
-            }
+        return _forward_peak_current_options(
+            self,
+            plot=False,
+            print=False,
+            guess_potential=(
+                self.reference_guess_potential
+                if self.reference_guess_potential is not None
+                else self.guess_potential
+            ),
+            internal_call=True,
         )
 
     def to_options_dict(self):
@@ -3759,24 +3786,13 @@ class ScaleCurrentOptions:
             raise OptionError("Use only one scale/reference source for scale_current.")
 
     def for_peak_current(self, segment=None):
-        return PeakCurrentOptions.from_options(
-            {
-                "plot": self.plot_all,
-                "plot all": self.plot_all,
-                "print": False,
-                "print all": False,
-                "segment": self.segment if segment is None else segment,
-                "noise window": self.noise_window,
-                "noise polyorder": self.noise_polyorder,
-                "sig figs": self.sig_figs,
-                "peak prominence": self.peak_prominence,
-                "guess potential": self.guess_potential,
-                "exact potential": self.exact_potential,
-                "tangent range": self.tangent_range,
-                "tangent min points": self.tangent_min_points,
-                "tangent potential": self.tangent_potential,
-                "percent threshold": self.percent_threshold,
-            }
+        return _forward_peak_current_options(
+            self,
+            plot=self.plot_all,
+            plot_all=self.plot_all,
+            print=False,
+            print_all=False,
+            segment=self.segment if segment is None else segment,
         )
 
     def to_options_dict(self):
@@ -3927,12 +3943,13 @@ class FOWAOptions:
         _validate_common_cv(self)
 
     def for_peak_current(self):
-        return PeakCurrentOptions.from_options({
-            "plot": False,
-            "print": False,
-            "plot all": self.plot_all,
-            "print all": self.print_all,
-        })
+        return _forward_peak_current_options(
+            self,
+            plot=False,
+            print=False,
+            plot_all=self.plot_all,
+            print_all=self.print_all,
+        )
 
     def to_options_dict(self):
         data = {field.name.replace("_", " "): getattr(self, field.name) for field in fields(self)}
@@ -4196,6 +4213,7 @@ class FitRateOptions:
 @dataclass(frozen=True, slots=True)
 class FitPeakPotentialOptions(PeakPotentialOptions):
     follow_e1_2: bool = False
+    peak_tracking: str | None = None
     fit: bool = True
     x_unit: str | None = "auto"
     y_unit: str | None = "auto"
@@ -4238,6 +4256,8 @@ class FitPeakPotentialOptions(PeakPotentialOptions):
 
     def validate(self):
         _validate_common_cv(self)
+        if self.peak_tracking not in (None, "within cv", "series", "series strict"):
+            raise OptionError("'peak tracking' must be None, 'within cv', 'series', or 'series strict'.")
         if not 0 <= float(self.fit_alpha) <= 1:
             raise OptionError("'fit alpha' must be between 0 and 1.")
         _validate_fit_band_options(self)
@@ -4245,6 +4265,7 @@ class FitPeakPotentialOptions(PeakPotentialOptions):
     def to_options_dict(self):
         data = PeakPotentialOptions.to_options_dict(self)
         data["follow e1/2"] = self.follow_e1_2
+        data["peak tracking"] = self.peak_tracking
         data["fit"] = self.fit
         data["x unit"] = self.x_unit
         data["y unit"] = self.y_unit
@@ -4339,28 +4360,9 @@ class SevcikAnalysisOptions(PeakCurrentOptions):
         return data
 
     def for_peak_current(self, segment=None):
-        return PeakCurrentOptions.from_options(
-            {
-                "plot": self.plot,
-                "print": self.print,
-                "plot all": self.plot_all,
-                "print all": self.print_all,
-                "segment": self.segment if segment is None else segment,
-                "x axis": self.x_axis,
-                "y axis": self.y_axis,
-                "noise window": self.noise_window,
-                "noise polyorder": self.noise_polyorder,
-                "sig figs": self.sig_figs,
-                "x unit": self.x_unit,
-                "y unit": self.y_unit,
-                "peak prominence": self.peak_prominence,
-                "guess potential": self.guess_potential,
-                "exact potential": self.exact_potential,
-                "tangent range": self.tangent_range,
-                "tangent min points": self.tangent_min_points,
-                "tangent potential": self.tangent_potential,
-                "percent threshold": self.percent_threshold,
-            }
+        return _forward_peak_current_options(
+            self,
+            segment=self.segment if segment is None else segment,
         )
 
 
@@ -4611,33 +4613,14 @@ class FitPeakCurrentOptions(PeakCurrentOptions):
         return data
 
     def for_peak_current(self, segment=None):
-        return PeakCurrentOptions.from_options(
-            {
-                "plot": self.plot,
-                "print": self.print,
-                "plot all": self.plot_all,
-                "print all": self.print_all,
-                "segment": self.segment if segment is None else segment,
-                "x axis": self.x_axis,
-                "y axis": self.y_axis,
-                "x unit": self.x_unit,
-                "y unit": self.y_unit,
-                "noise window": self.noise_window,
-                "noise polyorder": self.noise_polyorder,
-                "sig figs": self.sig_figs,
-                "peak prominence": self.peak_prominence,
-                "guess potential": self.guess_potential,
-                "exact potential": self.exact_potential,
-                "tangent range": self.tangent_range,
-                "tangent min points": self.tangent_min_points,
-                "tangent potential": self.tangent_potential,
-                "percent threshold": self.percent_threshold,
-            }
+        return _forward_peak_current_options(
+            self,
+            segment=self.segment if segment is None else segment,
         )
 
 
 @dataclass(frozen=True, slots=True)
-class TrumpetAnalysisOptions(PeakCurrentOptions):
+class TrumpetAnalysisOptions(PeakPotentialOptions):
     segment: int | None = 1
     fit_indices: object | None = None
     plot_fit: bool = True
@@ -4657,7 +4640,7 @@ class TrumpetAnalysisOptions(PeakCurrentOptions):
 
     @classmethod
     def from_options(cls, options=None):
-        return _coerce_options(cls, options, ["plot", "cv_selection", "cv_analysis", "peak_current", "trumpet_analysis"])
+        return _coerce_options(cls, options, ["plot", "cv_selection", "cv_analysis", "trumpet_analysis"])
 
     def validate(self):
         _validate_common_cv(self)
@@ -4672,7 +4655,7 @@ class TrumpetAnalysisOptions(PeakCurrentOptions):
         _validate_fit_band_options(self)
 
     def to_options_dict(self):
-        data = PeakCurrentOptions.to_options_dict(self)
+        data = PeakPotentialOptions.to_options_dict(self)
         if self.segment is None and self.segments is not None:
             data["segment"] = _resolve_trumpet_base_segment(self.segment, self.segments)
             data["segments"] = None

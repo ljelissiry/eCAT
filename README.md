@@ -50,6 +50,10 @@ Then run:
 ecat-app
 ```
 
+The installed app includes the public Fe/PhOH CV, CA/CPE, and CP example
+folders shown in its example selector. Check the installed package version with
+`ecat-app --version`.
+
 From a notebook, launch the native app window with:
 
 ```python
@@ -185,7 +189,7 @@ See [docs/beta_scope.md](docs/beta_scope.md) for the supported file/technique ma
 
 In short:
 
-- Recommended beta path: CH and BASI `.txt` exports plus EC-Lab ASCII `.mpt` or compatible `.txt` exports.
+- Recommended beta path: CH `.txt`, BASI `.txt`/old BASI-Epsilon `.dat`, plus EC-Lab ASCII `.mpt` or compatible `.txt` exports.
 - Limited path: CH CA, CH CP, EC-Lab CA/CP/GCPL text exports, and NOVA ASCII CV text exports.
 - Fallback path: generic numeric/header text files with parser warnings available through `obj.parse_result.warnings`.
 - Unsupported for beta: binary files, including BioLogic `.mpr`, and untested vendor formats. eCAT rejects `.mpr` before text parsing and recommends exporting EC-Lab ASCII `.mpt` or converting externally.
