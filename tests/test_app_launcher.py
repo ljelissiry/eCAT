@@ -172,9 +172,9 @@ def test_app_launch_dependency_message_uses_app_extra(monkeypatch):
 
     monkeypatch.setattr(builtins, "__import__", fake_import)
 
-    with pytest.raises(RuntimeError, match=r"ecat\[app\]") as excinfo:
+    with pytest.raises(RuntimeError, match=r"ecat-electrochemistry\[app\]") as excinfo:
         app_launcher._create_app()
-    assert "ecat[simulation]" not in str(excinfo.value)
+    assert "ecat-electrochemistry[simulation]" not in str(excinfo.value)
 
 
 def test_workbench_create_app_reports_missing_app_extra(monkeypatch, repo_root):
@@ -191,7 +191,7 @@ def test_workbench_create_app_reports_missing_app_extra(monkeypatch, repo_root):
 
     monkeypatch.setattr(builtins, "__import__", fake_import)
 
-    with pytest.raises(RuntimeError, match=r"ecat\[app\]"):
+    with pytest.raises(RuntimeError, match=r"ecat-electrochemistry\[app\]"):
         browser_app._require_app_dependencies()
 
 
@@ -202,10 +202,12 @@ def test_workbench_cli_exits_cleanly_for_missing_app_extra(monkeypatch, repo_roo
     monkeypatch.setattr(
         browser_app,
         "create_app",
-        lambda _config=None: (_ for _ in ()).throw(RuntimeError("install ecat[app]")),
+        lambda _config=None: (_ for _ in ()).throw(
+            RuntimeError("install ecat-electrochemistry[app]")
+        ),
     )
 
-    with pytest.raises(SystemExit, match=r"ecat\[app\]"):
+    with pytest.raises(SystemExit, match=r"ecat-electrochemistry\[app\]"):
         browser_app.main(["--browser", "--no-open"])
 
 
@@ -236,7 +238,9 @@ def test_source_checkout_launchers_prefer_repo_entrypoint_before_global_command(
 
 
 def test_model_simulate_gate_reports_missing_simulation_extra(monkeypatch, repo_root):
-    pytest.importorskip("dash", reason="app callback tests require ecat[app]")
+    pytest.importorskip(
+        "dash", reason="app callback tests require ecat-electrochemistry[app]"
+    )
     monkeypatch.syspath_prepend(str(repo_root / "apps" / "workbench" / "src"))
     import ecat_app.callbacks as callbacks
 
@@ -245,7 +249,7 @@ def test_model_simulate_gate_reports_missing_simulation_extra(monkeypatch, repo_
     disabled, message = callbacks.model_simulate_gate({"mechanism_valid": True})
 
     assert disabled is True
-    assert "ecat[simulation]" in message
+    assert "ecat-electrochemistry[simulation]" in message
 
 
 @pytest.mark.skipif(os.name != "posix", reason="macOS launcher permissions are POSIX-specific")
@@ -304,3 +308,15 @@ def test_release_version_is_single_source_and_app_surfaces_match(repo_root):
     assert '"CFBundleVersion": BUNDLE_VERSION' in spec_text
     assert f"@v{version}" in readme_text
     assert f"The beta version is `{version}`." in readme_text
+
+
+def test_distribution_name_is_distinct_from_public_import(repo_root):
+    import ecat
+
+    pyproject_text = (repo_root / "pyproject.toml").read_text(encoding="utf-8")
+    project_block = pyproject_text.split("[project]", 1)[1].split("\n[", 1)[0]
+    readme_text = (repo_root / "README.md").read_text(encoding="utf-8")
+
+    assert 'name = "ecat-electrochemistry"' in project_block
+    assert f'ecat-electrochemistry=={ecat.__version__}' in readme_text
+    assert "import ecat as e" in readme_text

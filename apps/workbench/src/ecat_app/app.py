@@ -18,7 +18,7 @@ from .config import AppConfig
 
 _ECAT_APP_INSTALL_MESSAGE = (
     "The eCAT app requires optional app dependencies. Install them with "
-    '`python -m pip install "ecat[app]"`. For a source checkout, use '
+    '`python -m pip install "ecat-electrochemistry[app]"`. For a source checkout, use '
     '`python -m pip install -e ".[app]"`.'
 )
 
@@ -182,7 +182,8 @@ def _load_webview():
     except ModuleNotFoundError as exc:
         raise RuntimeError(
             "The native eCAT app window requires pywebview from the optional app "
-            "dependencies. Install them with `python -m pip install \"ecat[app]\"`, "
+            "dependencies. Install them with "
+            "`python -m pip install \"ecat-electrochemistry[app]\"`, "
             "or run `ecat-app --browser` to use the browser fallback."
         ) from exc
     return webview

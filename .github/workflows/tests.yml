@@ -12,8 +12,8 @@ jobs:
     name: Lint / correctness and advisory report
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
           cache: pip
@@ -30,15 +30,19 @@ jobs:
     name: Release metadata / app shortcuts
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
           cache: pip
       - name: Install package and test runner
         run: python -m pip install --upgrade pip pytest && python -m pip install -e .
-      - name: Check package, app, shortcut, and standalone versions
-        run: pytest -q tests/test_app_launcher.py::test_release_version_is_single_source_and_app_surfaces_match
+      - name: Check package, app, shortcut, standalone, and publishing metadata
+        run: >-
+          pytest -q
+          tests/test_app_launcher.py::test_release_version_is_single_source_and_app_surfaces_match
+          tests/test_app_launcher.py::test_distribution_name_is_distinct_from_public_import
+          tests/test_release_workflow.py
 
   core:
     name: Core / Python ${{ matrix.python-version }}
@@ -48,8 +52,8 @@ jobs:
       matrix:
         python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -64,8 +68,8 @@ jobs:
     name: App extra / Python 3.13
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
           cache: pip
@@ -80,8 +84,8 @@ jobs:
     name: Optional simulation contract / Python 3.13
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
           cache: pip
@@ -96,8 +100,8 @@ jobs:
     name: ElectroKitty extra / Python 3.13
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
           cache: pip
@@ -112,8 +116,8 @@ jobs:
     name: Windows core / Python 3.13
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
           cache: pip
@@ -128,8 +132,8 @@ jobs:
     name: Windows wheel + app / Python 3.13
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
           cache: pip

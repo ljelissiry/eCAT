@@ -6,7 +6,9 @@ from pathlib import Path
 import pytest
 
 
-pytest.importorskip("dash", reason="app tests require the optional ecat[app] extra")
+pytest.importorskip(
+    "dash", reason="app tests require the optional ecat-electrochemistry[app] extra"
+)
 
 
 APP_SRC = Path(__file__).resolve().parents[1] / "apps" / "workbench" / "src"

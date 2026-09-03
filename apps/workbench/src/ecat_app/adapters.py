@@ -23,7 +23,7 @@ from .workflow import AppWorkflow
 
 SIMULATION_INSTALL_MESSAGE = (
     "Model simulation requires ElectroKitty. Install simulation support with "
-    '`python -m pip install "ecat[simulation]"`.'
+    '`python -m pip install "ecat-electrochemistry[simulation]"`.'
 )
 
 

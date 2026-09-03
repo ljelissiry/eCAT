@@ -112,7 +112,7 @@ _SOLVENT_ALIASES = {
 
 _ECAT_SIMULATION_INSTALL_MESSAGE = (
     "ElectroKitty is required for eCAT simulation. Install the optional "
-    "dependency with `pip install 'ecat[simulation]'` or install "
+    "dependency with `pip install 'ecat-electrochemistry[simulation]'` or install "
     "`electrokitty` in the active environment."
 )
 

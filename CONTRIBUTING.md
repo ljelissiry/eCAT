@@ -67,3 +67,7 @@ same branch, coordinate before rebasing.
   or printed output.
 - Keep the required Linux version matrix, Windows core suite, installed-wheel app
   smoke test, and Ruff correctness check passing.
+
+Maintainers preparing a package release should follow
+[the release guide](docs/releasing.md). It keeps TestPyPI validation separate
+from production publication and uses short-lived Trusted Publishing credentials.

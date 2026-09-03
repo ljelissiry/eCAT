@@ -2672,7 +2672,10 @@ def test_simulate_cv_missing_electrokitty_has_friendly_error(ecat_module, monkey
     monkeypatch.setitem(sys.modules, "electrokitty", None)
     program = ecat_module.simulation.cv_program(0.1, -0.1, points_per_segment=3)
 
-    with pytest.raises(ImportError, match=r"pip install .*ecat\[simulation\]"):
+    with pytest.raises(
+        ImportError,
+        match=r"pip install .*ecat-electrochemistry\[simulation\]",
+    ):
         ecat_module.simulation.simulate_cv(program, "E", _basic_params(), options={"plot": False})
 
 
