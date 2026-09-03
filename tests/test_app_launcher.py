@@ -4,6 +4,7 @@ import os
 import plistlib
 import re
 import stat
+import sys
 
 import pytest
 
@@ -208,6 +209,20 @@ def test_workbench_cli_exits_cleanly_for_missing_app_extra(monkeypatch, repo_roo
         browser_app.main(["--browser", "--no-open"])
 
 
+def test_workbench_cli_reports_package_version(capsys, repo_root):
+    monkeypatch_path = str(repo_root / "apps" / "workbench" / "src")
+    if monkeypatch_path not in sys.path:
+        sys.path.insert(0, monkeypatch_path)
+    import ecat
+    import ecat_app.app as browser_app
+
+    with pytest.raises(SystemExit) as excinfo:
+        browser_app.main(["--version"])
+
+    assert excinfo.value.code == 0
+    assert capsys.readouterr().out.strip() == f"ecat {ecat.__version__}"
+
+
 def test_source_checkout_launchers_prefer_repo_entrypoint_before_global_command(repo_root):
     launcher_dir = repo_root / "apps" / "workbench" / "launchers"
     mac_launcher = (launcher_dir / "ecat-workbench-launcher.sh").read_text()
@@ -221,6 +236,7 @@ def test_source_checkout_launchers_prefer_repo_entrypoint_before_global_command(
 
 
 def test_model_simulate_gate_reports_missing_simulation_extra(monkeypatch, repo_root):
+    pytest.importorskip("dash", reason="app callback tests require ecat[app]")
     monkeypatch.syspath_prepend(str(repo_root / "apps" / "workbench" / "src"))
     import ecat_app.callbacks as callbacks
 
@@ -254,7 +270,7 @@ def test_release_version_is_single_source_and_app_surfaces_match(repo_root):
     beta_match = re.search(r"b(\d+)$", version)
     expected_bundle_version = beta_match.group(1) if beta_match else version
 
-    pyproject_text = (repo_root / "pyproject.toml").read_text()
+    pyproject_text = (repo_root / "pyproject.toml").read_text(encoding="utf-8")
     project_block = pyproject_text.split("[project]", 1)[1].split("\n[", 1)[0]
     assert not re.search(r"(?m)^version\s*=", project_block)
     assert re.search(r'(?m)^dynamic\s*=\s*\["version"\]$', project_block)
@@ -274,9 +290,13 @@ def test_release_version_is_single_source_and_app_surfaces_match(repo_root):
     assert plist["CFBundleShortVersionString"] == version
     assert plist["CFBundleVersion"] == expected_bundle_version
 
-    layout_text = (repo_root / "apps" / "workbench" / "src" / "ecat_app" / "layout.py").read_text()
-    spec_text = (repo_root / "packaging" / "pyinstaller" / "ecat-workbench.spec").read_text()
-    readme_text = (repo_root / "README.md").read_text()
+    layout_text = (repo_root / "apps" / "workbench" / "src" / "ecat_app" / "layout.py").read_text(
+        encoding="utf-8"
+    )
+    spec_text = (repo_root / "packaging" / "pyinstaller" / "ecat-workbench.spec").read_text(
+        encoding="utf-8"
+    )
+    readme_text = (repo_root / "README.md").read_text(encoding="utf-8")
 
     assert 'html.Span(f"ecat {e.__version__}")' in layout_text
     assert "APP_VERSION =" in spec_text

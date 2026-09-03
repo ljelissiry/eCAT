@@ -3,6 +3,8 @@ import warnings
 from datetime import datetime
 from pathlib import Path
 
+import matplotlib.pyplot as plt
+import numpy as np
 import pytest
 
 
@@ -26,18 +28,30 @@ def _write_ch_cv(path, rows, timestamp="Aug. 27, 2023   16:05:21", scan_rate=0.0
 
 REFERENCE_ROWS = [
     (-0.30, -1.0e-7),
-    (-0.25, -2.0e-7),
-    (-0.20, -5.0e-7),
-    (-0.15, -1.5e-6),
-    (-0.10, -4.0e-6),
-    (-0.05, -2.0e-6),
-    (0.00, 0.0),
-    (0.05, 2.0e-6),
+    (-0.25, -5.0e-8),
+    (-0.20, 0.0),
+    (-0.15, 1.0e-7),
+    (-0.10, 3.0e-7),
+    (-0.05, 8.0e-7),
+    (0.00, 1.5e-6),
+    (0.05, 2.8e-6),
     (0.10, 4.5e-6),
-    (0.15, 1.8e-6),
-    (0.20, 4.0e-7),
-    (0.25, 1.0e-7),
+    (0.15, 2.6e-6),
+    (0.20, 1.0e-6),
+    (0.25, 3.0e-7),
     (0.30, 0.0),
+    (0.25, -1.0e-7),
+    (0.20, -3.0e-7),
+    (0.15, -6.0e-7),
+    (0.10, -1.0e-6),
+    (0.05, -2.4e-6),
+    (0.00, -3.6e-6),
+    (-0.05, -4.0e-6),
+    (-0.10, -4.5e-6),
+    (-0.15, -4.0e-7),
+    (-0.20, -1.0e-7),
+    (-0.25, -5.0e-8),
+    (-0.30, 0.0),
 ]
 
 SAMPLE_ROWS = [
@@ -59,6 +73,310 @@ FAILED_SELF_REFERENCE_ROWS = [
     (0.20, 1.0e-7),
     (0.30, 0.0),
 ]
+
+
+def _segmented_reference_cv(cv_factory, segments, *, name="100mVs_segmented_Fc_reference"):
+    potential = []
+    current = []
+    for segment_index, (start, stop, points, current_function) in enumerate(segments):
+        segment_potential = np.linspace(start, stop, points)
+        if segment_index:
+            segment_potential = segment_potential[1:]
+        potential.extend(segment_potential)
+        current.extend(current_function(segment_potential))
+    return cv_factory(name=name, potential=potential, current=current)
+
+
+def _lje_reference_regression_cv(cv_factory, *, invert=False):
+    def partial_current(E):
+        return 2.0e-7 * E
+
+    def anodic_current(E):
+        reference_peak = 6.0e-6 * np.exp(-0.5 * ((E - 0.529) / 0.018) ** 2)
+        unrelated_minimum = -4.5e-6 * np.exp(-0.5 * ((E - 0.343) / 0.015) ** 2)
+        return reference_peak + unrelated_minimum + 1.0e-7 * E
+
+    def cathodic_current(E):
+        return -5.5e-6 * np.exp(-0.5 * ((E - 0.470) / 0.018) ** 2) + 1.0e-7 * E
+
+    obj = _segmented_reference_cv(
+        cv_factory,
+        [
+            (0.10, -0.20, 301, partial_current),
+            (-0.20, 0.70, 901, anodic_current),
+            (0.70, -0.20, 901, cathodic_current),
+        ],
+    )
+    if invert:
+        obj.data["Current"] = -obj.data["Current"]
+    return obj
+
+
+def _reference_pair_options(**overrides):
+    options = {
+        "guess": 0.4,
+        "window": 0.35,
+        "prominence": 5e-7,
+        "max_delta_ep": 0.20,
+        "target_delta_ep": 0.08,
+        "smooth": False,
+    }
+    options.update(overrides)
+    return options
+
+
+def test_reference_pairing_uses_adjacent_opposite_direction_segments(
+    ecat_module,
+    cv_factory,
+):
+    obj = _lje_reference_regression_cv(cv_factory)
+
+    midpoint, details = ecat_module.find_reference_midpoint_from_cv(
+        obj,
+        **_reference_pair_options(),
+    )
+
+    assert midpoint == pytest.approx(0.4995, abs=1e-3)
+    assert details["Epa"] == pytest.approx(0.529, abs=1e-3)
+    assert details["Epc"] == pytest.approx(0.470, abs=1e-3)
+    assert details["anodic_segment"] == 2
+    assert details["cathodic_segment"] == 3
+    assert details["anodic_scan_direction"] == "increasing"
+    assert details["cathodic_scan_direction"] == "decreasing"
+    assert details["selection_mode"] == "ranked adjacent segments"
+    assert details["sequential_pairs_examined"] == 2
+    assert "Ep_ox" not in details
+    assert "Ep_red" not in details
+
+
+def test_reference_pairing_is_invariant_to_current_inversion(ecat_module, cv_factory):
+    normal = _lje_reference_regression_cv(cv_factory)
+    inverted = _lje_reference_regression_cv(cv_factory, invert=True)
+
+    normal_midpoint, normal_details = ecat_module.find_reference_midpoint_from_cv(
+        normal,
+        **_reference_pair_options(),
+    )
+    inverted_midpoint, inverted_details = ecat_module.find_reference_midpoint_from_cv(
+        inverted,
+        **_reference_pair_options(),
+    )
+
+    for key in ("Epa", "Epc", "midpoint", "delta_ep"):
+        assert inverted_details[key] == pytest.approx(normal_details[key], abs=1e-12)
+    assert inverted_midpoint == pytest.approx(normal_midpoint, abs=1e-12)
+    assert inverted_details["anodic_segment"] == normal_details["anodic_segment"]
+    assert inverted_details["cathodic_segment"] == normal_details["cathodic_segment"]
+    assert inverted_details["anodic_extremum_kind"] != normal_details["anodic_extremum_kind"]
+
+
+def test_reference_pairing_excludes_partial_segment_without_reference_guess(
+    ecat_module,
+    cv_factory,
+):
+    obj = _lje_reference_regression_cv(cv_factory)
+
+    _midpoint, details = ecat_module.find_reference_midpoint_from_cv(
+        obj,
+        **_reference_pair_options(),
+    )
+
+    assert details["anodic_segment"] == 2
+    assert details["cathodic_segment"] == 3
+    assert details["rejected_pair_counts"]["guess not sampled"] >= 1
+
+
+def test_reference_pairing_never_combines_nonadjacent_segments(ecat_module, cv_factory):
+    def first(E):
+        return -5e-6 * np.exp(-0.5 * ((E - 0.10) / 0.02) ** 2)
+
+    def middle(E):
+        return np.zeros_like(E)
+
+    def last(E):
+        return 5e-6 * np.exp(-0.5 * ((E - 0.16) / 0.02) ** 2)
+
+    obj = _segmented_reference_cv(
+        cv_factory,
+        [(-0.3, 0.3, 241, first), (0.3, -0.3, 241, middle), (-0.3, 0.3, 241, last)],
+    )
+
+    with pytest.raises(ValueError, match="adjacent.*segments|opposite-extremum"):
+        ecat_module.find_reference_midpoint_from_cv(
+            obj,
+            **_reference_pair_options(guess=0.13, window=0.2),
+        )
+
+
+def _two_cycle_reference_cv(cv_factory, *, first_delta=0.10, second_delta=0.06):
+    centers = [
+        (0.07 + first_delta / 2, 0.07 - first_delta / 2),
+        (-0.13 + second_delta / 2, -0.13 - second_delta / 2),
+    ]
+    segments = []
+    for Epa, Epc in centers:
+        segments.extend(
+            [
+                (-0.30, 0.30, 241, lambda E, Epa=Epa: 5e-6 * np.exp(-0.5 * ((E - Epa) / 0.02) ** 2)),
+                (0.30, -0.30, 241, lambda E, Epc=Epc: -5e-6 * np.exp(-0.5 * ((E - Epc) / 0.02) ** 2)),
+            ]
+        )
+    return _segmented_reference_cv(cv_factory, segments)
+
+
+def test_reference_pairing_ranks_all_cycles_and_keeps_each_pair_adjacent(
+    ecat_module,
+    cv_factory,
+):
+    obj = _two_cycle_reference_cv(cv_factory)
+
+    midpoint, details = ecat_module.find_reference_midpoint_from_cv(
+        obj,
+        **_reference_pair_options(guess="auto", window=0.3, target_delta_ep=0.06),
+    )
+
+    assert midpoint == pytest.approx(-0.13, abs=0.004)
+    assert {details["anodic_segment"], details["cathodic_segment"]} == {3, 4}
+
+
+def test_reference_pairing_rejects_epa_not_greater_than_epc(ecat_module, cv_factory):
+    obj = _segmented_reference_cv(
+        cv_factory,
+        [
+            (-0.3, 0.3, 241, lambda E: 5e-6 * np.exp(-0.5 * ((E - 0.05) / 0.02) ** 2)),
+            (0.3, -0.3, 241, lambda E: -5e-6 * np.exp(-0.5 * ((E - 0.12) / 0.02) ** 2)),
+        ],
+    )
+
+    with pytest.raises(ValueError, match="Epa.*greater than Epc"):
+        ecat_module.find_reference_midpoint_from_cv(
+            obj,
+            **_reference_pair_options(guess=0.08, window=0.2),
+        )
+
+
+def test_reference_pairing_rejects_same_kind_extrema(ecat_module, cv_factory):
+    obj = _segmented_reference_cv(
+        cv_factory,
+        [
+            (-0.3, 0.3, 241, lambda E: 5e-6 * np.exp(-0.5 * ((E - 0.10) / 0.02) ** 2)),
+            (0.3, -0.3, 241, lambda E: 4e-6 * np.exp(-0.5 * ((E - 0.04) / 0.02) ** 2)),
+        ],
+    )
+
+    with pytest.raises(ValueError, match="same extremum kind"):
+        ecat_module.find_reference_midpoint_from_cv(
+            obj,
+            **_reference_pair_options(guess=0.07, window=0.2),
+        )
+
+
+def test_reference_pairing_auto_raises_for_indistinguishable_couples(
+    ecat_module,
+    cv_factory,
+):
+    obj = _two_cycle_reference_cv(cv_factory, first_delta=0.06, second_delta=0.06)
+
+    with pytest.raises(ValueError, match="ambiguous.*reference couples"):
+        ecat_module.find_reference_midpoint_from_cv(
+            obj,
+            **_reference_pair_options(guess="auto", window=0.3, target_delta_ep=0.06),
+        )
+
+    midpoint, _details = ecat_module.find_reference_midpoint_from_cv(
+        obj,
+        **_reference_pair_options(guess=0.07, window=0.20, target_delta_ep=0.06),
+    )
+    assert midpoint == pytest.approx(0.07, abs=0.004)
+
+
+def test_reference_pairing_uses_raw_potential_axis(ecat_module, cv_factory):
+    obj = _lje_reference_regression_cv(cv_factory)
+    obj.potential_shift({"reference offset": 0.25, "reference label": "Fc/Fc+"})
+
+    midpoint, _details = ecat_module.find_reference_midpoint_from_cv(
+        obj,
+        **_reference_pair_options(),
+    )
+
+    assert midpoint == pytest.approx(0.4995, abs=1e-3)
+
+
+def test_reference_troubleshoot_prints_tables_and_plots_segments(
+    ecat_module,
+    cv_factory,
+    capsys,
+):
+    obj = _lje_reference_regression_cv(cv_factory)
+
+    ecat_module.find_reference_midpoint_from_cv(
+        obj,
+        **_reference_pair_options(troubleshoot=True),
+    )
+
+    output = capsys.readouterr().out
+    assert "Reference Segment Summary:" in output
+    assert "Reference Candidate Summary:" in output
+    assert "Reference Pair Selected:" in output
+    assert plt.get_fignums()
+    figure = plt.gcf()
+    assert len(figure.axes) == 1
+    axis = figure.axes[0]
+    assert len(axis.lines) == 3
+    assert axis.get_xlabel() == "Potential (V)"
+    assert axis.get_ylabel() == "Current (A)"
+    assert axis.get_title() == "Reference Pair Diagnostic"
+    assert len(axis.collections) == 1
+
+
+def test_reference_troubleshoot_handles_segment_outside_search_window(
+    ecat_module,
+    cv_factory,
+    capsys,
+):
+    obj = _lje_reference_regression_cv(cv_factory)
+
+    midpoint, details = ecat_module.find_reference_midpoint_from_cv(
+        obj,
+        **_reference_pair_options(
+            guess=0.5,
+            window=0.1,
+            prominence=None,
+            troubleshoot=True,
+        ),
+    )
+
+    output = capsys.readouterr().out
+    assert midpoint == pytest.approx(0.4995, abs=1e-3)
+    assert details["anodic_segment"] == 2
+    assert details["cathodic_segment"] == 3
+    assert "not estimated" in output
+
+
+def test_reference_troubleshoot_reports_failed_selection(
+    ecat_module,
+    cv_factory,
+    capsys,
+):
+    obj = _segmented_reference_cv(
+        cv_factory,
+        [
+            (-0.3, 0.3, 241, lambda E: 5e-6 * np.exp(-0.5 * ((E - 0.10) / 0.02) ** 2)),
+            (0.3, -0.3, 241, lambda E: 4e-6 * np.exp(-0.5 * ((E - 0.04) / 0.02) ** 2)),
+        ],
+    )
+
+    with pytest.raises(ValueError):
+        ecat_module.find_reference_midpoint_from_cv(
+            obj,
+            **_reference_pair_options(guess=0.07, window=0.2, troubleshoot=True),
+        )
+
+    output = capsys.readouterr().out
+    assert "Reference Pair Rejections:" in output
+    assert "Reference Pair Selection:" in output
+    assert "No valid adjacent" in output
+    assert plt.get_fignums()
 
 
 def test_potential_shift_exposes_virtual_reference_axis(cv_factory):
@@ -93,7 +411,36 @@ def test_get_data_applies_manual_reference_shift_metadata(ecat_module, fixtures_
 
     assert obj.reference_shift == pytest.approx(0.12)
     assert obj.reference_mode == "manual"
+    assert obj.reference_pair_details is None
     assert obj.x().name == "Potential vs Fc/Fc+"
+
+
+def test_get_data_retains_selected_reference_pair_provenance(ecat_module, tmp_path):
+    _write_ch_cv(tmp_path / "Fc_reference.txt", REFERENCE_ROWS)
+    _write_ch_cv(tmp_path / "sample_cv.txt", SAMPLE_ROWS)
+
+    objects = ecat_module.get_data(
+        {
+            "folder path": str(tmp_path),
+            "recursive search": False,
+            "print": False,
+            "reference mode": "keyword",
+            "reference keyword": "Fc",
+            "reference guess": 0.0,
+            "peak prominence": 1e-6,
+            "reference smooth": False,
+        }
+    )
+
+    sample = next(obj for obj in objects if obj.filepath.endswith("sample_cv.txt"))
+    details = sample.reference_pair_details
+    assert details["Epa"] == pytest.approx(0.10)
+    assert details["Epc"] == pytest.approx(-0.10)
+    assert details["delta_ep"] == pytest.approx(0.20)
+    assert details["anodic_segment"] == 1
+    assert details["cathodic_segment"] == 2
+    assert details["selection_mode"] == "ranked adjacent segments"
+    assert sample.parse_result.metadata["reference_pair_details"] == details
 
 
 def test_get_data_reference_manual_requires_reference_offset(ecat_module, tmp_path):
@@ -328,9 +675,18 @@ def test_get_data_applies_explicit_reference_file_to_imported_cvs(
 
     calls = []
 
+    pair_details = {
+        "Epa": 0.252,
+        "Epc": 0.192,
+        "delta_ep": 0.060,
+        "anodic_segment": 2,
+        "cathodic_segment": 3,
+        "selection_mode": "ranked adjacent segments",
+    }
+
     def fake_midpoint(ref_cv, **kwargs):
         calls.append(Path(ref_cv.filepath).name)
-        return 0.222, {}
+        return 0.222, pair_details
 
     monkeypatch.setattr(ecat_module, "find_reference_midpoint_from_cv", fake_midpoint)
 
@@ -351,6 +707,8 @@ def test_get_data_applies_explicit_reference_file_to_imported_cvs(
     assert sample.reference_mode == "file"
     assert sample.reference_source_file.endswith("explicit_reference.txt")
     assert sample.reference_shift == pytest.approx(0.222)
+    assert sample.reference_pair_details == pair_details
+    assert sample.parse_result.metadata["reference_pair_details"] == pair_details
     assert sample.x().name == "Potential vs Fc/Fc+"
 
 
@@ -696,12 +1054,22 @@ def test_get_data_reference_map_overrides_auto_reference_assignment(
         timestamp="Aug. 27, 2023   16:15:21",
     )
 
+    auto_details = {"selection_mode": "auto reference"}
+    mapped_details = {
+        "Epa": 0.486,
+        "Epc": 0.426,
+        "delta_ep": 0.060,
+        "anodic_segment": 2,
+        "cathodic_segment": 3,
+        "selection_mode": "ranked adjacent segments",
+    }
+
     def fake_midpoint(ref_cv, **kwargs):
         filename = Path(ref_cv.filepath).name
         if filename == "auto_Fc.txt":
-            return 0.111, {}
+            return 0.111, auto_details
         if filename == "manual_Fc.txt":
-            return 0.456, {}
+            return 0.456, mapped_details
         raise AssertionError(f"unexpected reference file: {filename}")
 
     monkeypatch.setattr(ecat_module, "find_reference_midpoint_from_cv", fake_midpoint)
@@ -728,6 +1096,8 @@ def test_get_data_reference_map_overrides_auto_reference_assignment(
     assert objects[0].reference_mode == "map"
     assert objects[0].reference_source_file.endswith("manual_Fc.txt")
     assert objects[0].reference_shift == pytest.approx(0.456)
+    assert objects[0].reference_pair_details == mapped_details
+    assert objects[0].parse_result.metadata["reference_pair_details"] == mapped_details
 
 
 def test_get_data_falls_back_to_parent_reference_when_local_reference_fails(ecat_module, tmp_path):

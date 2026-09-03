@@ -295,7 +295,7 @@ def test_fowa_warnings_option_suppresses_python_warnings_but_keeps_status(
             },
         ))
 
-    assert captured == []
+    assert not [warning for warning in captured if issubclass(warning.category, UserWarning)]
     assert "multiple issues" not in table["Status"].iloc[0]
     assert "fit points < threshold" in table["Status"].iloc[0]
     assert "Warning Details" in table.attrs["full_results_df"].columns

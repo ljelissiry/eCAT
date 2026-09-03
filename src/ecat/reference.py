@@ -3,7 +3,9 @@
 import math
 import os
 
+import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 
 
 def _round_sigfigs(number, sigfigs):
@@ -25,6 +27,7 @@ def midpoint_potential(E1, E2, sig_figs=None):
 __all__ = ["midpoint_potential"]
 
 from .utils import *  # noqa: F401,F403
+from ._cv_direction import split_cv_potential_segments
 from .metadata import get_file_times
 from .objects import echem
 from .options import ImportOptions
@@ -85,32 +88,17 @@ def _coerce_reference_file(value):
     return normalized
 
 
-def _format_peak_list(x_vals, idx, max_peaks=6, sig_figs=4):
-    """
-    Format the first few detected peak potentials for error messages.
-    """
-    if len(idx) == 0:
-        return "None"
-
-    peaks = [round_sigfigs(float(x_vals[i]), sig_figs) for i in idx[:max_peaks]]
-    text = ", ".join(f"{p} V" for p in peaks)
-
-    if len(idx) > max_peaks:
-        text += f", ... ({len(idx)} total)"
-    return text
-
-
 def _build_reference_failure_message(
     ref_cv,
     guess,
     window,
     prominence,
     max_delta_ep,
-    x_use,
-    ox_idx,
-    red_idx,
+    segment_summaries,
+    detected_candidates,
     total_pairs_checked,
     candidates_kept,
+    rejected_pair_counts,
     failure_reason,
     smooth,
 ):
@@ -130,38 +118,304 @@ def _build_reference_failure_message(
             f"  File: {_format_file_for_warning(ref_path, ref_options.get('_display root'))}"
         )
 
-    if len(x_use) > 0:
-        lines.append(
-            f"  Search region: {round_sigfigs(float(np.min(x_use)), 4)} to "
-            f"{round_sigfigs(float(np.max(x_use)), 4)} V"
-        )
-
     lines.extend([
         f"  Guess: {guess}",
         f"  Window: {window} V",
         f"  Smoothing: {smooth}",
-        f"  Prominence used: {round_sigfigs(float(prominence), 4) if prominence is not None else prominence}",
+        (
+            "  Prominence: automatic per segment"
+            if prominence is None
+            else f"  Prominence: {round_sigfigs(float(prominence), 4)}"
+        ),
         f"  max_delta_ep: {max_delta_ep} V",
-        f"  Oxidation peaks found: {len(ox_idx)}",
-        f"  Reduction peaks found: {len(red_idx)}",
+        f"  Segments found: {len(segment_summaries)}",
+        f"  Extrema found in search region: {len(detected_candidates)}",
         f"  Pair combinations checked: {total_pairs_checked}",
-        f"  Candidate pairs passing ΔEp filter: {candidates_kept}",
+        f"  Valid adjacent-segment candidates: {candidates_kept}",
         f"  Reason: {failure_reason}",
-        "",
-        "Detected peak locations:",
-        f"  Oxidation: {_format_peak_list(x_use, ox_idx)}",
-        f"  Reduction: {_format_peak_list(x_use, red_idx)}",
+    ])
+
+    if rejected_pair_counts:
+        lines.append("  Rejected pair counts:")
+        for reason, count in sorted(rejected_pair_counts.items()):
+            if count:
+                lines.append(f"    - {reason}: {count}")
+
+    if detected_candidates:
+        lines.append("  Detected extrema:")
+        for candidate in detected_candidates[:12]:
+            lines.append(
+                "    - segment "
+                f"{candidate['segment']} ({candidate['direction']}), "
+                f"{candidate['extremum_kind']} at "
+                f"{round_sigfigs(candidate['potential'], 4)} V"
+            )
+        if len(detected_candidates) > 12:
+            lines.append(f"    - ... ({len(detected_candidates)} total)")
+
+    lines.extend([
         "",
         "Suggestions:",
-        "  - Plot this reference file and confirm it actually contains a clean reversible couple.",
-        "  - Move 'reference guess' closer to the expected Fc/Fc+ position.",
-        "  - Increase 'reference window' if the search region is too narrow.",
-        "  - Increase 'reference max delta ep' if the couple is broader than expected.",
-        "  - Try setting 'troubleshoot': True to inspect the search behavior.",
-        "  - If the file is not a good reference, rename/exclude it or use a manual shift.",
+        "  - Confirm that the file contains both sweeps of a reference couple.",
+        "  - Move 'reference guess' closer to the expected reference potential.",
+        "  - Increase 'reference window' if either sweep misses the search region.",
+        "  - Adjust 'peak prominence' if real peaks are being missed or noise is selected.",
+        "  - Increase 'reference max delta ep' only for a genuinely broader couple.",
+        "  - Set 'troubleshoot': True to inspect segment candidates and the diagnostic plot.",
+        "  - Use a better reference file or a manual shift when no physical pair is present.",
     ])
 
     return "\n".join(lines)
+
+
+def _reference_current_scale(values):
+    values = np.asarray(values, dtype=float)
+    values = values[np.isfinite(values)]
+    if len(values) == 0:
+        return np.finfo(float).eps
+    q05, q95 = np.quantile(values, [0.05, 0.95])
+    median = float(np.median(values))
+    mad_scale = 1.4826 * float(np.median(np.abs(values - median)))
+    return max(float(q95 - q05), mad_scale, np.finfo(float).eps)
+
+
+def _reference_segment_candidates(
+    x,
+    y,
+    segment,
+    *,
+    guess,
+    window,
+    prominence,
+    smooth,
+    sg_options,
+):
+    start = segment["start"]
+    stop = segment["stop"]
+    segment_x = np.asarray(x[start:stop], dtype=float)
+    segment_y = np.asarray(y[start:stop], dtype=float)
+    smoothed_y = segment_y.copy()
+    sg_meta = {"window": None, "polyorder": None}
+    if smooth:
+        smoothed_y, sg_meta = _savgol_apply(segment_y, sg_options, deriv=0)
+
+    if guess is None:
+        search_mask = np.ones(len(segment_x), dtype=bool)
+    else:
+        search_mask = (segment_x >= guess - window) & (segment_x <= guess + window)
+    search_y = smoothed_y[search_mask]
+    if len(search_y) < 3:
+        return [], {
+            **segment,
+            "search_points": int(len(search_y)),
+            "prominence": prominence,
+            "current_scale": np.nan,
+            "smoothing_window": sg_meta["window"],
+            "candidate_count": 0,
+        }
+
+    current_scale = _reference_current_scale(search_y)
+    segment_prominence = prominence
+    if segment_prominence is None:
+        dy = np.diff(search_y)
+        noise = float(np.std(dy) / np.sqrt(2)) if len(dy) else 0.0
+        segment_prominence = max(5.0 * noise, float(np.std(search_y)) * 0.05)
+
+    maxima, maximum_properties = find_peaks(smoothed_y, prominence=segment_prominence)
+    minima, minimum_properties = find_peaks(-smoothed_y, prominence=segment_prominence)
+    boundary_margin = max(1, int((sg_meta.get("window") or 1) // 2))
+    candidates = []
+    for extremum_kind, indices, properties in (
+        ("maximum", maxima, maximum_properties),
+        ("minimum", minima, minimum_properties),
+    ):
+        for local_index, candidate_prominence in zip(indices, properties["prominences"]):
+            local_index = int(local_index)
+            if local_index < boundary_margin or local_index >= len(segment_x) - boundary_margin:
+                continue
+            potential = float(segment_x[local_index])
+            if guess is not None and not (guess - window <= potential <= guess + window):
+                continue
+            candidates.append(
+                {
+                    "segment": int(segment["segment"]),
+                    "direction": segment["direction"],
+                    "extremum_kind": extremum_kind,
+                    "local_index": local_index,
+                    "index": int(start + local_index),
+                    "potential": potential,
+                    "current": float(segment_y[local_index]),
+                    "smoothed_current": float(smoothed_y[local_index]),
+                    "prominence": float(candidate_prominence),
+                    "normalized_prominence": float(candidate_prominence / current_scale),
+                }
+            )
+
+    return candidates, {
+        **segment,
+        "search_points": int(len(search_y)),
+        "prominence": float(segment_prominence),
+        "current_scale": float(current_scale),
+        "smoothing_window": sg_meta["window"],
+        "candidate_count": int(len(candidates)),
+    }
+
+
+def _reference_candidates_are_ambiguous(best, other, potential_resolution, numeric_guess):
+    if numeric_guess and abs(best["midpoint_error_v"] - other["midpoint_error_v"]) > potential_resolution:
+        return False
+    if abs(best["delta_error_v"] - other["delta_error_v"]) > 2.0 * potential_resolution:
+        return False
+
+    prominence_scale = max(
+        best["minimum_normalized_prominence"],
+        other["minimum_normalized_prominence"],
+        np.finfo(float).eps,
+    )
+    if (
+        abs(
+            best["minimum_normalized_prominence"]
+            - other["minimum_normalized_prominence"]
+        )
+        / prominence_scale
+        > 0.05
+    ):
+        return False
+    return abs(best["prominence_balance"] - other["prominence_balance"]) <= abs(np.log(1.05))
+
+
+def _print_reference_troubleshooting(
+    segment_summaries,
+    candidates,
+    rejected_counts,
+    best=None,
+    selection_message=None,
+):
+    print("Reference Segment Summary:")
+    segment_table = pd.DataFrame(
+        [
+            {
+                "Segment": item["segment"],
+                "Direction": item["direction"],
+                "Potential Range / V": (
+                    f"{round_sigfigs(item['potential_min'], 4)} to "
+                    f"{round_sigfigs(item['potential_max'], 4)}"
+                ),
+                "Points": item["points"],
+                "Search Points": item["search_points"],
+                "Candidates": item["candidate_count"],
+                "Prominence": (
+                    "not estimated"
+                    if item["prominence"] is None
+                    else round_sigfigs(item["prominence"], 4)
+                ),
+            }
+            for item in segment_summaries
+        ]
+    )
+    print(segment_table.to_string(index=False))
+
+    print("Reference Candidate Summary:")
+    if candidates:
+        candidate_table = pd.DataFrame(
+            [
+                {
+                    "Segment": item["segment"],
+                    "Direction": item["direction"],
+                    "Extremum": item["extremum_kind"],
+                    "Potential / V": round_sigfigs(item["potential"], 5),
+                    "Prominence": round_sigfigs(item["prominence"], 4),
+                    "Normalized Prominence": round_sigfigs(
+                        item["normalized_prominence"], 4
+                    ),
+                }
+                for item in candidates
+            ]
+        )
+        print(candidate_table.to_string(index=False))
+    else:
+        print("No eligible extrema found.")
+
+    if rejected_counts:
+        rejected_table = pd.DataFrame(
+            [
+                {"Reason": reason, "Count": count}
+                for reason, count in sorted(rejected_counts.items())
+                if count
+            ]
+        )
+        if not rejected_table.empty:
+            print("Reference Pair Rejections:")
+            print(rejected_table.to_string(index=False))
+
+    if best is not None:
+        print("Reference Pair Selected:")
+        print(
+            f"Epa = {round_sigfigs(best['Epa'], 5)} V "
+            f"(segment {best['anodic_segment']}), "
+            f"Epc = {round_sigfigs(best['Epc'], 5)} V "
+            f"(segment {best['cathodic_segment']}), "
+            f"midpoint = {round_sigfigs(best['midpoint'], 5)} V, "
+            f"ΔEp = {round_sigfigs(best['delta_ep'], 5)} V"
+        )
+    elif selection_message:
+        print("Reference Pair Selection:")
+        print(selection_message)
+
+
+def _plot_reference_troubleshooting(
+    x,
+    y,
+    segment_summaries,
+    ref_cv,
+    *,
+    candidates=None,
+    best=None,
+):
+    figure, axis = plt.subplots(constrained_layout=True)
+    colors = plt.get_cmap("viridis")(np.linspace(0.1, 0.9, len(segment_summaries)))
+    for color, segment in zip(colors, segment_summaries):
+        start = segment["start"]
+        stop = segment["stop"]
+        axis.plot(x[start:stop], y[start:stop], color=color, label=f"Segment {segment['segment']}")
+    if best is None:
+        for candidate in candidates or []:
+            marker = "^" if candidate["extremum_kind"] == "maximum" else "v"
+            axis.scatter(
+                candidate["potential"],
+                candidate["current"],
+                color="0.35",
+                marker=marker,
+                zorder=5,
+            )
+    else:
+        axis.scatter(
+            [best["Epa"], best["Epc"]],
+            [best["anodic_current"], best["cathodic_current"]],
+            color=["tab:red", "tab:blue"],
+            zorder=5,
+        )
+        axis.annotate(
+            rf"$E_{{pa}}$, seg. {best['anodic_segment']}",
+            (best["Epa"], best["anodic_current"]),
+            xytext=(6, -8),
+            textcoords="offset points",
+            ha="left",
+            va="top",
+        )
+        axis.annotate(
+            rf"$E_{{pc}}$, seg. {best['cathodic_segment']}",
+            (best["Epc"], best["cathodic_current"]),
+            xytext=(6, 8),
+            textcoords="offset points",
+            ha="left",
+            va="bottom",
+        )
+    axis.set_xlabel("Potential (V)")
+    axis.set_ylabel("Current (A)")
+    axis.set_title("Reference Pair Diagnostic")
+    axis.legend()
+    return figure, axis
 
 
 def find_reference_midpoint_from_cv(
@@ -175,139 +429,270 @@ def find_reference_midpoint_from_cv(
     troubleshoot=False,
 ):
     """
-    Find the midpoint of the best reversible-looking redox couple in a CV.
+    Find a reference midpoint from adjacent, opposite-direction CV segments.
     """
-    x = np.asarray(ref_cv.x(), dtype=float)
-    y = np.asarray(ref_cv.y({"smooth": False}), dtype=float)
-    
-    sg_meta = {"window": None, "polyorder": None}
+    if not isinstance(window, Real) or isinstance(window, bool) or float(window) <= 0:
+        raise ValueError("reference window must be a positive number.")
+    if not isinstance(max_delta_ep, Real) or isinstance(max_delta_ep, bool) or float(max_delta_ep) <= 0:
+        raise ValueError("reference max delta ep must be a positive number.")
+    if (
+        not isinstance(target_delta_ep, Real)
+        or isinstance(target_delta_ep, bool)
+        or not 0 <= float(target_delta_ep) <= float(max_delta_ep)
+    ):
+        raise ValueError("reference target delta ep must be between 0 and reference max delta ep.")
+    if prominence is not None and (
+        not isinstance(prominence, Real)
+        or isinstance(prominence, bool)
+        or float(prominence) < 0
+    ):
+        raise ValueError("peak prominence must be a non-negative number or None.")
 
-    if smooth:
-        default_sg_options = PeakPotentialOptions.from_options({})
-        sg_options = {
-            "noise window": ref_cv.options.get("noise window", default_sg_options.noise_window),
-            "noise polyorder": ref_cv.options.get("noise polyorder", default_sg_options.noise_polyorder),
-        }
-
-        y, sg_meta = _savgol_apply(y, sg_options, deriv=0)
-
-        if troubleshoot:
-            print(
-                f"Reference SG window={sg_meta['window']}, "
-                f"polyorder={sg_meta['polyorder']}"
-            )
-
-    if isinstance(guess, str) and guess.lower() == "auto":
+    if isinstance(guess, str):
+        if guess.strip().lower() != "auto":
+            raise ValueError("reference guess must be numeric or 'auto'.")
         guess = None
-
-    if isinstance(guess, Real) and not isinstance(guess, bool):
-        mask = (x >= guess - window) & (x <= guess + window)
-        x_use = x[mask]
-        y_use = y[mask]
+    elif not isinstance(guess, Real) or isinstance(guess, bool):
+        raise ValueError("reference guess must be numeric or 'auto'.")
     else:
-        x_use = x
-        y_use = y
+        guess = float(guess)
 
-    if len(x_use) < 5:
-        raise ValueError(
-            f"Failed to identify a reference couple in {ref_cv.name}: "
-            "not enough data in the search region to identify a reference couple."
-        )
+    x = np.asarray(ref_cv.x({"x axis": "Potential"}), dtype=float)
+    y = np.asarray(ref_cv.y({"smooth": False}), dtype=float)
+    if len(x) != len(y) or len(x) < 5:
+        raise ValueError("Reference CV must contain at least five paired potential/current points.")
+    finite = np.isfinite(x) & np.isfinite(y)
+    x = x[finite]
+    y = y[finite]
 
-    if prominence is None:
-        dy = np.diff(y_use)
-        noise = np.std(dy) / np.sqrt(2) if len(dy) else 0.0
-        prominence = max(5 * noise, np.std(y_use) * 0.05)
+    segments = split_cv_potential_segments(x)
+    default_sg_options = PeakPotentialOptions.from_options({})
+    ref_options = getattr(ref_cv, "options", {}) or {}
+    sg_options = {
+        "noise window": ref_options.get("noise window", default_sg_options.noise_window),
+        "noise polyorder": ref_options.get("noise polyorder", default_sg_options.noise_polyorder),
+    }
 
-    ox_idx, _ = find_peaks(y_use, prominence=prominence)
-    red_idx, _ = find_peaks(-y_use, prominence=prominence)
-
-    total_pairs_checked = len(ox_idx) * len(red_idx)
-
-    if len(ox_idx) == 0 or len(red_idx) == 0:
-        msg = _build_reference_failure_message(
-            ref_cv=ref_cv,
+    all_candidates = []
+    segment_summaries = []
+    candidates_by_segment = {}
+    for segment in segments:
+        segment_candidates, summary = _reference_segment_candidates(
+            x,
+            y,
+            segment,
             guess=guess,
-            window=window,
+            window=float(window),
             prominence=prominence,
-            max_delta_ep=max_delta_ep,
-            x_use=x_use,
-            ox_idx=ox_idx,
-            red_idx=red_idx,
-            total_pairs_checked=total_pairs_checked,
-            candidates_kept=0,
-            failure_reason="Could not find both anodic and cathodic peaks.",
-            smooth=smooth,
+            smooth=bool(smooth),
+            sg_options=sg_options,
         )
-        raise ValueError(msg)
+        candidates_by_segment[segment["segment"]] = segment_candidates
+        all_candidates.extend(segment_candidates)
+        segment_summaries.append(summary)
 
-    candidates = []
-    rejected_by_delta_ep = 0
+    finite_steps = np.abs(np.diff(x))
+    finite_steps = finite_steps[finite_steps > max(float(np.ptp(x)) * 1e-9, 1e-12)]
+    potential_resolution = float(np.median(finite_steps)) if len(finite_steps) else 1e-6
+    rejected_counts = {
+        "guess not sampled": 0,
+        "same scan direction": 0,
+        "missing eligible extrema": 0,
+        "same extremum kind": 0,
+        "Epa must be greater than Epc": 0,
+        "delta ep exceeds maximum": 0,
+    }
+    valid_pairs = []
+    total_pairs_checked = 0
 
-    for i in ox_idx:
-        for j in red_idx:
-            ep_ox = float(x_use[i])
-            ep_red = float(x_use[j])
-            delta_ep = abs(ep_ox - ep_red)
+    for first, second in zip(segments, segments[1:]):
+        if first["direction"] == second["direction"]:
+            rejected_counts["same scan direction"] += 1
+            continue
+        if guess is not None and not all(
+            item["potential_min"] - potential_resolution
+            <= guess
+            <= item["potential_max"] + potential_resolution
+            for item in (first, second)
+        ):
+            rejected_counts["guess not sampled"] += 1
+            continue
 
-            if delta_ep > max_delta_ep:
-                rejected_by_delta_ep += 1
-                continue
+        first_candidates = candidates_by_segment[first["segment"]]
+        second_candidates = candidates_by_segment[second["segment"]]
+        if not first_candidates or not second_candidates:
+            rejected_counts["missing eligible extrema"] += 1
+            continue
 
-            midpoint = 0.5 * (ep_ox + ep_red)
-            i_ox = float(y_use[i])
-            i_red = float(y_use[j])
+        for first_candidate in first_candidates:
+            for second_candidate in second_candidates:
+                total_pairs_checked += 1
+                if first_candidate["extremum_kind"] == second_candidate["extremum_kind"]:
+                    rejected_counts["same extremum kind"] += 1
+                    continue
 
-            pair_strength = abs(i_ox - i_red)
-            magnitude_mismatch = abs(abs(i_ox) - abs(i_red))
+                if first_candidate["direction"] == "increasing":
+                    anodic = first_candidate
+                    cathodic = second_candidate
+                else:
+                    anodic = second_candidate
+                    cathodic = first_candidate
 
-            score = pair_strength - 0.5 * magnitude_mismatch
-            score -= abs(delta_ep - target_delta_ep)
+                Epa = float(anodic["potential"])
+                Epc = float(cathodic["potential"])
+                if Epa <= Epc:
+                    rejected_counts["Epa must be greater than Epc"] += 1
+                    continue
+                delta_ep = Epa - Epc
+                if delta_ep > float(max_delta_ep):
+                    rejected_counts["delta ep exceeds maximum"] += 1
+                    continue
 
-            if isinstance(guess, Real) and not isinstance(guess, bool):
-                score -= 3.0 * abs(midpoint - guess)
+                midpoint = 0.5 * (Epa + Epc)
+                midpoint_error_v = abs(midpoint - guess) if guess is not None else 0.0
+                delta_error_v = abs(delta_ep - float(target_delta_ep))
+                minimum_prominence = min(
+                    anodic["normalized_prominence"],
+                    cathodic["normalized_prominence"],
+                )
+                prominence_balance = abs(
+                    np.log(
+                        max(anodic["normalized_prominence"], np.finfo(float).eps)
+                        / max(cathodic["normalized_prominence"], np.finfo(float).eps)
+                    )
+                )
+                midpoint_bucket = int(np.floor(midpoint_error_v / potential_resolution + 0.5))
+                delta_bucket = int(np.floor(delta_error_v / (2.0 * potential_resolution) + 0.5))
+                rank = (
+                    (midpoint_bucket, delta_bucket, -minimum_prominence, prominence_balance)
+                    if guess is not None
+                    else (delta_bucket, -minimum_prominence, prominence_balance)
+                )
+                valid_pairs.append(
+                    {
+                        "Epa": Epa,
+                        "Epc": Epc,
+                        "midpoint": float(midpoint),
+                        "delta_ep": float(delta_ep),
+                        "anodic_segment": int(anodic["segment"]),
+                        "cathodic_segment": int(cathodic["segment"]),
+                        "anodic_scan_direction": anodic["direction"],
+                        "cathodic_scan_direction": cathodic["direction"],
+                        "anodic_extremum_kind": anodic["extremum_kind"],
+                        "cathodic_extremum_kind": cathodic["extremum_kind"],
+                        "anodic_current": float(anodic["current"]),
+                        "cathodic_current": float(cathodic["current"]),
+                        "anodic_prominence": float(anodic["prominence"]),
+                        "cathodic_prominence": float(cathodic["prominence"]),
+                        "anodic_normalized_prominence": float(anodic["normalized_prominence"]),
+                        "cathodic_normalized_prominence": float(cathodic["normalized_prominence"]),
+                        "minimum_normalized_prominence": float(minimum_prominence),
+                        "prominence_balance": float(prominence_balance),
+                        "midpoint_error_v": float(midpoint_error_v),
+                        "delta_error_v": float(delta_error_v),
+                        "potential_resolution": float(potential_resolution),
+                        "rank": rank,
+                    }
+                )
 
-            candidates.append(
-                {
-                    "score": score,
-                    "midpoint": midpoint,
-                    "Ep_ox": ep_ox,
-                    "Ep_red": ep_red,
-                    "delta_ep": delta_ep,
-                    "i_ox": i_ox,
-                    "i_red": i_red,
-                }
+    if not valid_pairs:
+        reason = (
+            "No valid adjacent, opposite-direction, opposite-extremum reference pair was found."
+        )
+        if rejected_counts["Epa must be greater than Epc"]:
+            reason += " Epa must be greater than Epc for every accepted pair."
+        if troubleshoot:
+            _print_reference_troubleshooting(
+                segment_summaries,
+                all_candidates,
+                rejected_counts,
+                selection_message=reason,
+            )
+            _plot_reference_troubleshooting(
+                x,
+                y,
+                segment_summaries,
+                ref_cv,
+                candidates=all_candidates,
+            )
+        raise ValueError(
+            _build_reference_failure_message(
+                ref_cv=ref_cv,
+                guess="auto" if guess is None else guess,
+                window=window,
+                prominence=prominence,
+                max_delta_ep=max_delta_ep,
+                segment_summaries=segment_summaries,
+                detected_candidates=all_candidates,
+                total_pairs_checked=total_pairs_checked,
+                candidates_kept=0,
+                rejected_pair_counts=rejected_counts,
+                failure_reason=reason,
+                smooth=smooth,
+            )
+        )
+
+    valid_pairs.sort(key=lambda item: item["rank"])
+    best = valid_pairs[0]
+    if guess is None:
+        ambiguous = [
+            candidate
+            for candidate in valid_pairs[1:]
+            if _reference_candidates_are_ambiguous(
+                best,
+                candidate,
+                potential_resolution,
+                numeric_guess=False,
+            )
+        ]
+        if ambiguous:
+            alternatives = ", ".join(
+                f"{round_sigfigs(item['midpoint'], 5)} V "
+                f"(segments {item['anodic_segment']}/{item['cathodic_segment']})"
+                for item in [best, *ambiguous[:4]]
+            )
+            ambiguity_message = (
+                "Multiple reference couples are indistinguishable within the CV "
+                f"potential resolution ({alternatives})."
+            )
+            if troubleshoot:
+                _print_reference_troubleshooting(
+                    segment_summaries,
+                    all_candidates,
+                    rejected_counts,
+                    selection_message=ambiguity_message,
+                )
+                _plot_reference_troubleshooting(
+                    x,
+                    y,
+                    segment_summaries,
+                    ref_cv,
+                    candidates=all_candidates,
+                )
+            raise ValueError(
+                "Automatic reference selection is ambiguous: multiple reference couples "
+                f"are indistinguishable within the CV potential resolution ({alternatives}). "
+                "Provide a numeric 'reference guess' to select the intended couple."
             )
 
-    if not candidates:
-        msg = _build_reference_failure_message(
-            ref_cv=ref_cv,
-            guess=guess,
-            window=window,
-            prominence=prominence,
-            max_delta_ep=max_delta_ep,
-            x_use=x_use,
-            ox_idx=ox_idx,
-            red_idx=red_idx,
-            total_pairs_checked=total_pairs_checked,
-            candidates_kept=0,
-            failure_reason=(
-                f"No oxidation/reduction peak pairs passed the ΔEp filter "
-                f"(rejected {rejected_by_delta_ep} pair(s))."
-            ),
-            smooth=smooth,
-        )
-        raise ValueError(msg)
-
-    best = max(candidates, key=lambda d: d["score"])
+    best = dict(best)
+    best.pop("rank", None)
+    best["sequential_pairs_examined"] = max(0, len(segments) - 1)
+    best["candidate_pairs_checked"] = int(total_pairs_checked)
+    best["rejected_pair_counts"] = {
+        reason: int(count) for reason, count in rejected_counts.items()
+    }
+    best["selection_mode"] = "ranked adjacent segments"
 
     if troubleshoot:
-        print("Reference pair selected:")
-        print(
-            f"Epa = {round_sigfigs(best['Ep_ox'], 4)} V, "
-            f"Epc = {round_sigfigs(best['Ep_red'], 4)} V, "
-            f"midpoint = {round_sigfigs(best['midpoint'], 4)} V, "
-            f"ΔEp = {round_sigfigs(best['delta_ep'], 4)} V"
+        _print_reference_troubleshooting(segment_summaries, all_candidates, rejected_counts, best)
+        _plot_reference_troubleshooting(
+            x,
+            y,
+            segment_summaries,
+            ref_cv,
+            candidates=all_candidates,
+            best=best,
         )
 
     return float(best["midpoint"]), best
@@ -358,7 +743,7 @@ def _compute_explicit_reference_file_shift(reference_config, root_abs, options):
     ref_options["print"] = False
 
     ref_cv = echem.from_file(ref_file, ref_options)
-    shift_guess, _ = find_reference_midpoint_from_cv(
+    shift_guess, pair_details = find_reference_midpoint_from_cv(
         ref_cv=ref_cv,
         guess=reference_config.get("guess", 0.4),
         window=options.get("reference window", 0.3),
@@ -368,7 +753,7 @@ def _compute_explicit_reference_file_shift(reference_config, root_abs, options):
         smooth=options.get("reference smooth", True),
         troubleshoot=options.get("troubleshoot", False),
     )
-    return ref_file, shift_guess
+    return ref_file, shift_guess, pair_details
 
 def _resolve_reference_shifts(file_paths, root_abs, options):
     """
@@ -391,7 +776,9 @@ def _resolve_reference_shifts(file_paths, root_abs, options):
         "ref_name": None,
         "ref_mapping": {},
         "ref_shift_guess": {},        # designated folder/ancestor refs only
+        "ref_pair_details": {},       # selected pair provenance for designated refs
         "self_ref_shift_guess": {},   # successful self-reference-only files
+        "self_ref_pair_details": {},  # selected pair provenance for self refs
         "self_ref_failures": {},      # failed self-reference-only files
     }
 
@@ -449,7 +836,9 @@ def _resolve_reference_shifts(file_paths, root_abs, options):
         return candidates
 
     ref_shift_guess = {}
+    ref_pair_details = {}
     self_ref_shift_guess = {}
+    self_ref_pair_details = {}
     self_ref_failures = {}
     ref_failures = {}
 
@@ -459,7 +848,7 @@ def _resolve_reference_shifts(file_paths, root_abs, options):
         ref_options["print"] = False
 
         ref_cv = echem.from_file(ref_file, ref_options)
-        shift_guess, _ = find_reference_midpoint_from_cv(
+        shift_guess, pair_details = find_reference_midpoint_from_cv(
             ref_cv=ref_cv,
             guess=options.get("reference guess", 0.4),
             window=options.get("reference window", 0.3),
@@ -469,11 +858,13 @@ def _resolve_reference_shifts(file_paths, root_abs, options):
             smooth=options.get("reference smooth", True),
             troubleshoot=options.get("troubleshoot", False),
         )
-        return shift_guess
+        return shift_guess, pair_details
 
     def _compute_shift_cached(ref_file):
         if ref_file not in ref_shift_guess:
-            ref_shift_guess[ref_file] = _compute_shift(ref_file)
+            shift_guess, pair_details = _compute_shift(ref_file)
+            ref_shift_guess[ref_file] = shift_guess
+            ref_pair_details[ref_file] = pair_details
         return ref_shift_guess[ref_file]
 
     ref_mapping = {}
@@ -520,7 +911,9 @@ def _resolve_reference_shifts(file_paths, root_abs, options):
     # Best-effort self references: store failure, do not raise
     for ref_file in self_ref_candidates:
         try:
-            self_ref_shift_guess[ref_file] = _compute_shift(ref_file)
+            shift_guess, pair_details = _compute_shift(ref_file)
+            self_ref_shift_guess[ref_file] = shift_guess
+            self_ref_pair_details[ref_file] = pair_details
         except ValueError as exc:
             self_ref_failures[ref_file] = str(exc)
 
@@ -528,7 +921,9 @@ def _resolve_reference_shifts(file_paths, root_abs, options):
     result["ref_name"] = ref_name
     result["ref_mapping"] = ref_mapping
     result["ref_shift_guess"] = ref_shift_guess
+    result["ref_pair_details"] = ref_pair_details
     result["self_ref_shift_guess"] = self_ref_shift_guess
+    result["self_ref_pair_details"] = self_ref_pair_details
     result["self_ref_failures"] = self_ref_failures
     return result
 
@@ -748,6 +1143,7 @@ def _apply_reference_map(object_list, reference_records, reference_map, referenc
         return
 
     shift_cache = {}
+    pair_details_cache = {}
 
     def _mapped_shift(reference_idx):
         if reference_idx not in shift_cache:
@@ -755,7 +1151,7 @@ def _apply_reference_map(object_list, reference_records, reference_map, referenc
             existing_shift = getattr(ref_obj, "reference_shift", None)
             try:
                 ref_obj.reference_shift = None
-                shift_guess, _ = find_reference_midpoint_from_cv(
+                shift_guess, pair_details = find_reference_midpoint_from_cv(
                     ref_cv=ref_obj,
                     guess=reference_config.get("guess", 0.4),
                     window=options.get("reference window", 0.3),
@@ -768,24 +1164,29 @@ def _apply_reference_map(object_list, reference_records, reference_map, referenc
             finally:
                 ref_obj.reference_shift = existing_shift
             shift_cache[reference_idx] = shift_guess
-        return shift_cache[reference_idx]
+            pair_details_cache[reference_idx] = pair_details
+        return shift_cache[reference_idx], pair_details_cache[reference_idx]
 
     for target_idx, reference_idx in normalized_map.items():
         ref_obj = object_list[reference_idx]
         target_obj = object_list[target_idx]
-        shift_guess = _mapped_shift(reference_idx)
+        shift_guess, pair_details = _mapped_shift(reference_idx)
 
         record = reference_records[target_idx]
         record["mode"] = "map"
         record["ref_file"] = os.path.abspath(ref_obj.filepath)
         record["shift"] = shift_guess
+        record["pair_details"] = deepcopy(pair_details)
         record["failure_message"] = None
 
         target_obj.reference_shift = shift_guess
         target_obj.reference_label = reference_label
         target_obj.reference_mode = "map"
         target_obj.reference_source_file = os.path.abspath(ref_obj.filepath)
+        target_obj.reference_pair_details = deepcopy(pair_details)
         target_obj.reference_failure_message = None
+        if getattr(target_obj, "parse_result", None) is not None:
+            target_obj.parse_result.metadata["reference_pair_details"] = deepcopy(pair_details)
 
 
 REFERENCE_LABEL_MAP = {

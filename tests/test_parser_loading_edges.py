@@ -277,6 +277,7 @@ def test_old_basi_epsilon_dat_cv_without_data_header_loads_as_cv(
     )
     assert obj.scan_rate == pytest.approx(0.1)
     assert obj.segments == 2
+    capsys.readouterr()
 
     loaded = ecat_module.get_data(
         {
@@ -289,7 +290,7 @@ def test_old_basi_epsilon_dat_cv_without_data_header_loads_as_cv(
 
     assert [type(item).__name__ for item in loaded] == ["cv"]
     assert [item.software for item in loaded] == ["BASI"]
-    assert "1 supported text file found." in capsys.readouterr().out
+    assert capsys.readouterr().out == ""
 
 
 def test_eclab_parser_converts_mA_to_A_and_reads_cv_metadata(ecat_module, fixtures_dir):

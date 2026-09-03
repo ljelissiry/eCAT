@@ -1,5 +1,6 @@
 import pandas as pd
 import numpy as np
+import warnings
 from matplotlib.axes import Axes
 
 
@@ -97,6 +98,20 @@ def test_cp_cycling_plot_accepts_grid_option(ecat_module, blank_echem_factory):
     assert any(line.get_visible() for line in ax1.yaxis.get_gridlines())
     assert any(line.get_visible() for line in ax2.xaxis.get_gridlines())
     assert any(line.get_visible() for line in ax2.yaxis.get_gridlines())
+
+
+def test_cp_cycle_info_uses_nan_for_undefined_efficiencies_without_runtime_warning(
+    ecat_module,
+    blank_echem_factory,
+):
+    obj = _make_cp_for_cycle_plot(ecat_module, blank_echem_factory)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        table = obj.cycle_info({"print": False})
+
+    efficiencies = table[["Coulombic Efficiency (%)", "Energy Efficiency (%)"]]
+    assert not np.isinf(efficiencies.to_numpy(dtype=float)).any()
 
 
 def test_cp_cycling_plot_accepts_cycles_selection(ecat_module, blank_echem_factory):

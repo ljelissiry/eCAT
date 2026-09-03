@@ -19,6 +19,7 @@ from .options import (
     MultiplotOptions,
     PlotOptions,
     _canonical_option_key,
+    _project_options,
 )
 
 _PLOT_OPTION_KEYS = {field_name.replace("_", " ") for field_name in MultiplotOptions.__dataclass_fields__}
@@ -202,12 +203,12 @@ def _resolve_timing_mode(objects, options):
 
 def _static_animation_plot_options(options, is_list, provided_options=None):
     option_class = MultiplotOptions if is_list else PlotOptions
-    valid_keys = {field_name.replace("_", " ") for field_name in option_class.__dataclass_fields__}
-    plot_options = {
+    plot_options = _project_options(option_class, options).to_options_dict()
+    plot_options.update({
         key: value
         for key, value in dict(options).items()
-        if key in valid_keys or str(key).startswith("_")
-    }
+        if str(key).startswith("_")
+    })
     provided_keys = set(dict(provided_options or {}).keys())
     if not is_list and "legend" not in provided_keys:
         plot_options["legend"] = "auto"

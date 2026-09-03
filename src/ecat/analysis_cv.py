@@ -2,6 +2,7 @@
 
 from .utils import *  # noqa: F401,F403
 from .options import *  # noqa: F401,F403
+from .options import _project_options
 from .objects import cv
 
 def _coerce_cv_list(cvs):
@@ -684,14 +685,6 @@ def _reference_ip0_options(options, segment=None):
     if isinstance(options, NormalizationOptions):
         return options.for_peak_current()
 
-    ref_options = {}
-    for field in fields(PeakCurrentOptions):
-        option_key = field.name.replace("_", " ")
-        if option_key in options:
-            ref_options[option_key] = options[option_key]
-        elif field.name in options:
-            ref_options[field.name] = options[field.name]
-
     nc_guess = options.get("reference guess potential")
     if nc_guess is None:
         nc_guess = options.get("non-catalytic guess potential")
@@ -699,21 +692,21 @@ def _reference_ip0_options(options, segment=None):
         nc_guess = options.get("guess potential")
     if nc_guess is None:
         nc_guess = options.get("redox potential")
+    overrides = {
+        "y_axis": "Current",
+        "plot": False,
+        "plot_all": False,
+        "print": False,
+        "print_all": False,
+        "internal_call": True,
+        "new_plot": False,
+    }
     if nc_guess is not None:
-        ref_options["guess potential"] = nc_guess
-
+        overrides["guess_potential"] = nc_guess
     if segment is not None:
-        ref_options.pop("segments", None)
-        ref_options["segment"] = segment
-
-    ref_options["y axis"] = "Current"
-    ref_options["plot"] = False
-    ref_options["plot all"] = False
-    ref_options["print"] = False
-    ref_options["print all"] = False
-    ref_options["internal call"] = True
-    ref_options["new plot"] = False
-    return PeakCurrentOptions.from_options(ref_options)
+        overrides["segments"] = None
+        overrides["segment"] = segment
+    return _project_options(PeakCurrentOptions, options, **overrides)
 
 
 def _resolve_reference_cvs(cvs, options, *, option_name="reference"):

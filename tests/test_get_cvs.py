@@ -22,7 +22,11 @@ def _write_ch_cv(path, timestamp):
     )
 
 
-def test_get_data_returns_empty_list_for_missing_or_empty_folder(ecat_module, tmp_path):
+def test_get_data_returns_empty_list_for_missing_or_empty_folder(
+    ecat_module,
+    tmp_path,
+    capsys,
+):
     from ecat import io as ecat_io
 
     missing = ecat_io.get_data({"folder path": str(tmp_path / "missing"), "print": False})
@@ -30,6 +34,29 @@ def test_get_data_returns_empty_list_for_missing_or_empty_folder(ecat_module, tm
 
     assert missing == []
     assert empty == []
+    assert capsys.readouterr().out == ""
+
+
+def test_get_data_print_false_suppresses_discovery_and_conversion_messages(
+    ecat_module,
+    tmp_path,
+    capsys,
+):
+    from ecat import io as ecat_io
+
+    _write_ch_cv(tmp_path / "good.txt", "Aug. 27, 2023   16:03:21")
+    (tmp_path / "bad.txt").write_text("not a CV table\n", encoding="utf-8")
+
+    objects = ecat_io.get_data(
+        {
+            "folder path": str(tmp_path),
+            "reference mode": "none",
+            "print": False,
+        }
+    )
+
+    assert [Path(obj.filepath).name for obj in objects] == ["good.txt"]
+    assert capsys.readouterr().out == ""
 
 
 def test_get_data_defaults_to_subfolder_then_timestamp_order(ecat_module, tmp_path):

@@ -12,7 +12,7 @@ command fails.
 python -m venv .venv
 source .venv/bin/activate
 python -m pip install -U pip
-python -m pip install --upgrade "git+https://github.com/ljelissiry/eCAT.git@v0.1.0b4"
+python -m pip install --upgrade "git+https://github.com/ljelissiry/eCAT.git@v0.1.0b5"
 ```
 
 For local development from a source checkout, install from the repository root:
@@ -28,7 +28,7 @@ python -c "import ecat as e; print(e.__version__)"
 pytest -q
 ```
 
-The beta version is `0.1.0b4`.
+The beta version is `0.1.0b5`.
 
 ## eCAT App
 
@@ -49,6 +49,10 @@ Then run:
 ```bash
 ecat-app
 ```
+
+The installed app includes the public Fe/PhOH CV, CA/CPE, and CP example
+folders shown in its example selector. Check the installed package version with
+`ecat-app --version`.
 
 From a notebook, launch the native app window with:
 

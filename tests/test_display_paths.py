@@ -9,8 +9,24 @@ def test_format_path_for_display_uses_relative_path_under_base(ecat_module, tmp_
 
     display_path = ecat_module._format_path_for_display(nested, relative_to=base)
 
-    assert display_path == str(Path("notebooks") / "_outputs" / "result.csv")
+    assert display_path == "notebooks/_outputs/result.csv"
     assert str(tmp_path) not in display_path
+
+
+def test_format_path_for_display_normalizes_windows_separators(ecat_module, tmp_path, monkeypatch):
+    base = tmp_path / "project"
+    nested = base / "notebooks" / "_outputs" / "result.csv"
+    nested.parent.mkdir(parents=True)
+    nested.write_text("", encoding="utf-8")
+    monkeypatch.setattr(
+        ecat_module.os.path,
+        "relpath",
+        lambda path, start: r"notebooks\_outputs\result.csv",
+    )
+
+    display_path = ecat_module._format_path_for_display(nested, relative_to=base)
+
+    assert display_path == "notebooks/_outputs/result.csv"
 
 
 def test_get_data_prints_search_folder_relative_to_current_directory(

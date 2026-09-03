@@ -5,8 +5,11 @@ import inspect
 from pprint import pformat
 import warnings
 
+from scipy.optimize import OptimizeWarning
+
 from .utils import *  # noqa: F401,F403
 from .options import *  # noqa: F401,F403
+from .options import _project_options
 from .analysis_cv import (
     _resolve_manual_ip0_values,
     _coerce_cv_list,
@@ -1001,15 +1004,27 @@ def _fit_model_xy(x, y, model="power", options=None, label=None):
                 f"operators, and supported functions: {allowed}."
             ) from exc
 
+    covariance_warning = False
+    covariance_message = ""
     try:
-        popt, pcov = curve_fit(
-            fit_func,
-            x_fit,
-            fit_target,
-            p0=p0_array,
-            bounds=(np.asarray(lower, dtype=float), np.asarray(upper, dtype=float)),
-            **curve_options,
+        with warnings.catch_warnings(record=True) as fit_warnings:
+            warnings.simplefilter("always", OptimizeWarning)
+            popt, pcov = curve_fit(
+                fit_func,
+                x_fit,
+                fit_target,
+                p0=p0_array,
+                bounds=(np.asarray(lower, dtype=float), np.asarray(upper, dtype=float)),
+                **curve_options,
+            )
+        covariance_warning = any(
+            issubclass(item.category, OptimizeWarning) for item in fit_warnings
         )
+        if covariance_warning:
+            covariance_message = (
+                "Fit parameter covariance could not be estimated; standard errors "
+                "are unavailable."
+            )
     except KeyError as exc:
         if model == "custom":
             equation = model_spec.get("equation", options.get("fit model", "custom"))
@@ -1105,6 +1120,8 @@ def _fit_model_xy(x, y, model="power", options=None, label=None):
         "fit method": _curve_fit_method_display(curve_options),
         "show fit method": _curve_fit_options_are_nondefault(options, curve_options),
         "curve fit options": dict(curve_options),
+        "covariance warning": covariance_warning,
+        "covariance message": covariance_message,
     }
 
 
@@ -1338,6 +1355,8 @@ def _fit_model_details_display_table(model_result):
     ]
     if model_result.get("show fit method", False):
         rows.insert(3, ("Fit Method", model_result.get("fit method", "curve_fit / auto")))
+    if model_result.get("covariance warning", False):
+        rows.append(("Fit Warning", model_result.get("covariance message", "")))
     return pd.DataFrame(
         [
             {"Setting": setting, "Value": _format_fit_model_display_value(value, sig_figs=sig_figs)}
@@ -1372,6 +1391,8 @@ def _fit_model_display_table(model_result):
     ]
     if model_result.get("show fit method", False):
         rows.insert(3, ("Fit Method", model_result.get("fit method", "curve_fit / auto")))
+    if model_result.get("covariance warning", False):
+        rows.append(("Fit Warning", model_result.get("covariance message", "")))
     for name in model_result["names"]:
         rows.append(
             (
@@ -1418,6 +1439,8 @@ def _fit_model_summary_dict(model_result):
         "fit_parameters": list(model_result.get("names", ())),
         "fit_parameter_count": len(model_result.get("names", ())),
         "fit_method": model_result.get("fit method"),
+        "covariance_warning": model_result.get("covariance warning", False),
+        "covariance_message": model_result.get("covariance message", ""),
         "x_range": [
             float(np.nanmin(model_result["x"])),
             float(np.nanmax(model_result["x"])),
@@ -4583,6 +4606,216 @@ def _inverse_y_mode_values(adjusted, y_mode, y0):
     raise ValueError(f"Unknown y mode: {mode}")
 
 
+def _normalize_fit_peak_tracking_mode(value):
+    if value is None or value is False:
+        return None
+    token = str(value).strip().lower().replace("_", " ").replace("-", " ")
+    if token in {"", "none", "null", "off", "false", "no", "0"}:
+        return None
+    if token in {"within cv", "series", "series strict"}:
+        return token
+    raise ValueError("'peak tracking' must be None, 'within cv', 'series', or 'series strict'.")
+
+
+def _fit_peak_potential_segment_options(
+    base_options,
+    *,
+    segment,
+    guess_potential,
+    exact_potential,
+    peak_kind,
+):
+    seg_options = base_options.copy()
+
+    if segment is not None:
+        seg_options["segment"] = segment
+    else:
+        seg_options.pop("segment", None)
+
+    if exact_potential is not None:
+        seg_options["exact potential"] = exact_potential
+        seg_options.pop("guess potential", None)
+        seg_options.pop("peak kind", None)
+    elif guess_potential is not None:
+        seg_options["guess potential"] = guess_potential
+        if peak_kind is not None:
+            seg_options["peak kind"] = peak_kind
+        else:
+            seg_options.pop("peak kind", None)
+    else:
+        seg_options.pop("guess potential", None)
+        if peak_kind is None:
+            seg_options.pop("peak kind", None)
+
+    return seg_options
+
+
+def _fit_peak_potential_call(cv_obj, options, *, allow_failure=False):
+    try:
+        return cv_obj.peak_potential(options), None
+    except Exception as exc:
+        if allow_failure:
+            return None, exc
+        raise
+
+
+def _result_ep_or_nan(result):
+    if result is None:
+        return np.nan
+    try:
+        return float(result["Ep"])
+    except Exception:
+        return np.nan
+
+
+def _peak_tracking_prediction_series(x_values, eps):
+    eps = np.asarray(eps, dtype=float)
+    x_values = np.asarray(x_values, dtype=float)
+    if len(x_values) != len(eps):
+        x_values = np.arange(len(eps), dtype=float)
+    if not np.isfinite(x_values).all() or np.nanmax(x_values) == np.nanmin(x_values):
+        x_values = np.arange(len(eps), dtype=float)
+
+    finite = np.isfinite(eps)
+    predictions = np.full(len(eps), np.nan, dtype=float)
+    retry = ~finite
+    if not np.any(finite):
+        return predictions, retry
+
+    finite_eps = eps[finite]
+    center = float(np.nanmedian(finite_eps))
+    inlier = finite.copy()
+    if np.count_nonzero(finite) >= 3:
+        mad = float(np.nanmedian(np.abs(finite_eps - center)))
+        window = max(0.10, 6.0 * 1.4826 * mad)
+        inlier = finite & (np.abs(eps - center) <= window)
+        if not np.any(inlier):
+            inlier = finite.copy()
+
+    if np.count_nonzero(inlier) >= 2 and np.ptp(x_values[inlier]) > 0:
+        coeffs = np.polyfit(x_values[inlier], eps[inlier], 1)
+        predictions = np.polyval(coeffs, x_values)
+    else:
+        predictions[:] = float(np.nanmedian(eps[inlier]))
+
+    if np.count_nonzero(finite) >= 3:
+        residuals = eps[inlier] - predictions[inlier]
+        residual_center = float(np.nanmedian(residuals))
+        residual_mad = float(np.nanmedian(np.abs(residuals - residual_center)))
+        residual_window = max(0.10, 6.0 * 1.4826 * residual_mad)
+        retry |= finite & (np.abs((eps - predictions) - residual_center) > residual_window)
+
+    return predictions, retry
+
+
+def _fit_peak_tracking_error_message(cv_obj, segment, error):
+    name = getattr(cv_obj, "name", "CV")
+    return (
+        "fit_peak_potential peak tracking 'series strict' could not resolve "
+        f"a consensus-supported peak for {name}, segment {segment}: {error}"
+    )
+
+
+def _combine_peak_tracking_statuses(statuses):
+    unique = []
+    for status in statuses:
+        if status not in unique:
+            unique.append(status)
+    if not unique:
+        return "none"
+    if len(unique) == 1:
+        return unique[0]
+    return "; ".join(unique)
+
+
+def _fit_peak_potential_series_tracking_results(
+    cvs,
+    segments,
+    x_for_fit,
+    internal_options,
+    potential_series,
+    peak_kind,
+    mode,
+):
+    peak_results = {}
+    peak_errors = {}
+    tracking_status = {}
+
+    for segment in segments:
+        eps = []
+        for cv_index, cv_obj in enumerate(cvs):
+            exact_potential = potential_series["exact potential"][cv_index]
+            guess_potential = potential_series["guess potential"][cv_index]
+            seg_options = _fit_peak_potential_segment_options(
+                internal_options,
+                segment=segment,
+                guess_potential=guess_potential,
+                exact_potential=exact_potential,
+                peak_kind=peak_kind,
+            )
+            result, error = _fit_peak_potential_call(
+                cv_obj,
+                seg_options,
+                allow_failure=True,
+            )
+            key = (cv_index, segment)
+            peak_results[key] = result
+            peak_errors[key] = error
+            tracking_status[key] = "independent" if error is None else "consensus failed"
+            eps.append(_result_ep_or_nan(result))
+
+        predictions, retry = _peak_tracking_prediction_series(x_for_fit, eps)
+
+        for cv_index, cv_obj in enumerate(cvs):
+            key = (cv_index, segment)
+            if potential_series["exact potential"][cv_index] is not None:
+                continue
+            if not retry[cv_index]:
+                continue
+
+            prediction = predictions[cv_index]
+            if not np.isfinite(prediction):
+                if mode == "series strict":
+                    raise ValueError(
+                        _fit_peak_tracking_error_message(
+                            cv_obj,
+                            segment,
+                            peak_errors[key] or "no series consensus could be built",
+                        )
+                    )
+                tracking_status[key] = "consensus failed"
+                continue
+
+            seg_options = _fit_peak_potential_segment_options(
+                internal_options,
+                segment=segment,
+                guess_potential=float(prediction),
+                exact_potential=None,
+                peak_kind=peak_kind,
+            )
+            retry_result, retry_error = _fit_peak_potential_call(
+                cv_obj,
+                seg_options,
+                allow_failure=True,
+            )
+            if retry_result is not None:
+                peak_results[key] = retry_result
+                peak_errors[key] = None
+                tracking_status[key] = "consensus retry"
+            elif mode == "series strict":
+                raise ValueError(
+                    _fit_peak_tracking_error_message(
+                        cv_obj,
+                        segment,
+                        retry_error or peak_errors[key],
+                    )
+                )
+            else:
+                tracking_status[key] = "consensus failed"
+
+    return peak_results, tracking_status
+
+
 def _fit_peak_potential_payload(cvs, options=None):
     """
     Fit peak potential vs log(scan rate) or log(concentration).
@@ -4610,6 +4843,7 @@ def _fit_peak_potential_payload(cvs, options=None):
     do_print = options.get("print", True)
     do_fit = options.get("fit", True)
     follow_e_half = options.get("follow e1/2", False)
+    peak_tracking = _normalize_fit_peak_tracking_mode(options.get("peak tracking"))
     fit_color_index = 0
 
     if not do_plot:
@@ -4692,34 +4926,25 @@ def _fit_peak_potential_payload(cvs, options=None):
     else:
         internal_options["peak kind"] = user_peak_kind
 
-    has_guess_singular, guess_singular_value, _guess_singular_key = _raw_option_value(
-        raw_options,
-        "guess potential",
-    )
-    has_guess_plural, guess_plural_value, _guess_plural_key = _raw_option_value(
-        raw_options,
-        "guess potentials",
-    )
-    if has_guess_plural:
-        raw_guess_value = guess_plural_value
-    elif has_guess_singular:
-        raw_guess_value = guess_singular_value
-    else:
-        raw_guess_value = options.get("guess potential")
-    scalar_guess_tracks = (
-        raw_guess_value is not None
-        and not _is_option_sequence(raw_guess_value)
-        and not any(value is not None for value in potential_series["exact potential"])
-    )
-
     # If plotting all intermediate work, first show the CVs together
     if options.get("plot all", False):
         multiplot(cvs, options=_plot_all_multiplot_options(options, raw_options))
 
+    series_peak_results = None
+    series_tracking_status = None
+    if peak_tracking in {"series", "series strict"}:
+        series_peak_results, series_tracking_status = _fit_peak_potential_series_tracking_results(
+            cvs,
+            segments,
+            x_for_fit,
+            internal_options,
+            potential_series,
+            user_peak_kind,
+            peak_tracking,
+        )
+
     rows = []
     x_name = None
-    series_running_guess_by_segment = {}
-    series_peak_kind_by_segment = {}
 
     # Organize by CV first so follow E1/2 is actually tracked within a CV
     for i, cv_obj in enumerate(cvs):
@@ -4737,58 +4962,39 @@ def _fit_peak_potential_payload(cvs, options=None):
         running_guess = potential_series["guess potential"][i]
         exact_potential = potential_series["exact potential"][i]
         ep_by_segment = {}
+        tracking_statuses = []
 
         # Collect Ep for each requested segment
         for seg in segments:
-            seg_options = internal_options.copy()
-
-            if seg is not None:
-                seg_options["segment"] = seg
+            seg_options = _fit_peak_potential_segment_options(
+                internal_options,
+                segment=seg,
+                guess_potential=running_guess,
+                exact_potential=exact_potential,
+                peak_kind=user_peak_kind,
+            )
+            if series_peak_results is not None:
+                key = (i, seg)
+                peak_result = series_peak_results.get(key)
+                tracking_statuses.append(series_tracking_status.get(key, "consensus failed"))
             else:
-                seg_options.pop("segment", None)
+                # One segment at a time so peak_potential does not search across combined segments
+                peak_result = cv_obj.peak_potential(seg_options)
+                tracking_statuses.append("within cv" if peak_tracking == "within cv" else "none")
 
-            segment_key = seg if seg is not None else None
-            guess_for_call = running_guess
-            peak_kind_for_call = user_peak_kind
-
-            if scalar_guess_tracks and exact_potential is None:
-                if segment_key in series_running_guess_by_segment:
-                    guess_for_call = series_running_guess_by_segment[segment_key]
-                    if peak_kind_for_call is None:
-                        peak_kind_for_call = series_peak_kind_by_segment.get(segment_key)
-                elif running_guess is not None:
-                    guess_for_call = running_guess
-
-            if exact_potential is not None:
-                seg_options["exact potential"] = exact_potential
-                seg_options.pop("guess potential", None)
-                seg_options.pop("peak kind", None)
-            elif guess_for_call is not None:
-                seg_options["guess potential"] = guess_for_call
-                if peak_kind_for_call is not None:
-                    seg_options["peak kind"] = peak_kind_for_call
-                else:
-                    seg_options.pop("peak kind", None)
-            else:
-                seg_options.pop("guess potential", None)
-                if peak_kind_for_call is None:
-                    seg_options.pop("peak kind", None)
-
-            # One segment at a time so peak_potential does not search across combined segments
-            peak_result = cv_obj.peak_potential(seg_options)
-            Ep = peak_result["Ep"]
-            extremum_kind = None
-            if hasattr(peak_result, "get"):
-                extremum_kind = peak_result.get("extremum kind")
-            if options.get("plot all", False) and exact_potential is not None:
+            Ep = _result_ep_or_nan(peak_result)
+            if options.get("plot all", False) and exact_potential is not None and peak_result is not None:
                 x_scale, y_scale = cv_obj.xy_scale(seg_options)
                 plt.scatter(
                     peak_result["Ep"] * x_scale,
-                    peak_result["current"] * y_scale + seg_options.get("offset", 0),
+                    peak_result.get("current", np.nan) * y_scale + seg_options.get("offset", 0),
                     color="tab:blue",
                     zorder=3,
                 )
-            scaled_Ep, _ = scale_value(Ep, x_unit, selected_unit=ep_unit)
+            if np.isfinite(Ep):
+                scaled_Ep, _ = scale_value(Ep, x_unit, selected_unit=ep_unit)
+            else:
+                scaled_Ep = np.nan
 
             if seg is None:
                 row["Ep (V)"] = Ep
@@ -4796,15 +5002,11 @@ def _fit_peak_potential_payload(cvs, options=None):
             else:
                 row[f"Seg {seg} Ep (V)"] = Ep
                 row[f"Seg {seg} Ep ({ep_unit})"] = scaled_Ep
-                ep_by_segment[seg] = Ep
+                if np.isfinite(Ep):
+                    ep_by_segment[seg] = Ep
 
-            # Default behavior: use the most recent Ep as the next guess
-            running_guess = Ep
-            if scalar_guess_tracks:
-                series_running_guess_by_segment[segment_key] = Ep
-                if user_peak_kind is None and extremum_kind in {"max", "min"}:
-                    series_peak_kind_by_segment[segment_key] = extremum_kind
-
+            if peak_tracking == "within cv" and np.isfinite(Ep):
+                running_guess = Ep
         # Interpret "follow E1/2" as:
         # for sequential segments, compute and store the half-wave potential
         # between segment n and n+1 using the already collected Ep values.
@@ -4826,6 +5028,7 @@ def _fit_peak_potential_payload(cvs, options=None):
                 row[f"Seg {seg}-{seg+1} ΔE (V)"] = delta_E
                 row[f"Seg {seg}-{seg+1} ΔE ({ep_unit})"] = scaled_delta_E
 
+        row["Peak Tracking"] = _combine_peak_tracking_statuses(tracking_statuses)
         rows.append(row)
 
     data = pd.DataFrame(rows)
@@ -5329,9 +5532,6 @@ def fit_peak_current(cvs, options=None):
         payload,
         summary=_summary_with_segment_selection({"analysis": "peak current fit"}, payload),
     )
-
-import warnings
-
 
 def _fowa_summary_table(cvs, results, plot_data, ref_cvs, options=None):
     """
@@ -6262,6 +6462,8 @@ def _extract_current_with_peak_current(cv_obj, options, role, fallback_potential
         exact_potential = exact
     elif fallback_potential is not None:
         exact_potential = fallback_potential
+    if exact_potential is not None:
+        guess = None
 
     plot_peak_diagnostics = bool(options.get("_plot_peak_diagnostics", options.get("plot all", False)))
     internal = {
@@ -8682,6 +8884,7 @@ def _resolve_catalytic_half_peak_for_shift_check(cat_cv, ref_cv, options, intern
                 ref_peak_options["print"] = False
                 ref_peak_options["new plot"] = False
                 ref_Ep = ref_cv.peak_potential(ref_peak_options)["Ep"]
+                ecat_options["guess potential"] = None
                 ecat_options["exact potential"] = float(ref_Ep)
             except Exception:
                 pass
@@ -8694,6 +8897,7 @@ def _resolve_catalytic_half_peak_for_shift_check(cat_cv, ref_cv, options, intern
             cat_peak_options["print"] = False
             cat_peak_options["new plot"] = False
             cat_Ep = cat_cv.peak_potential(cat_peak_options)["Ep"]
+            ecat_options["guess potential"] = None
             ecat_options["exact potential"] = float(cat_Ep)
         except Exception as exc:
             raise ValueError(
@@ -8706,16 +8910,10 @@ def _resolve_catalytic_half_peak_for_shift_check(cat_cv, ref_cv, options, intern
 
 
 def _analysis_options_for(option_cls, source):
-    routed = {}
-    valid = {field.name for field in fields(option_cls)}
-    plot_only = {"plot_segment", "plot_segments"}
-    for key, value in (source or {}).items():
-        norm = normalize_key(key)
-        if norm in plot_only:
-            continue
-        if norm in valid:
-            routed[norm] = value
-    return option_cls.from_options(routed).to_options_dict()
+    routed = _project_options(option_cls, source).to_options_dict()
+    routed.pop("plot segment", None)
+    routed.pop("plot segments", None)
+    return routed
 
 
 _COMPLEX_POTENTIAL_PLURAL_KEYS = {
@@ -9177,12 +9375,7 @@ def _plot_fowa_normalized_diagnostics(
             if call["kind"] == "peak_potential"
             else PeakCurrentOptions
         )
-        allowed_options = {normalize_key(field.name) for field in fields(option_model)}
-        diag_options = {
-            key: value
-            for key, value in call["options"].items()
-            if normalize_key(key) in allowed_options
-        }
+        diag_options = _analysis_options_for(option_model, call["options"])
         diag_options["y axis"] = "i/ip0"
         diag_options["y unit"] = None
         diag_options["ylabel"] = "$i / i_p^0$"
@@ -9192,6 +9385,7 @@ def _plot_fowa_normalized_diagnostics(
         diag_options["print all"] = False
         diag_options["internal call"] = True
         diag_options["new plot"] = False
+        diag_options["plot cv"] = False
         diag_options["offset"] = object_offsets.get(id(original), 0)
         if (
             call["kind"] == "peak_current"
@@ -11266,10 +11460,7 @@ def _tafel_options_from_mapping(options):
             "tafel_analysis options must be a dict or TafelAnalysisOptions, "
             f"not {type(options).__name__}."
         )
-    tafel_keys = {"overpotential range", "overpotential_range", "color"}
-    return TafelAnalysisOptions.from_options(
-        {key: value for key, value in options.items() if key in tafel_keys}
-    ).to_options_dict()
+    return _project_options(TafelAnalysisOptions, options).to_options_dict()
 
 
 def _coerce_tafel_cv_list(cv_or_list):

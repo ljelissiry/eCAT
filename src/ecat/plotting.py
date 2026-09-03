@@ -7,7 +7,7 @@ from matplotlib.font_manager import FontProperties
 
 from .utils import *  # noqa: F401,F403
 from .options import *  # noqa: F401,F403
-from .options import _canonical_option_key
+from .options import _canonical_option_key, _project_options
 from .results import AnalysisResult
 from ._plot_helpers import (
     _add_directional_arrows,
@@ -5572,25 +5572,11 @@ def _plot_multiplot_series(echem_list, options, series_getter):
 
 
 def _plot_options_from_mapping(options):
-    routed = {}
-    for field in fields(PlotOptions):
-        option_key = field.name.replace("_", " ")
-        if option_key in options:
-            routed[option_key] = options[option_key]
-        elif field.name in options:
-            routed[field.name] = options[field.name]
-    return PlotOptions.from_options(routed).to_options_dict()
+    return _project_options(PlotOptions, options).to_options_dict()
 
 
 def _multiplot_options_from_mapping(options):
-    routed = {}
-    for field in fields(MultiplotOptions):
-        option_key = field.name.replace("_", " ")
-        if option_key in options:
-            routed[option_key] = options[option_key]
-        elif field.name in options:
-            routed[field.name] = options[field.name]
-    return MultiplotOptions.from_options(routed).to_options_dict()
+    return _project_options(MultiplotOptions, options).to_options_dict()
 
 
 def _is_simulated_cv_object(echem_object):

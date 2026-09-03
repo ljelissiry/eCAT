@@ -6,6 +6,9 @@ from pathlib import Path
 import pytest
 
 
+pytest.importorskip("dash", reason="app tests require the optional ecat[app] extra")
+
+
 APP_SRC = Path(__file__).resolve().parents[1] / "apps" / "workbench" / "src"
 if str(APP_SRC) not in sys.path:
     sys.path.insert(0, str(APP_SRC))
@@ -2238,7 +2241,7 @@ def test_browser_default_source_points_to_fe_phoh_data(repo_root):
     workflow = default_workflow(repo_root)
 
     assert workflow.source_kind == "local_path"
-    assert workflow.source_path.endswith("examples/data/fe_phoh_cv")
+    assert Path(workflow.source_path).as_posix().endswith("examples/data/fe_phoh_cv")
     assert workflow.recursive is True
     assert workflow.import_options["sort keys"] == ["subfolder", "timestamp"]
     assert [option["value"] for option in example_folder_options()] == [
@@ -5030,7 +5033,7 @@ def test_browser_about_panel_toggles():
 
 
 def test_readme_credits_optional_electrokitty_backend():
-    readme = (Path(__file__).resolve().parents[1] / "README.md").read_text()
+    readme = (Path(__file__).resolve().parents[1] / "README.md").read_text(encoding="utf-8")
 
     assert "ElectroKitty" in readme
     assert "BSD 3-Clause" in readme
@@ -5038,7 +5041,7 @@ def test_readme_credits_optional_electrokitty_backend():
 
 
 def test_third_party_notices_include_electrokitty_license(repo_root):
-    notices = (repo_root / "THIRD_PARTY_NOTICES.md").read_text()
+    notices = (repo_root / "THIRD_PARTY_NOTICES.md").read_text(encoding="utf-8")
 
     assert "ElectroKitty" in notices
     assert "BSD 3-Clause License" in notices

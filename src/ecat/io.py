@@ -5,6 +5,7 @@ import json
 import os
 import re
 import warnings
+from copy import deepcopy
 
 import numpy as np
 import pandas as pd
@@ -231,6 +232,7 @@ def _make_cv_object_from_dataframe(
     obj.reference_label = reference_label
     obj.reference_mode = "manual" if reference_shift is not None else "none"
     obj.reference_source_file = None
+    obj.reference_pair_details = None
     obj.reference_failure_message = None
 
     # Parse metadata from the raw first-row header, not the display name
@@ -468,6 +470,7 @@ def _make_object_from_excel_manifest(class_key, name, data, units, row, lookup, 
     obj.reference_label = _manifest_value(row, lookup, "Reference Label", default=None)
     obj.reference_mode = _manifest_value(row, lookup, "Reference Mode", default="none")
     obj.reference_source_file = _manifest_value(row, lookup, "Reference Source", default=None)
+    obj.reference_pair_details = None
     obj.reference_failure_message = None
     obj.ir_comp_resistance = _manifest_float(row, lookup, "IR Comp Resistance", default=None)
     obj.ir_uncomp_resistance = _manifest_float(row, lookup, "IR Uncomp Resistance", default=None)
@@ -798,6 +801,9 @@ def get_data(options=None):
     # ---------------------------
     typed_options = ImportOptions.from_options(options)
     options = typed_options.to_options_dict()
+    print_output = bool(options.get("print", True))
+    troubleshoot = bool(options.get("troubleshoot", False))
+    emit_output = print_output or troubleshoot
     reference_config = resolve_reference_options(options)
     reference_label = reference_config.get("label", None)
 
@@ -813,14 +819,17 @@ def get_data(options=None):
 
     # Validate folder
     if not os.path.exists(root_abs):
-        print(f"Folder does not exist:\n{_format_path_for_display(root_abs)}")
+        if emit_output:
+            print(f"Folder does not exist:\n{_format_path_for_display(root_abs)}")
         return []
 
     if not os.path.isdir(root_abs):
-        print(f"Path exists but is not a folder:\n {_format_path_for_display(root_abs)}")
+        if emit_output:
+            print(f"Path exists but is not a folder:\n {_format_path_for_display(root_abs)}")
         return []
 
-    print(f"Searching {recursive_search} through:\n {_format_path_for_display(root_abs)}")
+    if emit_output:
+        print(f"Searching {recursive_search} through:\n {_format_path_for_display(root_abs)}")
 
     # ---------------------------
     # 2. Find candidate files
@@ -839,7 +848,8 @@ def get_data(options=None):
         ]
 
     except Exception as exc:
-        print(f"Error while searching folder:\n {_format_path_for_display(root_abs)}\n{exc}")
+        if emit_output:
+            print(f"Error while searching folder:\n {_format_path_for_display(root_abs)}\n{exc}")
         return []
 
     file_paths = sorted(
@@ -847,7 +857,7 @@ def get_data(options=None):
         key=lambda p: os.path.normcase(os.path.relpath(p, root_abs)),
     )
 
-    if unsupported_binary_files:
+    if unsupported_binary_files and emit_output:
         print(f"Unsupported binary files skipped ({len(unsupported_binary_files)}):")
         for filepath in sorted(unsupported_binary_files):
             display_name = _format_reference_display(filepath, root_abs, quote=True)
@@ -858,9 +868,9 @@ def get_data(options=None):
         )
 
     if len(file_paths) == 0:
-        if len(all_files) == 0:
+        if len(all_files) == 0 and emit_output:
             print(f"No files were found in the folder:\n {_format_path_for_display(root_abs)}")
-        else:
+        elif emit_output:
             suffix_counts = {}
             for p in all_files:
                 suffix = os.path.splitext(p)[1]
@@ -879,7 +889,7 @@ def get_data(options=None):
                 f"File types found: {suffix_summary}"
             )
         return []
-    else:
+    elif emit_output:
         noun = "file" if len(file_paths) == 1 else "files"
         print(f"{len(file_paths)} supported text {noun} found.\n")
 
@@ -894,7 +904,7 @@ def get_data(options=None):
 
     object_list = []
     for filepath in file_paths:
-        if options.get("troubleshoot", False):
+        if troubleshoot:
             display_name = _format_reference_display(filepath, root_abs, quote=True)
             print(f"Getting data from {display_name}")
 
@@ -906,8 +916,9 @@ def get_data(options=None):
                 raw_file_options.copy(),
             )
         except Exception as exc:
-            display_name = _format_reference_display(filepath, root_abs, quote=True)
-            print(f"Warning: could not convert {display_name}: {type(exc).__name__}: {exc}")
+            if emit_output:
+                display_name = _format_reference_display(filepath, root_abs, quote=True)
+                print(f"Warning: could not convert {display_name}: {type(exc).__name__}: {exc}")
             continue
 
         file_folder = os.path.dirname(filepath)
@@ -915,7 +926,8 @@ def get_data(options=None):
         object_list.append(echem_object)
 
     if not object_list:
-        print("No supported text files could be converted into eCAT objects.")
+        if emit_output:
+            print("No supported text files could be converted into eCAT objects.")
         return []
 
     sort_keys = options.get("sort keys", ["subfolder", "timestamp"])
@@ -946,12 +958,15 @@ def get_data(options=None):
         "ref_name": None,
         "ref_mapping": {},
         "ref_shift_guess": {},
+        "ref_pair_details": {},
         "self_ref_shift_guess": {},
+        "self_ref_pair_details": {},
         "self_ref_failures": {},
         "chosen_keyword": None,
     }
     explicit_reference_file = None
     explicit_reference_shift = None
+    explicit_reference_pair_details = None
 
     if reference_mode == "keyword":
         reference_options = options.copy()
@@ -1008,12 +1023,16 @@ def get_data(options=None):
 
         # Optional: print a soft warning if auto found nothing
         if not reference_info.get("use_reference_files", False):
-            if last_error is not None and options.get("troubleshoot", False):
+            if last_error is not None and troubleshoot:
                 print("Automatic reference search did not resolve any keyword.")
                 print(last_error)
 
     elif reference_mode == "file":
-        explicit_reference_file, explicit_reference_shift = (
+        (
+            explicit_reference_file,
+            explicit_reference_shift,
+            explicit_reference_pair_details,
+        ) = (
             _run_with_captured_import_warnings(
                 import_warnings,
                 _compute_explicit_reference_file_shift,
@@ -1027,7 +1046,9 @@ def get_data(options=None):
     ref_name = reference_info["ref_name"]
     ref_mapping = reference_info["ref_mapping"]
     ref_shift_guess = reference_info["ref_shift_guess"]
+    ref_pair_details = reference_info["ref_pair_details"]
     self_ref_shift_guess = reference_info["self_ref_shift_guess"]
+    self_ref_pair_details = reference_info["self_ref_pair_details"]
     self_ref_failures = reference_info["self_ref_failures"]
 
     # ---------------------------
@@ -1046,6 +1067,7 @@ def get_data(options=None):
             "mode": "none",
             "ref_file": None,
             "shift": None,
+            "pair_details": None,
             "failure_message": None,
         }
 
@@ -1057,6 +1079,7 @@ def get_data(options=None):
             record["mode"] = "file"
             record["ref_file"] = explicit_reference_file
             record["shift"] = explicit_reference_shift
+            record["pair_details"] = deepcopy(explicit_reference_pair_details)
 
         if use_reference_files:
             folder_abs = os.path.abspath(os.path.dirname(filepath_abs))
@@ -1082,6 +1105,9 @@ def get_data(options=None):
                     record["mode"] = "self"
                     record["ref_file"] = filepath_abs
                     record["shift"] = shift_guess
+                    record["pair_details"] = deepcopy(
+                        self_ref_pair_details.get(filepath_abs)
+                    )
                     
                 else:
                     # Self-reference failed -> fall back to the designated nearest-ancestor reference
@@ -1101,6 +1127,9 @@ def get_data(options=None):
                     record["mode"] = "fallback"
                     record["ref_file"] = assigned_ref_file
                     record["shift"] = fallback_shift
+                    record["pair_details"] = deepcopy(
+                        ref_pair_details.get(assigned_ref_file)
+                    )
                     record["failure_message"] = failure_message
 
             else:
@@ -1119,6 +1148,9 @@ def get_data(options=None):
                             record["mode"] = "folder"
                             record["ref_file"] = assigned_ref_file
                         record["shift"] = shift_guess
+                        record["pair_details"] = deepcopy(
+                            ref_pair_details.get(assigned_ref_file)
+                        )
                     except KeyError as exc:
                         display_name = _format_reference_display(assigned_ref_file, root_abs, quote=True)
                         raise ValueError(
@@ -1133,7 +1165,12 @@ def get_data(options=None):
         echem_object.reference_label = reference_label
         echem_object.reference_mode = record["mode"]
         echem_object.reference_source_file = record["ref_file"]
+        echem_object.reference_pair_details = deepcopy(record["pair_details"])
         echem_object.reference_failure_message = record["failure_message"]
+        if getattr(echem_object, "parse_result", None) is not None:
+            echem_object.parse_result.metadata["reference_pair_details"] = deepcopy(
+                record["pair_details"]
+            )
 
         reference_records.append(record)
 
@@ -1149,22 +1186,23 @@ def get_data(options=None):
         options=options,
     )
 
-    if options.get("print", False) and options.get("warnings", True):
+    if print_output and options.get("warnings", True):
         _print_import_warnings(import_warnings)
 
-    _print_reference_correction_summary(
-        reference_config=reference_config,
-        reference_info=reference_info,
-        reference_records=reference_records,
-        root_abs=root_abs,
-        explicit_reference_file=explicit_reference_file,
-        explicit_reference_shift=explicit_reference_shift,
-    )
+    if emit_output:
+        _print_reference_correction_summary(
+            reference_config=reference_config,
+            reference_info=reference_info,
+            reference_records=reference_records,
+            root_abs=root_abs,
+            explicit_reference_file=explicit_reference_file,
+            explicit_reference_shift=explicit_reference_shift,
+        )
 
-    if options.get("troubleshoot", False):
+    if troubleshoot:
         _print_reference_usage_troubleshoot(reference_records, root_abs)
 
-    elif options.get("print", False):
+    elif print_output:
         print_options = options.copy()
 
         if reference_active:

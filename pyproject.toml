@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=64", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -11,7 +11,8 @@ requires-python = ">=3.10"
 authors = [
     { name = "Luke Elissiry" },
 ]
-license = { file = "LICENSE" }
+license = "MIT"
+license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
 dependencies = [
     "ipython",
     "jinja2",
@@ -53,6 +54,14 @@ all = [
     "pywebview",
     "electrokitty",
 ]
+dev = [
+    "build",
+    "nbclient",
+    "nbformat",
+    "pytest",
+    "pytest-cov",
+    "ruff>=0.9",
+]
 
 [project.scripts]
 ecat-app = "ecat_app.app:main"
@@ -60,12 +69,48 @@ ecat-app = "ecat_app.app:main"
 [tool.setuptools.packages.find]
 where = ["src", "apps/workbench/src"]
 
-[tool.setuptools]
-license-files = ["LICENSE", "THIRD_PARTY_NOTICES.md"]
-
 [tool.setuptools.dynamic]
 version = { attr = "ecat._version.__version__" }
 
 [tool.setuptools.package-data]
 ecat = ["defaults.toml"]
 ecat_app = ["assets/*.css", "assets/*.svg", "assets/*.js"]
+
+[tool.setuptools.data-files]
+"examples/data/fe_phoh_cv" = [
+    "examples/data/fe_phoh_cv/*.txt",
+    "examples/data/fe_phoh_cv/README.md",
+]
+"examples/data/chrono_ca" = [
+    "examples/data/chrono_ca/*.txt",
+    "examples/data/chrono_ca/README.md",
+]
+"examples/data/chrono_cp" = [
+    "examples/data/chrono_cp/*.txt",
+    "examples/data/chrono_cp/README.md",
+]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+extend-exclude = [
+    ".compat-venvs",
+    ".venv",
+    "build",
+    "dist",
+    "tmp_docx_render*",
+]
+
+[tool.ruff.lint]
+# This initial blocking profile contains only high-confidence correctness rules.
+# The broader advisory scan is visible in CI while existing debt is reduced.
+select = [
+    "B006",
+    "E9",
+    "F601",
+    "F63",
+    "F7",
+    "F811",
+    "F82",
+    "RUF034",
+]

@@ -2,10 +2,23 @@
 
 ## Unreleased
 
-- Added old BASI-Epsilon `.dat` CV text import support, including folder discovery and headerless potential/current table handling.
+## 0.1.0b5 - Beta Reliability, Peak Tracking, And CI - 2026-09-02
+
+- Made automatic reference correction segment-aware: reference couples now require adjacent, opposite-direction sweeps, remain invariant to current inversion, use resolution-aware physical ranking, fail explicitly on ambiguous automatic choices, retain selected-pair provenance, and expose segment/candidate diagnostics through `troubleshoot=True`.
+- Fixed delegated option routing so Sevcik and peak-current fitting preserve `peak kind`, `peak fallback`, and peak-marker controls; Tafel and nested plot/analysis helpers now also preserve accepted case, underscore, and registered-alias spellings instead of silently reverting them to defaults.
+- Added explicit `fit_peak_potential()` tracking modes for independent, within-CV, series-consensus, and strict series-consensus peak selection, with per-row tracking diagnostics.
+- Hardened installed-package and app behavior: packaged example folders now ship in wheels, `ecat-app --version` uses the canonical package version, folder status no longer scrapes console output, and `get_data(..., {"print": False})` is quiet unless troubleshooting is requested.
+- Fixed CP cycle-efficiency division by zero, translated SciPy covariance warnings into fit metadata and readable output, removed duplicate option metadata and mutable defaults, and cleaned dead progress formatting.
+- Polished reversibility diagnostics so nearly constant peak-separation series use readable plain axes without scientific offset clutter.
+- Updated package metadata to PEP 639 license fields and added tested source/wheel packaging for the app example datasets.
+- Added Linux Python 3.10-3.14, app, simulation, ElectroKitty, and release-metadata CI coverage plus native Windows core and installed-wheel app jobs.
+- Normalized user-facing relative paths to forward slashes across operating systems and made release/app tests explicitly UTF-8-safe on Windows.
+- Added a staged Ruff policy that blocks high-confidence correctness regressions while reporting broader existing lint debt without blocking the beta.
+- Re-executed and visually audited every numbered quickstart notebook with embedded b5 outputs.
 
 ## 0.1.0b4 - Beta Parser, Plotting, Analysis, Simulation, And App Refresh - 2026-08-24
 
+- Added old BASI-Epsilon `.dat` CV text import support, including folder discovery and headerless potential/current table handling.
 - Added `reversibility_analysis()` for cautious, series-level bulk or surface-confined electron-transfer assessment plus a separate chemical-reversibility conclusion, with documented Matsuda-Ayabe, Nicholson, Sevcik, trumpet/Laviron, and irreversible-asymptote eligibility rules.
 - Added `surface_coverage_analysis()` with independent peak-slope and tangent-corrected charge estimates of surface coverage and total electroactive loading, branch/method agreement diagnostics, and configurable agreement tolerance.
 - Added tangent-corrected full width at half peak current to `peak_info()` and both peak widths plus direction-resolved cathodic/anodic peak currents and `|ipa/ipc|` to `wave_info()`.
