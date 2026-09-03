@@ -1,0 +1,95 @@
+name: Publish distributions
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build and check distributions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          cache: pip
+      - name: Install release tools
+        run: python -m pip install --upgrade pip build twine
+      - name: Verify distribution metadata and release tag
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          import re
+
+          pyproject = Path("pyproject.toml").read_text(encoding="utf-8")
+          if 'name = "ecat-electrochemistry"' not in pyproject:
+              raise SystemExit("Unexpected PyPI distribution name in pyproject.toml")
+
+          version_text = Path("src/ecat/_version.py").read_text(encoding="utf-8")
+          version_match = re.search(r'^__version__\s*=\s*["\']([^"\']+)["\']', version_text, re.M)
+          if version_match is None:
+              raise SystemExit("Could not read the canonical eCAT version")
+
+          if os.environ["EVENT_NAME"] == "release":
+              expected_tag = f"v{version_match.group(1)}"
+              if os.environ["RELEASE_TAG"] != expected_tag:
+                  raise SystemExit(
+                      f"Release tag {os.environ['RELEASE_TAG']!r} must equal {expected_tag!r}"
+                  )
+          PY
+      - name: Build wheel and source archive
+        run: python -m build
+      - name: Check distribution metadata
+        run: python -m twine check dist/*
+      - uses: actions/upload-artifact@v5
+        with:
+          name: python-package-distributions
+          path: dist/
+          if-no-files-found: error
+
+  publish-testpypi:
+    name: Publish to TestPyPI
+    if: github.event_name == 'workflow_dispatch'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: testpypi
+      url: https://test.pypi.org/p/ecat-electrochemistry
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v6
+        with:
+          name: python-package-distributions
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: https://test.pypi.org/legacy/
+
+  publish-pypi:
+    name: Publish to PyPI
+    if: github.event_name == 'release'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/ecat-electrochemistry
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v6
+        with:
+          name: python-package-distributions
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1

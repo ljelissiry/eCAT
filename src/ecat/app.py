@@ -10,7 +10,7 @@ import webbrowser
 
 _ECAT_APP_INSTALL_MESSAGE = (
     "The eCAT app requires optional app dependencies. Install them with "
-    '`python -m pip install "ecat[app]"`. For a source checkout, use '
+    '`python -m pip install "ecat-electrochemistry[app]"`. For a source checkout, use '
     '`python -m pip install -e ".[app]"`.'
 )
 
@@ -44,8 +44,8 @@ def _run_native_app(app, host: str, port: int, *, title: str, width: int, height
     except ModuleNotFoundError as exc:
         raise RuntimeError(
             "The eCAT app window dependencies are missing. Install them with "
-            '`python -m pip install "ecat[app]"`, or call e.open_app(browser=True) '
-            "to use the browser fallback."
+            '`python -m pip install "ecat-electrochemistry[app]"`, or call '
+            "`e.open_app(browser=True)` to use the browser fallback."
         ) from exc
     return _run_window_app(app, host, port, title=title, width=width, height=height)
 

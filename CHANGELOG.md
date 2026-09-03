@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## 0.1.0b6 - TestPyPI Packaging Trial - 2026-09-03
+
+- Renamed the installable distribution to `ecat-electrochemistry` for its first
+  PyPI beta while preserving `import ecat as e`, the eCAT brand, and existing
+  application commands.
+- Prepared separate TestPyPI and PyPI Trusted Publishing paths so release
+  artifacts are built from a clean tagged checkout and uploaded without a
+  long-lived API token.
+
 ## 0.1.0b5 - Beta Reliability, Peak Tracking, And CI - 2026-09-02
 
 - Made automatic reference correction segment-aware: reference couples now require adjacent, opposite-direction sweeps, remain invariant to current inversion, use resolution-aware physical ranking, fail explicitly on ambiguous automatic choices, retain selected-pair provenance, and expose segment/candidate diagnostics through `troubleshoot=True`.

@@ -11,7 +11,8 @@ From the repository root:
 python -m pip install -e ".[app]"
 ```
 
-For an installed beta package, use `python -m pip install "ecat[app]"`.
+For an installed beta package, use
+`python -m pip install "ecat-electrochemistry[app]"`.
 
 ## Run
 

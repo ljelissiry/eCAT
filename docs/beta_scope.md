@@ -1,6 +1,6 @@
 # eCAT Beta Scope
 
-This document defines what is supported for the current eCAT `0.1.0b5` beta.
+This document defines what is supported for the current eCAT `0.1.0b6` beta.
 The beta goal is to validate real electrochemistry workflows across friendly
 external users and selected collaborating labs without implying that every
 parser, technique, or analysis path is manuscript-ready.

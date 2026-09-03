@@ -100,7 +100,7 @@ Text importers use the parser contract before object promotion for tested CH, BA
 The app uses optional dependencies. Install them with:
 
 ```bash
-python -m pip install "ecat[app]"
+python -m pip install "ecat-electrochemistry[app]"
 ```
 
 For a local source checkout, use:
@@ -665,7 +665,7 @@ These helpers are intentionally namespaced rather than exported as top-level nam
 Simulation uses ElectroKitty as an optional backend. Importing `ecat` and `ecat.simulation` works without ElectroKitty installed, but `simulate_cv()` and fitting calls that need a backend raise a friendly install message:
 
 ```bash
-python -m pip install "ecat[simulation]"
+python -m pip install "ecat-electrochemistry[simulation]"
 ```
 
 Simulation option dictionaries are discoverable through:

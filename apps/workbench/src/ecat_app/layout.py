@@ -46,7 +46,7 @@ def _dash():
     except ModuleNotFoundError as exc:
         raise RuntimeError(
             "The eCAT app requires optional app dependencies. Install them with "
-            '`python -m pip install "ecat[app]"`. For a source checkout, use '
+            '`python -m pip install "ecat-electrochemistry[app]"`. For a source checkout, use '
             '`python -m pip install -e ".[app]"`.'
         ) from exc
     return dag, dcc, html

@@ -4,15 +4,21 @@ eCAT, short for electroChemical Analysis Tools, is a Python package for loading,
 
 ## Install
 
-For the beta release, install directly from GitHub. This requires Git to be
-installed and available on your `PATH`; check with `git --version` if the
-command fails.
+The PyPI distribution is named `ecat-electrochemistry`; the Python import
+remains `ecat`. Once the b6 beta is published to PyPI, install it with:
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 python -m pip install -U pip
-python -m pip install --upgrade "git+https://github.com/ljelissiry/eCAT.git@v0.1.0b5"
+python -m pip install "ecat-electrochemistry==0.1.0b6"
+```
+
+After the b6 tag exists, the tagged-source fallback is available directly from
+GitHub. This requires Git to be installed and available on your `PATH`:
+
+```bash
+python -m pip install --upgrade "git+https://github.com/ljelissiry/eCAT.git@v0.1.0b6"
 ```
 
 For local development from a source checkout, install from the repository root:
@@ -28,14 +34,14 @@ python -c "import ecat as e; print(e.__version__)"
 pytest -q
 ```
 
-The beta version is `0.1.0b5`.
+The beta version is `0.1.0b6`.
 
 ## eCAT App
 
 The eCAT app uses optional GUI/web dependencies. Install them with the app extra:
 
 ```bash
-python -m pip install "ecat[app]"
+python -m pip install "ecat-electrochemistry[app]"
 ```
 
 For a local source checkout, use:
@@ -87,7 +93,7 @@ Browser mode runs locally at `http://127.0.0.1:8050` by default and automaticall
 CV simulation and fitting use the optional ElectroKitty backend:
 
 ```bash
-python -m pip install "ecat[simulation]"
+python -m pip install "ecat-electrochemistry[simulation]"
 ```
 
 For a local source checkout, use:
@@ -211,5 +217,8 @@ Run tests with:
 ```bash
 pytest -q
 ```
+
+Release maintainers should follow [the release guide](docs/releasing.md) for
+local artifact checks, the TestPyPI trial, and approved PyPI publication.
 
 The test suite uses Matplotlib's Agg backend and checks objects, labels, numeric values, and exported files rather than pixel-perfect images.
