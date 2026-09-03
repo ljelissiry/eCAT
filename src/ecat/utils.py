@@ -85,19 +85,19 @@ def _format_path_for_display(path, relative_to=None, mode="auto"):
     expanded = os.path.expanduser(path_text)
     path_abs = os.path.abspath(expanded)
     if mode == "absolute":
-        return path_abs
+        return path_abs.replace("\\", "/")
 
     base = _default_path_display_base() if relative_to is None else os.fspath(relative_to)
     base_abs = os.path.abspath(os.path.expanduser(base))
     try:
         common = os.path.commonpath([path_abs, base_abs])
     except ValueError:
-        return path_abs
+        return path_abs.replace("\\", "/")
 
     if common == base_abs:
         rel = os.path.relpath(path_abs, base_abs)
-        return "." if rel == "." else rel
-    return path_abs
+        return "." if rel == "." else rel.replace("\\", "/")
+    return path_abs.replace("\\", "/")
 
 
 def _default_path_display_base():

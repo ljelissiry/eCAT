@@ -12,6 +12,7 @@
 - Polished reversibility diagnostics so nearly constant peak-separation series use readable plain axes without scientific offset clutter.
 - Updated package metadata to PEP 639 license fields and added tested source/wheel packaging for the app example datasets.
 - Added Linux Python 3.10-3.14, app, simulation, ElectroKitty, and release-metadata CI coverage plus native Windows core and installed-wheel app jobs.
+- Normalized user-facing relative paths to forward slashes across operating systems and made release/app tests explicitly UTF-8-safe on Windows.
 - Added a staged Ruff policy that blocks high-confidence correctness regressions while reporting broader existing lint debt without blocking the beta.
 - Re-executed and visually audited every numbered quickstart notebook with embedded b5 outputs.
 

@@ -270,7 +270,7 @@ def test_release_version_is_single_source_and_app_surfaces_match(repo_root):
     beta_match = re.search(r"b(\d+)$", version)
     expected_bundle_version = beta_match.group(1) if beta_match else version
 
-    pyproject_text = (repo_root / "pyproject.toml").read_text()
+    pyproject_text = (repo_root / "pyproject.toml").read_text(encoding="utf-8")
     project_block = pyproject_text.split("[project]", 1)[1].split("\n[", 1)[0]
     assert not re.search(r"(?m)^version\s*=", project_block)
     assert re.search(r'(?m)^dynamic\s*=\s*\["version"\]$', project_block)
@@ -290,9 +290,13 @@ def test_release_version_is_single_source_and_app_surfaces_match(repo_root):
     assert plist["CFBundleShortVersionString"] == version
     assert plist["CFBundleVersion"] == expected_bundle_version
 
-    layout_text = (repo_root / "apps" / "workbench" / "src" / "ecat_app" / "layout.py").read_text()
-    spec_text = (repo_root / "packaging" / "pyinstaller" / "ecat-workbench.spec").read_text()
-    readme_text = (repo_root / "README.md").read_text()
+    layout_text = (repo_root / "apps" / "workbench" / "src" / "ecat_app" / "layout.py").read_text(
+        encoding="utf-8"
+    )
+    spec_text = (repo_root / "packaging" / "pyinstaller" / "ecat-workbench.spec").read_text(
+        encoding="utf-8"
+    )
+    readme_text = (repo_root / "README.md").read_text(encoding="utf-8")
 
     assert 'html.Span(f"ecat {e.__version__}")' in layout_text
     assert "APP_VERSION =" in spec_text
