@@ -5701,7 +5701,7 @@ def _fit_dataset_record(index, input_obj, mechanism, params, backend, initial_re
 
 def _apply_group_fit_multiplot_labels(datasets, options):
     sources = [dataset.get("source") for dataset in datasets]
-    if len(sources) < 2 or not all(callable(getattr(source, "txt_stats", None)) for source in sources):
+    if len(sources) < 2 or not all(callable(getattr(source, "_display_stats", None)) for source in sources):
         return
     try:
         from .plotting import (

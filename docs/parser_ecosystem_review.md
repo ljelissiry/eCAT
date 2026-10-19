@@ -183,7 +183,7 @@ Each future parser should return the same internal structure:
 | `technique` | eCAT technique target such as `CV`, `CA`, `CP`, `DPV`, `EIS`, `battery`, or `unknown` |
 | `experiment_subtype` | Vendor-specific technique string such as `Cyclic Voltammetry Advanced` or `GCPL` |
 | `software` | Vendor/source label such as `EC-Lab`, `NOVA`, `IviumSoft`, `Nordic`, `Arbin` |
-| `metadata` | Clean, eCAT-facing metadata used by `info()`, grouping, filtering, and plotting |
+| `metadata` | Clean, eCAT-facing metadata used by `metadata()`, grouping, filtering, and plotting |
 | `raw_metadata` | Original header/settings/module/table metadata for debugging and reproducibility |
 | `warnings` | Nonfatal parser concerns: missing timestamp, unknown column, inferred unit, unsupported channel |
 | `source` | File path plus parser/version information |

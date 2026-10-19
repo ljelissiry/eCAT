@@ -6,6 +6,8 @@ from dataclasses import MISSING, dataclass, field, fields
 from pathlib import Path
 from importlib import resources
 import difflib
+import math
+from numbers import Integral, Real
 import re
 import types
 import typing
@@ -46,6 +48,7 @@ _OPTION_KEY_ALIASES = {
     "in_place": "inplace",
     "invert_y": "invert_y_axis",
     "minimum_gradient_entries": "min_gradient_entries",
+    "nperseg": "points_per_window",
     "n_cat": "catalyst_electrons",
     "ncat": "catalyst_electrons",
     "n_turn": "turnover_electrons",
@@ -89,6 +92,11 @@ _METHOD_SECTION_ALIASES = {
     "cv.plot": "plot",
     "cv.plot_program": "plot",
     "cv.trim": "trim",
+    "echem.spectrum": "spectrum",
+    "cv.spectrum": "spectrum",
+    "ca.spectrum": "spectrum",
+    "cp.spectrum": "spectrum",
+    "dpv.spectrum": "spectrum",
     "cv.current_at_potential": "cv_analysis",
     "cv.peak_potential": "cv_analysis",
     "cv.peak_current": "peak_current",
@@ -207,6 +215,7 @@ _SECTION_OPTION_DISPLAY_OVERRIDES = {
 }
 
 _ANIMATION_OPTION_DEFAULTS = {
+    "display_format": "auto",
     "trace_mode": "auto",
     "schedule": "auto",
     "timing_mode": "auto",
@@ -255,6 +264,7 @@ _ANIMATE_OPTION_KEYS = (
     "plot_segments",
     "segment_color_mode",
     "segment_color_groups",
+    "display_format",
     "trace_mode",
     "schedule",
     "timing_mode",
@@ -697,6 +707,7 @@ _OPTION_CATEGORY_BY_KEY = {
     "one_column": "Plotting",
     "segment_color_mode": "Plotting",
     "segment_color_groups": "Plotting",
+    "display_format": "Animation",
     "trace_mode": "Animation",
     "schedule": "Animation",
     "timing_mode": "Animation",
@@ -801,6 +812,10 @@ _OPTION_CATEGORY_BY_SECTION = {
     },
     "filter": {
         "mode": "Selection/filtering",
+        "sig_figs": "Selection/filtering",
+    },
+    "sort_group": {
+        "sig_figs": "Selection/filtering",
     },
     "group_summary": {
         "columns": "Selection/filtering",
@@ -891,12 +906,38 @@ _OPTION_CATEGORY_BY_SECTION = {
     "tafel_analysis": {
         "overpotential_range": "Fitting/analysis",
     },
+    "spectrum": {
+        "column": "Data/input",
+        "segments": "Selection/filtering",
+        "time_range": "Selection/filtering",
+        "frequency_range": "Selection/filtering",
+        "method": "Fitting/analysis",
+        "detrend": "Fitting/analysis",
+        "window": "Fitting/analysis",
+        "points_per_window": "Fitting/analysis",
+        "overlap": "Fitting/analysis",
+        "nfft": "Fitting/analysis",
+        "resample": "Fitting/analysis",
+        "sampling_tolerance": "Fitting/analysis",
+        "include_dc": "Fitting/analysis",
+        "plot_scale": "Axes",
+        "xscale": "Axes",
+        "yscale": "Axes",
+        "xlabel": "Axes",
+        "ylabel": "Axes",
+        "title": "Labels/titles",
+        "subtitle": "Labels/titles",
+        "legend": "Legend",
+        "legend_loc": "Legend",
+        "legend_outside": "Legend",
+    },
 }
 
 
 OPTION_DESCRIPTIONS = {
     "allow_self_reference": "Allow a CV to be considered as its own reference candidate during automatic reference shifting.",
     "analysis": "Enable additional analysis output for multi-panel plotting workflows.",
+    "display_format": "Inline animation format. 'auto' uses compact HTML5 video when FFmpeg is available and falls back to JSHTML; GIF is a lightweight image without controls.",
     "trace_mode": "How each animated trace appears after its scheduled start time.",
     "schedule": "How multiple traces are offset relative to one another during animation playback.",
     "timing_mode": "Whether animation timing uses experiment-derived timing, normalized timing, or auto selection.",
@@ -949,6 +990,7 @@ OPTION_DESCRIPTIONS = {
     "delimiter": "Column delimiter used in imported text files.",
     "diagnostic_y_axis": "Y axis used for FOWA diagnostic multiplot output.",
     "directional_arrows": "Draw scan-direction arrowhead markers at selected potentials. Arrow direction uses the default smoothed derivative and honors noise window and noise polyorder. Use one dict or a list of dicts; each dict requires potential and may include segment, color, alpha, arrowstyle, and size. If segment is omitted, arrows are added to every segment containing that potential. color defaults to the trace color. arrowstyle is passed to Matplotlib, e.g. ->, -|>, fancy, simple, or wedge. size controls arrowhead scale.",
+    "detrend": "Detrending applied before signal analysis.",
     "e0": "Formal potential used for physical dimensionless CV normalization.",
     "ecat_shift_warning_threshold": "Potential-shift threshold for warning that catalytic and reference waves may not align.",
     "electrode_area": "Electrode area in cm^2.",
@@ -992,6 +1034,7 @@ OPTION_DESCRIPTIONS = {
     "fit_through_origin": "Fit the model through the origin rather than fitting an intercept.",
     "folder_path": "Folder path searched for electrochemical data files.",
     "follow_e1_2": "Use or follow E1/2 values when fitting peak-potential trends.",
+    "frequency_range": "Frequency range retained during signal analysis.",
     "formula_label": "Display label for a custom kinetic formula.",
     "formula_mode": "Formula-selection mode for plateau-current analysis.",
     "gas": "Gas condition metadata for the electrochemical object.",
@@ -1017,6 +1060,7 @@ OPTION_DESCRIPTIONS = {
     "invert_current": "Multiply current by -1.",
     "inplace": "Mutate the existing object instead of returning a copied result.",
     "invert_y_axis": "Invert the plotted y-axis.",
+    "include_dc": "Whether to include the zero-frequency component in signal analysis.",
     "invert_current_axis": "Override shared y-axis inversion for a CA current axis; None inherits invert y axis.",
     "invert_charge_axis": "Override shared y-axis inversion for a CA charge axis; None inherits invert y axis.",
     "ip0": "Non-catalytic reference peak current.",
@@ -1055,6 +1099,7 @@ OPTION_DESCRIPTIONS = {
     "nicholson_delta_ep_min_mv": "Minimum valid nDelta Ep in mV for Nicholson analysis.",
     "noise_polyorder": "Savitzky-Golay smoothing polynomial order.",
     "noise_window": "Savitzky-Golay smoothing window.",
+    "nfft": "FFT length used during signal analysis.",
     "non_catalytic_current": "Manual non-catalytic reference current.",
     "non_catalytic_cv": "Single non-catalytic reference CV.",
     "non_catalytic_cvs": "List of non-catalytic reference CVs.",
@@ -1090,6 +1135,7 @@ OPTION_DESCRIPTIONS = {
     "plot_log_log": "Whether to include a log-log plot.",
     "plot_quiet_time": "When plotting a CV potential program, prepend quiet time as a negative-time hold at the starting potential.",
     "plot_scale": "Convenience axis-scale preset for scatter plots, such as log-log, semilogx, semilogy, symlog, or linear. Uses Matplotlib axis scaling and does not transform fit values.",
+    "points_per_window": "Number of points used in each signal-analysis window.",
     "plot_options": "Nested plotting options passed through to plot helpers.",
     "scale_bar": "Draw a vertical scale bar on plot axes. Use False to hide, True to auto-pick a nice round length near 20-25% of the displayed y-axis range, a numeric value as the displayed y-axis length, or a dict with length, loc, label, unit, color, linewidth, cap width, label pad, fontsize/font size, ha, va, and remove y ticks. loc may be lower right, lower left, upper right, upper left, or an explicit (x, y) data-coordinate pair.",
     "phase": "Physical model used by an analysis, such as bulk diffusion or surface confinement.",
@@ -1114,6 +1160,7 @@ OPTION_DESCRIPTIONS = {
     "print_local_slopes": "Whether to print local slope diagnostics.",
     "psi_source": "Source used to resolve Nicholson psi values.",
     "recursive_search": "Recursively search subfolders during import.",
+    "resample": "Whether to resample data before signal analysis.",
     "redox_mode": "Method used to resolve the reference redox potential.",
     "redox_potential": "Manual redox reference potential. In FOWA, the plural alias 'redox potentials' accepts per-CV values.",
     "reference_file": "Explicit file used as a reference-shift source.",
@@ -1134,6 +1181,7 @@ OPTION_DESCRIPTIONS = {
     "scan_rate": "Scan rate in V/s. A scalar applies to all CVs; a sequence supplies one value per CV.",
     "s": "Electrode area alias used for physical dimensionless CV normalization.",
     "scale": "Multiplier applied to raw current columns by scale_current.",
+    "sampling_tolerance": "Relative tolerance used to identify nonuniform sampling.",
     "segment": "CV segment to analyze.",
     "segment_color_groups": "Segment grouping used for cv.plot segment coloring; integer minimum size or explicit segment groups.",
     "segment_color_mode": "Segment color mode for cv.plot, such as off, discrete, discrete gradient, or continuous gradient.",
@@ -1156,6 +1204,7 @@ OPTION_DESCRIPTIONS = {
     "tangent_potential": "Potential at which to anchor tangent baseline fitting. In complex CV analyses, the plural alias 'tangent potentials' accepts per-CV values.",
     "tangent_range": "Potential range for tangent baseline fitting.",
     "temperature": "Temperature in K.",
+    "time_range": "Time range selected before signal analysis.",
     "target_charge": "Target cumulative charge in Coulombs.",
     "target_electrons": "Number of electrons per molecule used to convert target moles to Coulombs.",
     "target_label": "Custom label for a plotted charge target marker.",
@@ -1166,6 +1215,7 @@ OPTION_DESCRIPTIONS = {
     "transform_mode": "Transform mode applied to x and/or y data.",
     "troubleshoot": "Print additional troubleshooting output.",
     "turnover_electrons": "Turnover electron count n_turn used in kinetic equations. Aliases: n_turn, nturn.",
+    "overlap": "Fractional overlap between adjacent analysis windows.",
     "units": "Column-specific unit overrides, as a dict mapping column names to target units.",
     "validate_plateau": "Validate plateau-current scan-rate independence.",
     "v": "Scan-rate alias used for physical dimensionless CV normalization.",
@@ -1214,6 +1264,7 @@ OPTION_CHOICES = {
     "colorbar_tick_labels": ["endpoints", "all", "none"],
     "legend_mode": ["auto", "colorbar", "discrete"],
     "colorbar_style": ["auto", "continuous", "discrete"],
+    "display_format": ["auto", "html5", "jshtml", "gif"],
     "trace_mode": ["auto", "draw", "instant"],
     "schedule": ["auto", "simultaneous", "staggered", "sequential"],
     "timing_mode": ["auto", "physical", "normalized"],
@@ -1249,6 +1300,11 @@ OPTION_CHOICES_BY_SECTION = {
         "format": ["csv", "xlsx", "excel"],
         "metadata_columns": ["used", "all"],
         "data_columns": ["all", "x", "y"],
+    },
+    "spectrum": {
+        "method": ["welch", "fft"],
+        "detrend": [None, "constant", "linear"],
+        "plot_scale": ["auto", "linear", "log-log", "semilogx", "semilogy", "symlog"],
     },
 }
 
@@ -1395,6 +1451,13 @@ def _build_option_metadata():
         },
     })
 
+    for section in ("filter", "sort_group"):
+        update(section, {
+            "sig_figs": {
+                "description": "Numeric metadata matching precision: 'auto' (default) uses a deterministic 5-significant-digit fallback; None matches exactly; integers 1-17 set significant digits. A field mapping applies precision only to named continuous fields (omitted fields match exactly). Decimal rounding buckets are shared by filter/sort/group; they do not infer instrument resolution or alter stored data. Categorical fields and integer IDs remain exact.",
+            },
+        })
+
     update("trim", {
         "potential_window": {
             "description": "Two-value potential window used to trim CV data. The shorthand e.trim(cvs, [start, stop]) fills this option.",
@@ -1450,6 +1513,10 @@ def _build_option_metadata():
         },
         "scan_rate": {
             "description": "Scan rate in V/s used for animation or normalization helpers; plotting otherwise uses the object's stored scan_rate when needed.",
+        },
+        "display_format": {
+            "choices": ["auto", "html5", "jshtml", "gif"],
+            "description": "Inline display and HTML-export format. 'auto' uses compact HTML5 video when FFmpeg is available and falls back to JSHTML; 'html5' provides native video controls, 'jshtml' provides Matplotlib frame controls, and 'gif' is a lightweight image without controls.",
         },
         "trace_mode": {
             "description": "'auto' resolves to 'draw' for single traces and for multi-trace animations with mixed scan rates; otherwise it resolves to 'instant'. 'draw' progressively reveals each trace, while 'instant' shows each trace fully at its scheduled start.",
@@ -1931,7 +1998,10 @@ def _build_option_metadata():
         **cv_auto,
         **scatter_fit_auto,
         "c": {
-            "description": "Concentration used for diffusion coefficient reporting; not inferred unless species-based concentration metadata are available to the analysis.",
+            "description": "Manual concentration in mol/cm^3 for a scan-rate series; takes precedence over filename concentration. Otherwise resolve the selected species from molar metadata. A concentration series uses its varying concentrations, not one scalar C.",
+        },
+        "species": {
+            "description": "Compound identity used to select molar concentration across every CV. Specify it for mixtures; concentration-series analysis may infer the sole varying species. Ambiguous or missing concentrations raise instead of selecting the last filename token.",
         },
         "tangent_range": {
             "description": "'auto' is passed to peak_current so peak-current extraction uses automatic tangent-baseline selection.",
@@ -1992,6 +2062,9 @@ def _build_option_metadata():
     update("fit_peak_current", {
         **cv_auto,
         **scatter_fit_auto,
+        "x_transform": {
+            "description": "Transform x before fitting. The configured default '^0.5' is square root: use 0.5, 'sqrt', or 'square root'; any numeric power (including negative values) is accepted. None or 'identity' uses raw x. This is separate from 'fit model': use 'fit model': 'power' with 'x transform': 'identity' to estimate a power-law exponent. xscale changes axis spacing only.",
+        },
         "tangent_range": {
             "description": "'auto' is passed to peak_current so peak-current extraction uses automatic tangent-baseline selection.",
         },
@@ -2009,6 +2082,9 @@ def _build_option_metadata():
     })
     update("trumpet_analysis", {
         **cv_auto,
+        "plot_all": {
+            "description": "Show a shared CV overlay with the actual paired peak selections used in the trumpet fit, in addition to the trumpet plot. Inspect these diagnostics before interpreting fitted kinetics.",
+        },
         "segment": {
             "description": "Base segment used to locate the paired peak branch. Cathodic/anodic identity is determined from each segment's potential scan direction, not from segment number or input order.",
         },
@@ -2100,6 +2176,57 @@ def _build_option_metadata():
         },
     })
 
+    update("spectrum", {
+        "method": {
+            "description": "Spectral estimation method: Welch averaging or a direct FFT.",
+        },
+        "column": {
+            "description": "Signal column name or integer position. 'auto' selects the default measured signal for the object.",
+        },
+        "segments": {
+            "description": "Segment selection used before spectral estimation. 'all' includes every available segment; the singular 'segment' spelling is accepted as an alias.",
+        },
+        "time_range": {
+            "description": "Optional finite, increasing two-value time range applied before spectral estimation. Negative time values are allowed.",
+        },
+        "detrend": {
+            "description": "Detrending applied before Welch or FFT spectral estimation: None, constant, or linear.",
+        },
+        "window": {
+            "description": "Any SciPy-compatible window specification applied during Welch or FFT spectral estimation.",
+        },
+        "points_per_window": {
+            "description": "Welch window length in points, or 'auto'. The SciPy name nperseg is accepted as an alias.",
+        },
+        "overlap": {
+            "description": "Fractional overlap between adjacent Welch windows; must be at least 0 and less than 1.",
+        },
+        "nfft": {
+            "description": "Optional positive FFT length used for spectral estimation, limited to 2,000,000 transform points. Reduce nfft or narrow the selected trace if the limit is exceeded.",
+        },
+        "resample": {
+            "description": "Whether to resample nonuniform time data before spectral estimation.",
+        },
+        "sampling_tolerance": {
+            "description": "Nonnegative relative tolerance used to identify nonuniform sampling intervals.",
+        },
+        "frequency_range": {
+            "description": "Optional finite, increasing, nonnegative two-value frequency range retained in the result.",
+        },
+        "include_dc": {
+            "description": "Whether to retain the zero-frequency component in the spectrum.",
+        },
+        "plot_scale": {
+            "description": "Convenience preset controlling spectrum axis spacing. Unlike obj.plot 'x scale' and 'y scale', which multiply plotted values numerically, this option does not rescale spectrum values.",
+        },
+        "xscale": {
+            "description": "Matplotlib x-axis spacing override for the spectrum, such as linear, log, symlog, or logit.",
+        },
+        "yscale": {
+            "description": "Matplotlib y-axis spacing override for the spectrum, such as linear, log, symlog, or logit.",
+        },
+    })
+
     return metadata
 
 
@@ -2174,10 +2301,28 @@ def _normalize_mapping(mapping):
     normalized = {}
     for section, values in (mapping or {}).items():
         section_key = _canonical_section_key(section)
-        normalized[section_key] = {
-            _canonical_option_key(key): value
-            for key, value in (values or {}).items()
-        }
+        if section_key != "spectrum":
+            normalized[section_key] = {
+                _canonical_option_key(key): value
+                for key, value in (values or {}).items()
+            }
+            continue
+
+        section_values = {}
+        original_keys = {}
+        for key, value in (values or {}).items():
+            option_key = _canonical_option_key(key)
+            if option_key == "segment":
+                option_key = "segments"
+            if option_key in section_values:
+                first_key = original_keys[option_key]
+                raise OptionError(
+                    f"Spectrum defaults '{first_key}' and '{key}' both resolve to "
+                    f"'{_friendly_key(option_key)}'. Use only one spelling."
+                )
+            section_values[option_key] = value
+            original_keys[option_key] = key
+        normalized[section_key] = section_values
     return normalized
 
 
@@ -2194,6 +2339,7 @@ def _option_default_registry():
         (ImportOptions, ["get_data"]),
         (TrimOptions, ["trim"]),
         (PlotOptions, ["plot", "normalize_current"]),
+        (SpectrumOptions, ["spectrum"]),
         (MultiplotOptions, ["plot", "multiplot", "normalize_current"]),
         (MultiMultiplotOptions, ["plot", "multiplot", "multimultiplot", "normalize_current"]),
         (MultiScatterplotOptions, ["plot", "multiplot", "multi_scatterplot"]),
@@ -2479,6 +2625,8 @@ def _coerce_options(cls, raw, sections):
         if cls.__name__ == "ImportOptions" and norm == "shift_potential":
             norm = "reference_mode"
             value = "none" if value is False or str(value).strip().lower() in {"false", "off", "none", "0"} else "auto"
+        if cls.__name__ == "SpectrumOptions" and norm == "segment":
+            norm = "segments"
         if cls.__name__ in {"PlotOptions", "MultiplotOptions"} and norm == "y_flip":
             raise OptionError("'y flip' was removed; use 'invert y axis' to invert the plotted y-axis.")
         if norm not in valid:
@@ -2532,6 +2680,10 @@ def _coerce_options(cls, raw, sections):
         for name, field in ((field.name, field) for field in fields(cls))
         if field.default is not MISSING
     }
+    if cls.__name__ == "SpectrumOptions":
+        for item in fields(cls):
+            if item.name in defaults:
+                kwargs[item.name] = deepcopy(defaults[item.name])
     kwargs.update(normalized)
     if "_provided_options" in valid:
         kwargs["_provided_options"] = tuple(normalized)
@@ -2793,6 +2945,158 @@ class TrimOptions:
 
 
 @dataclass(frozen=True, slots=True)
+class SpectrumOptions:
+    method: str = "welch"
+    column: str | int = "auto"
+    segments: str | int | list[int] | tuple[int, ...] = "all"
+    time_range: list[float] | tuple[float, float] | None = None
+    detrend: str | None = "constant"
+    window: object = "hann"
+    points_per_window: str | int = "auto"
+    overlap: float = 0.5
+    nfft: int | None = None
+    resample: bool = False
+    sampling_tolerance: float = 0.01
+    frequency_range: list[float] | tuple[float, float] | None = None
+    include_dc: bool = False
+    plot_scale: str = "auto"
+    xscale: str | None = None
+    yscale: str | None = None
+    plot: bool = True
+    plot_all: bool = False
+    print: bool = True
+    print_all: bool = False
+    pretty_print: bool = True
+    sig_figs: int = 4
+    title: bool | str = True
+    subtitle: bool | str | None = "auto"
+    xlabel: str | None = None
+    ylabel: str | None = None
+    legend: bool = True
+    legend_loc: str = "auto"
+    legend_outside: bool = False
+    grid: bool = False
+    color: str | None = None
+    colors: list[str] = field(default_factory=list)
+
+    def __post_init__(self):
+        for name in ("colors", "segments", "time_range", "frequency_range", "window"):
+            object.__setattr__(self, name, deepcopy(getattr(self, name)))
+
+    @classmethod
+    def from_options(cls, options=None):
+        return _coerce_options(cls, options, ["spectrum"])
+
+    @staticmethod
+    def _validate_range(label, value, *, nonnegative=False):
+        if value is None:
+            return
+        if isinstance(value, (str, bytes)):
+            raise OptionError(f"'{label}' must be a finite, increasing two-value range.")
+        try:
+            values = list(value)
+        except TypeError as exc:
+            raise OptionError(f"'{label}' must be a finite, increasing two-value range.") from exc
+        if len(values) != 2:
+            raise OptionError(f"'{label}' must be a finite, increasing two-value range.")
+        if any(isinstance(item, bool) or not isinstance(item, Real) for item in values):
+            raise OptionError(f"'{label}' must be a finite, increasing two-value range.")
+        lower, upper = (float(item) for item in values)
+        if not math.isfinite(lower) or not math.isfinite(upper) or lower >= upper:
+            raise OptionError(f"'{label}' must be a finite, increasing two-value range.")
+        if nonnegative and lower < 0:
+            raise OptionError(f"'{label}' values must be nonnegative.")
+
+    def validate(self):
+        if self.method not in ("welch", "fft"):
+            raise OptionError("'method' must be 'welch' or 'fft'.")
+        if isinstance(self.column, bool) or not isinstance(self.column, (str, Integral)):
+            raise OptionError("'column' must be a string or integer.")
+        segments = self.segments
+        valid_segment = (
+            isinstance(segments, Integral)
+            and not isinstance(segments, bool)
+            and segments > 0
+        )
+        valid_segment_sequence = (
+            isinstance(segments, (list, tuple))
+            and bool(segments)
+            and all(
+                isinstance(segment, Integral)
+                and not isinstance(segment, bool)
+                and segment > 0
+                for segment in segments
+            )
+        )
+        all_segments = isinstance(segments, str) and segments == "all"
+        if not all_segments and not valid_segment and not valid_segment_sequence:
+            raise OptionError(
+                "'segments' must be 'all', a positive integer, or a non-empty "
+                "list/tuple of positive integers."
+            )
+        if self.detrend not in (None, "constant", "linear"):
+            raise OptionError("'detrend' must be None, 'constant', or 'linear'.")
+        if self.points_per_window != "auto" and (
+            isinstance(self.points_per_window, bool)
+            or not isinstance(self.points_per_window, Integral)
+            or self.points_per_window < 2
+        ):
+            raise OptionError("'points per window' must be 'auto' or an integer >= 2.")
+        if isinstance(self.overlap, bool) or not isinstance(self.overlap, Real):
+            raise OptionError("'overlap' must be a finite number from 0 up to, but not including, 1.")
+        overlap = float(self.overlap)
+        if not math.isfinite(overlap) or not 0 <= overlap < 1:
+            raise OptionError("'overlap' must be a finite number from 0 up to, but not including, 1.")
+        if self.nfft is not None and (
+            isinstance(self.nfft, bool)
+            or not isinstance(self.nfft, Integral)
+            or self.nfft < 1
+        ):
+            raise OptionError("'nfft' must be None or a positive integer.")
+        if isinstance(self.sampling_tolerance, bool) or not isinstance(self.sampling_tolerance, Real):
+            raise OptionError("'sampling tolerance' must be a finite nonnegative number.")
+        tolerance = float(self.sampling_tolerance)
+        if not math.isfinite(tolerance) or tolerance < 0:
+            raise OptionError("'sampling tolerance' must be a finite nonnegative number.")
+        self._validate_range("time range", self.time_range)
+        self._validate_range("frequency range", self.frequency_range, nonnegative=True)
+        if self.plot_scale not in (
+            "auto",
+            "linear",
+            "log-log",
+            "semilogx",
+            "semilogy",
+            "symlog",
+        ):
+            raise OptionError(
+                "'plot scale' must be 'auto', 'linear', 'log-log', 'semilogx', "
+                "'semilogy', or 'symlog'."
+            )
+        boolean_options = {
+            "resample": self.resample,
+            "include dc": self.include_dc,
+            "plot": self.plot,
+            "plot all": self.plot_all,
+            "print": self.print,
+            "print all": self.print_all,
+            "pretty print": self.pretty_print,
+            "legend": self.legend,
+            "legend outside": self.legend_outside,
+            "grid": self.grid,
+        }
+        for label, value in boolean_options.items():
+            if value is not True and value is not False:
+                raise OptionError(f"'{label}' must be True or False.")
+
+    def to_options_dict(self):
+        return {
+            item.name.replace("_", " "): deepcopy(getattr(self, item.name))
+            for item in fields(self)
+            if not item.name.startswith("_")
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class PlotOptions:
     plot: bool = True
     print: bool = True
@@ -2876,6 +3180,7 @@ class PlotOptions:
     baseline_threshold: float | None = None
     baseline_tail_fraction: float = 0.05
     corrected_current: bool = False
+    display_format: str = "auto"
     trace_mode: str = "auto"
     schedule: str = "auto"
     timing_mode: str = "auto"
@@ -2958,6 +3263,9 @@ class PlotOptions:
         timing_mode = _normalized_choice(self.timing_mode)
         if timing_mode not in {"auto", "physical", "normalized"}:
             raise OptionError("'timing mode' must be 'auto', 'physical', or 'normalized'.")
+        display_format = _normalized_choice(self.display_format)
+        if display_format not in {"auto", "html5", "jshtml", "gif"}:
+            raise OptionError("'display format' must be 'auto', 'html5', 'jshtml', or 'gif'.")
         try:
             if float(self.normalized_duration) <= 0:
                 raise ValueError
@@ -3083,6 +3391,7 @@ class PlotOptions:
         data["baseline threshold"] = self.baseline_threshold
         data["baseline tail fraction"] = self.baseline_tail_fraction
         data["corrected current"] = self.corrected_current
+        data["display format"] = self.display_format
         data["trace mode"] = self.trace_mode
         data["schedule"] = self.schedule
         data["timing mode"] = self.timing_mode
@@ -4797,6 +5106,38 @@ class TafelAnalysisOptions:
         }
 
 
+_COLLECTION_PRECISION_FIELDS = frozenset({
+    "concentrations", "species", "scan rate", "scan window",
+    "ir comp resistance", "ir uncomp resistance", "ir comp percent",
+    "applied potential", "sample interval", "run time", "final charge",
+    "cathodic current", "anodic current", "cathodic time", "anodic time",
+    "high potential limit", "low potential limit", "quiet time",
+})
+
+
+def _collection_precision_option(value):
+    """Validate/canonicalize precision without inferring instrument resolution."""
+    if isinstance(value, dict):
+        result = {}
+        for key, precision in value.items():
+            canonical = normalize_key(key).replace("_", " ")
+            if canonical not in _COLLECTION_PRECISION_FIELDS:
+                raise OptionError(f"'sig figs' field '{key}' is not continuous numeric metadata.")
+            if canonical in result:
+                raise OptionError(f"Duplicate 'sig figs' field '{canonical}'.")
+            if isinstance(precision, dict):
+                raise OptionError("'sig figs' field values cannot be nested mappings.")
+            result[canonical] = _collection_precision_option(precision)
+        return result
+    if value is None:
+        return None
+    if isinstance(value, str) and value.strip().lower() == "auto":
+        return "auto"
+    if isinstance(value, Integral) and not isinstance(value, bool) and 1 <= value <= 17:
+        return int(value)
+    raise OptionError("'sig figs' must be None, 'auto', an integer from 1 to 17, or a field mapping.")
+
+
 @dataclass(frozen=True, slots=True)
 class FilterOptions:
     print: bool = True
@@ -4804,12 +5145,14 @@ class FilterOptions:
     print_conditions: bool = True
     mode: str = "include"
     logic: str | None = None
+    sig_figs: int | str | dict[str, int | str | None] | None = "auto"
 
     @classmethod
     def from_options(cls, options=None):
         return _coerce_options(cls, options, ["filter"])
 
     def validate(self):
+        _collection_precision_option(self.sig_figs)
         mode = str(self.mode).strip().lower()
         if mode not in {"include", "exclude"}:
             raise OptionError("'mode' must be 'include' or 'exclude'.")
@@ -4823,6 +5166,7 @@ class FilterOptions:
             "print conditions": self.print_conditions,
             "mode": str(self.mode).strip().lower(),
             "logic": None if self.logic is None else str(self.logic).strip().upper(),
+            "sig figs": _collection_precision_option(self.sig_figs),
         }
 
 
@@ -4831,19 +5175,21 @@ class SortGroupOptions:
     print: bool = True
     pretty_print: bool = True
     print_conditions: bool = True
+    sig_figs: int | str | dict[str, int | str | None] | None = "auto"
 
     @classmethod
     def from_options(cls, options=None):
         return _coerce_options(cls, options, ["sort_group"])
 
     def validate(self):
-        return None
+        _collection_precision_option(self.sig_figs)
 
     def to_options_dict(self):
         return {
             "print": self.print,
             "pretty print": self.pretty_print,
             "print conditions": self.print_conditions,
+            "sig figs": _collection_precision_option(self.sig_figs),
         }
 
 
@@ -4892,6 +5238,7 @@ _DESCRIBE_WORKFLOW_ORDER = (
     "Object plotting",
     "Overlay plotting",
     "CV preprocessing",
+    "Signal analysis",
     "Single CV analysis",
     "DPV analysis",
     "CA/CP analysis",
@@ -4938,6 +5285,11 @@ _DESCRIBE_FUNCTION_WORKFLOWS = {
     "normalize_current": "CV preprocessing",
     "scale_current": "CV preprocessing",
     "trim": "CV preprocessing",
+    "echem.spectrum": "Signal analysis",
+    "cv.spectrum": "Signal analysis",
+    "ca.spectrum": "Signal analysis",
+    "cp.spectrum": "Signal analysis",
+    "dpv.spectrum": "Signal analysis",
     "cv.current_at_potential": "Single CV analysis",
     "cv.peak_potential": "Single CV analysis",
     "cv.peak_current": "Single CV analysis",
@@ -5013,6 +5365,11 @@ _DESCRIBE_FUNCTION_DESCRIPTIONS = {
     "scale_current": "Scale CV currents against manual or reference-wave current values.",
     "trim": "Trim one or more CVs to a potential window while preserving connected scan data by default.",
     "cv.trim": "Trim one CV to a potential window while preserving connected scan data by default.",
+    "echem.spectrum": "Analyze a generic electrochemistry signal with Welch PSD or a one-sided FFT; requires a recorded Time column.",
+    "cv.spectrum": "Analyze a cyclic-voltammetry signal with Welch PSD or a one-sided FFT using recorded Time or time reconstructed from raw Potential and scan rate, per selected segment.",
+    "ca.spectrum": "Analyze a chronoamperometry signal with Welch PSD or a one-sided FFT; requires recorded Time.",
+    "cp.spectrum": "Analyze a chronopotentiometry signal with Welch PSD or a one-sided FFT; requires recorded Time.",
+    "dpv.spectrum": "Analyze a differential-pulse-voltammetry signal with Welch PSD or a one-sided FFT using recorded Time or time reconstructed from pulse period.",
     "cv.current_at_potential": "Extract current from a CV at a requested potential with segment and interpolation controls.",
     "cv.peak_potential": "Locate a CV peak potential using segment selection, smoothing, prominence, and fallback controls.",
     "cv.peak_current": "Measure CV peak current with peak selection, tangent/background handling, fallback behavior, plotting, and printing controls.",
@@ -5048,7 +5405,7 @@ _DESCRIBE_FUNCTION_DESCRIPTIONS = {
     "simulation.cv_data": "Convert an imported eCAT CV into simulation/fitting input while preserving measured current and metadata.",
     "simulation.simulate_cv": "Run an ElectroKitty-backed CV simulation and overlay simulated/measured current.",
     "simulation.fit_cv": "Fit one measured CV with eCAT simulation least-squares or strategy methods.",
-    "filter": "Include or exclude eCAT objects by exact metadata criteria.",
+    "filter": "Include or exclude eCAT objects by metadata criteria with configurable numeric matching precision.",
     "sort_group": "Sort and group eCAT objects by metadata fields for plotting, summaries, or batch analysis.",
     "group_summary": "Summarize grouped object metadata in notebook-friendly tables.",
 }
@@ -5402,6 +5759,12 @@ def _option_model_for_function(function):
         "cp.plot_cycles": PlotOptions,
         "cp.cycling_plot": PlotOptions,
         "cp.cycle_info": PlotOptions,
+        "spectrum": SpectrumOptions,
+        "echem.spectrum": SpectrumOptions,
+        "cv.spectrum": SpectrumOptions,
+        "ca.spectrum": SpectrumOptions,
+        "cp.spectrum": SpectrumOptions,
+        "dpv.spectrum": SpectrumOptions,
         "multiplot": MultiplotOptions,
         "multimultiplot": MultiMultiplotOptions,
         "multi_scatterplot": MultiScatterplotOptions,
@@ -5618,6 +5981,7 @@ __all__ = [
     'resolve_import_options',
     'TrimOptions',
     'PlotOptions',
+    'SpectrumOptions',
     'MultiplotOptions',
     'MultiMultiplotOptions',
     'CVFilterOptions',

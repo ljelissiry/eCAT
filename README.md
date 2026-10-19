@@ -1,224 +1,186 @@
-# eCAT
+<h1><img src="apps/workbench/src/ecat_app/assets/ecat-logo-app-icon.svg" alt="eCAT logo" width="52" height="52" align="absmiddle"> eCAT: electroChemical Analysis Tools</h1>
 
-eCAT, short for electroChemical Analysis Tools, is a Python package for loading, organizing, plotting, and analyzing electrochemical data from common lab workflows. The current beta focuses on trustworthy cyclic voltammetry workflows, with limited CA and CP support where the existing parsers are covered by tests.
+eCAT is a Python package and app for loading, organizing, plotting, and analyzing electrochemical data. It supports tested workflows for cyclic voltammetry (CV), chronoamperometry and controlled-potential electrolysis (CA/CPE), chronopotentiometry (CP), and differential-pulse voltammetry (DPV).
+
+The current beta emphasizes readable notebook workflows, explicit metadata and units, consistent plotting, and diagnostics that show how each electrochemical result was obtained.
 
 ## Install
 
-The PyPI distribution is named `ecat-electrochemistry`; the Python import
-remains `ecat`. Once the b6 beta is published to PyPI, install it with:
+The package is distributed as `ecat-electrochemistry`, but imported as `ecat`:
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-python -m pip install -U pip
-python -m pip install "ecat-electrochemistry==0.1.0b6"
+python -m pip install --upgrade pip
+python -m pip install --pre ecat-electrochemistry
 ```
 
-After the b6 tag exists, the tagged-source fallback is available directly from
-GitHub. This requires Git to be installed and available on your `PATH`:
+For a reproducible install of this exact beta, pin the release:
 
 ```bash
-python -m pip install --upgrade "git+https://github.com/ljelissiry/eCAT.git@v0.1.0b6"
+python -m pip install "ecat-electrochemistry==0.1.0b7"
 ```
 
-For local development from a source checkout, install from the repository root:
+On Windows PowerShell, activate the environment with:
+
+```powershell
+.venv\Scripts\Activate.ps1
+```
+
+To install the current tagged beta directly from GitHub instead, first make sure [Git](https://git-scm.com/downloads) is installed:
 
 ```bash
-python -m pip install -e .
+python -m pip install --upgrade "git+https://github.com/ljelissiry/eCAT.git@v0.1.0b7"
 ```
 
-Then verify the install:
+Confirm that the notebook kernel sees the same environment:
 
 ```bash
 python -c "import ecat as e; print(e.__version__)"
-pytest -q
 ```
 
-The beta version is `0.1.0b6`.
-
-## eCAT App
-
-The eCAT app uses optional GUI/web dependencies. Install them with the app extra:
-
-```bash
-python -m pip install "ecat-electrochemistry[app]"
-```
-
-For a local source checkout, use:
-
-```bash
-python -m pip install -e ".[app]"
-```
-
-Then run:
-
-```bash
-ecat-app
-```
-
-The installed app includes the public Fe/PhOH CV, CA/CPE, and CP example
-folders shown in its example selector. Check the installed package version with
-`ecat-app --version`.
-
-From a notebook, launch the native app window with:
-
-```python
-import ecat as e
-
-e.open_app()
-```
-
-If a native window is not convenient, run the same local app in browser mode:
-
-```bash
-ecat-app --browser
-```
-
-or from Python:
-
-```python
-e.open_app(browser=True)
-```
-
-To embed browser mode in a notebook cell when supported:
-
-```python
-e.open_app(inline=True)
-```
-
-Browser mode runs locally at `http://127.0.0.1:8050` by default and automatically uses the next available port if `8050` is busy.
-
-## Simulation
-
-CV simulation and fitting use the optional ElectroKitty backend:
-
-```bash
-python -m pip install "ecat-electrochemistry[simulation]"
-```
-
-For a local source checkout, use:
-
-```bash
-python -m pip install -e ".[simulation]"
-```
-
-Without this extra, importing eCAT still works; simulation calls and the app's Model tab will show an install note.
-
-Custom simulations use eCAT mechanism strings. Conventional coefficients and
-repeated species are equivalent (`C:A+2B=C` and `C:A+B+B=C`). eCAT preserves
-the entered equation for display and compiles a private ElectroKitty-compatible
-form before calling the backend.
-
-ElectroKitty is developed by Ožbej Vodeb and is licensed under the BSD 3-Clause License. eCAT uses ElectroKitty as an optional simulation backend; eCAT itself remains MIT licensed.
+The beta version is `0.1.0b7`.
 
 ## Quickstart
+
+Import eCAT and load a folder of instrument text exports:
 
 ```python
 import ecat as e
 
 data = e.get_data({
-    "folder path": "path/to/exported/txt/files",
+    "folder path": "path/to/exported/files",
     "recursive search": True,
-    "print": False,
     "reference mode": "none",
 })
+```
 
+`get_data()` recognizes tested CH, BASI, and EC-Lab ASCII workflows and preserves parser warnings and metadata on each object. Use `e.describe_options()` to discover public functions, or pass a function name to inspect its options:
+
+```python
+e.describe_options("get_data")
+e.show(data)
+```
+
+Plot one CV and run a peak measurement:
+
+```python
 cv = data[0]
-ax = cv.plot({"legend": False, "title": True})
-peak = cv.peak_potential({"plot": False, "print": False})
-print(peak)
+cv.plot({"title": True})
+
+peak = cv.peak_current({
+    "segment": 1,
+    "guess potential": -1.0,
+    "plot all": True,
+})
 ```
 
-Other single-CV metric helpers include `cv.peak_current()` and
-`cv.peak_width()` when you need current or tangent-corrected full-width values.
-`cv.peak_info()` and `cv.wave_info()` also report tangent-corrected full width
-at half peak current; `wave_info()` identifies the cathodic and anodic segment
-numbers and reports $i_{p,\mathrm{c}}$, $i_{p,\mathrm{a}}$, and
-$|i_{p,\mathrm{a}}/i_{p,\mathrm{c}}|$ as evidence for chemical reversibility.
-
-For multiple CVs:
+Filter, sort, and group object collections with their parsed metadata:
 
 ```python
-grouped = e.sort_and_group(
-    data,
-    sort_keys=["gas", "scan rate"],
-    group_keys="gas",
-    options={"print": False},
-)
-
-e.multiplot(grouped[0], {"legend": "auto", "title": False})
+co2 = e.filter(data, {"gas": "CO2"}, {"print": False})
+co2 = e.sort(co2, ["scan rate"], {"print": False})
+by_scan_rate = e.group(co2, ["scan rate"], {"print": False})
 ```
 
-For one chemical condition measured across scan rates, use the cautious
-series-level reversibility assessment:
+Use `multiplot()` for an overlay. Labels, colors, units, and colorbars can be inferred from the objects or set explicitly:
 
 ```python
-result = e.reversibility_analysis(
-    scan_rate_series,
-    {
-        "phase": "bulk",
-        "guess potential": -1.0,
-        "num electrons": 1,
-        "D": 1e-5,
-    },
-)
+e.multiplot(co2, {
+    "title": "CO$_2$ Series",
+    "legend": "auto",
+    "y unit": "uA",
+})
 ```
 
-Surface-confined loading and coverage use a separate physical workflow:
+## Quickstart Notebooks
+
+The numbered notebooks are runnable guides that build from installation through simulation and fitting:
+
+- [00 - Install And Setup](https://github.com/ljelissiry/eCAT/blob/master/notebooks/00_install_and_setup.ipynb): install checks, packaged example data, and help discovery.
+- [01 - Default Template](https://github.com/ljelissiry/eCAT/blob/master/notebooks/01_default_template.ipynb): a reusable analysis notebook structure with import, selection, plotting, and export cells.
+- [02 - Basics: Load, Plot, Filter, And Group](https://github.com/ljelissiry/eCAT/blob/master/notebooks/02_basics_load_plot_filter.ipynb): the core object workflow and Excel round trip.
+- [03 - CV Analysis](https://github.com/ljelissiry/eCAT/blob/master/notebooks/03_cv_analysis.ipynb): reference correction, peak selection, peak current, and wave metrics.
+- [04 - Plotting And Animation](https://github.com/ljelissiry/eCAT/blob/master/notebooks/04_plotting_and_animation.ipynb): plot styling, overlays, colorbars, directional arrows, and object-first animation.
+- [05 - DPV Basics](https://github.com/ljelissiry/eCAT/blob/master/notebooks/05_dpv_basics.ipynb): loading, inspecting, plotting, and analyzing pulse-voltammetry data.
+- [06 - CA And CP Basics](https://github.com/ljelissiry/eCAT/blob/master/notebooks/06_ca_cp_basics.ipynb): chrono plots, charge, current/rate helpers, cycle analysis, and mixed-class Excel export.
+- [07 - Reversibility Analysis](https://github.com/ljelissiry/eCAT/blob/master/notebooks/07_reversibility_analysis.ipynb): cautious scan-rate-series assessment using real CV data.
+- [08 - Surface-Confined CV](https://github.com/ljelissiry/eCAT/blob/master/notebooks/08_surface_confined_cv.ipynb): surface coverage and electroactive loading from an imported example series.
+- [09 - Advanced Analysis](https://github.com/ljelissiry/eCAT/blob/master/notebooks/09_advanced_analysis.ipynb): normalization, kinetic analyses, scatter fitting, and model fitting.
+- [10 - Simulation Intro](https://github.com/ljelissiry/eCAT/blob/master/notebooks/10_simulation_intro.ipynb): CV programs, real-CV inputs, mechanisms, simulation, and local/multistart fitting.
+- [11 - Group Fitting](https://github.com/ljelissiry/eCAT/blob/master/notebooks/11_group_fitting.ipynb): shared and per-CV parameter fitting across related experiments.
+- [12 - Equilibria And Incubation Fitting](https://github.com/ljelissiry/eCAT/blob/master/notebooks/12_equilibria_fitting.ipynb): pre-equilibria, incubation, and coupled simulation workflows.
+- [99 - Troubleshooting](https://github.com/ljelissiry/eCAT/blob/master/notebooks/99_troubleshooting.ipynb): common import, metadata, reference, plotting, and environment problems.
+
+## eCAT App
+
+Install the optional app dependencies and launch the local desktop/web app:
+
+```bash
+python -m pip install --pre "ecat-electrochemistry[app]"
+ecat-app
+```
+
+The app can also be launched from Python:
 
 ```python
-coverage = e.surface_coverage_analysis(
-    scan_rate_series,
-    {"segments": [1, 2], "guess potential": [-0.1, -0.1]},
+import ecat as e
+
+e.open_app()               # native window
+e.open_app(browser=True)   # local browser
+e.open_app(inline=True)    # notebook, when supported
+```
+
+Browser mode runs locally at `http://127.0.0.1:8050` by default and uses the next available port if needed. The installed app includes public CV, CA/CPE, and CP examples.
+
+## Simulation
+
+CV simulation and fitting use [ElectroKitty](https://github.com/RedrumKid/ElectroKitty), developed by Ožbej Vodeb, as an optional backend:
+
+```bash
+python -m pip install --pre "ecat-electrochemistry[simulation]"
+```
+
+The simulation extra uses the standard PyPI ElectroKitty package (minimum 1.0.11.6); a fresh installation selects the latest compatible release. To update an existing installation, run `python -m pip install --upgrade --upgrade-strategy eager "ecat-electrochemistry[simulation]"`. Experimental local-equilibrium and patched-backend integrations are not included in this release.
+
+Without this extra, the rest of eCAT still imports and runs. Simulation calls and the app Model tab provide an installation message when the backend is unavailable.
+
+```python
+from ecat import simulation as sim
+
+program = sim.cv_program(
+    0.0,
+    E_low=-1.5,
+    E_high=0.5,
+    scan_rate=0.1,
+    segments=2,
 )
 ```
 
-The numbered quickstarts keep these physical models separate:
-
-- [`07_reversibility_analysis.ipynb`](notebooks/07_reversibility_analysis.ipynb)
-  uses a bundled real Fe/Fc scan-rate series to compare reversible and
-  quasi-reversible waves.
-- [`08_surface_confined_cv.ipynb`](notebooks/08_surface_confined_cv.ipynb)
-  imports a pre-generated eCAT Excel workbook and recovers surface coverage
-  plus total electroactive loading.
-- [`09_advanced_analysis.ipynb`](notebooks/09_advanced_analysis.ipynb) covers
-  normalization, catalytic analysis, and general fitting before the simulation
-  sequence begins in notebook 10.
-
-See [the API reference](docs/api_reference.md#reversibility-decision-tree)
-for the exact bulk/surface decision tree, kinetic eligibility ranges, and
-chemical-reversibility labels.
+See notebooks 10-12 for complete simulation and fitting examples. eCAT is MIT licensed; ElectroKitty is distributed under the BSD 3-Clause License.
 
 ## Beta Scope
 
-See [docs/beta_scope.md](docs/beta_scope.md) for the supported file/technique matrix, known limitations, and recommended beta-user guidance.
+The recommended beta path covers CH `.txt`, BASI `.txt` and older BASI-Epsilon `.dat`, plus EC-Lab ASCII `.mpt` or compatible `.txt` exports. Generic numeric text files have a tested fallback parser, while binary files such as BioLogic `.mpr` are rejected with conversion guidance.
 
-In short:
+See the [beta scope](https://github.com/ljelissiry/eCAT/blob/master/docs/beta_scope.md), [API reference](https://github.com/ljelissiry/eCAT/blob/master/docs/api_reference.md), and [troubleshooting guide](https://github.com/ljelissiry/eCAT/blob/master/docs/troubleshooting.md) for current support boundaries and function details.
 
-- Recommended beta path: CH `.txt`, BASI `.txt`/old BASI-Epsilon `.dat`, plus EC-Lab ASCII `.mpt` or compatible `.txt` exports.
-- Limited path: CH CA, CH CP, EC-Lab CA/CP/GCPL text exports, and NOVA ASCII CV text exports.
-- Fallback path: generic numeric/header text files with parser warnings available through `obj.parse_result.warnings`.
-- Unsupported for beta: binary files, including BioLogic `.mpr`, and untested vendor formats. eCAT rejects `.mpr` before text parsing and recommends exporting EC-Lab ASCII `.mpt` or converting externally.
+## Feedback
 
-## Reporting Issues
+Report beta bugs with the [eCAT Beta Bug / Feedback Report](https://docs.google.com/forms/d/e/1FAIpQLSe5rFOeuQ_qoh5NpULyKKsGGnMWOvqXH011f3dyz3X8YR603g/viewform). Include the smallest example file possible, the code you ran, expected and actual behavior, and any traceback or screenshot.
 
-Report beta bugs with the [eCAT Beta Bug / Feedback Report Google Form](https://docs.google.com/forms/d/e/1FAIpQLSe5rFOeuQ_qoh5NpULyKKsGGnMWOvqXH011f3dyz3X8YR603g/viewform). Include the smallest file example possible, the code you ran, the expected behavior, the actual behavior, and any traceback or screenshot.
+## License And Development
 
-## License And Third-Party Notices
+eCAT is MIT licensed. See the [license](https://github.com/ljelissiry/eCAT/blob/master/LICENSE) and [third-party notices](https://github.com/ljelissiry/eCAT/blob/master/THIRD_PARTY_NOTICES.md).
 
-eCAT is MIT licensed. See [LICENSE](LICENSE) for the eCAT license and
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for notices covering optional
-and direct third-party dependencies.
-
-## Development
-
-Run tests with:
+For local development:
 
 ```bash
+git clone https://github.com/ljelissiry/eCAT.git
+cd eCAT
+python -m pip install -e ".[dev]"
+python -m ruff check src apps/workbench/src tests packaging
 pytest -q
 ```
 
-Release maintainers should follow [the release guide](docs/releasing.md) for
-local artifact checks, the TestPyPI trial, and approved PyPI publication.
-
-The test suite uses Matplotlib's Agg backend and checks objects, labels, numeric values, and exported files rather than pixel-perfect images.
+Release maintainers should follow the [release guide](https://github.com/ljelissiry/eCAT/blob/master/docs/releasing.md).

@@ -3924,7 +3924,9 @@ def test_trumpet_analysis_plot_all_uses_multiplot_for_diagnostics(ecat_module, m
             self._ep2 = ep2
 
         def half_wave_potential(self, options=None):
-            assert options.get("plot", False) is False
+            assert options.get("plot", False) is True
+            assert options["internal call"] is True
+            assert options["new plot"] is False
             return {
                 "E(1/2)": 0.0,
                 "ΔE": self._ep2 - self._ep1,
@@ -4212,7 +4214,7 @@ def test_tafel_accepts_multiple_cvs_and_tof_values(ecat_module):
             self.gas = "CO2"
             self.solvent = "MeCN"
 
-        def txt_stats(self, options=None):
+        def _display_stats(self, options=None):
             return {"Name": self.name, "Gas": self.gas, "Solvent": self.solvent}
 
     cvs = [DummyCV("low"), DummyCV("high")]
@@ -4245,7 +4247,7 @@ def test_tafel_pretty_output_uses_analysis_report_sections(ecat_module, capsys):
         gas = "CO2"
         solvent = "MeCN"
 
-        def txt_stats(self, options=None):
+        def _display_stats(self, options=None):
             return {"Name": self.name, "Gas": self.gas, "Solvent": self.solvent}
 
     ecat_module.tafel_analysis(

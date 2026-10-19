@@ -6,10 +6,34 @@ import pytest
 from ecat import options as option_models
 
 
+def test_peak_current_transform_help_explains_default_and_fit_model(ecat_module):
+    table = ecat_module.describe_options("fit_peak_current", {"print": False, "return": True})
+    row = table.loc[table["Option"] == "x transform"].iloc[0]
+    description = row["Description"].lower()
+    assert "square root" in description
+    assert "0.5" in description
+    assert "identity" in description
+    assert "fit model" in description
+    assert "before" in description
+    assert row["Default"] == "^0.5"
+
+
+@pytest.mark.parametrize("target", ["filter", "sort_group"])
+def test_collection_precision_help_describes_matching(ecat_module, target):
+    table = ecat_module.describe_options(target, {"print": False, "return": True})
+    row = table.loc[table["Option"] == "sig figs"].iloc[0]
+    assert row["Default"] == "auto"
+    description = row["Description"].lower()
+    assert "matching" in description
+    assert "5" in description or "five" in description
+    assert "none" in description
+
+
 OPTION_MODEL_CASES = [
     ("get_data", option_models.ImportOptions),
     ("trim", option_models.TrimOptions),
     ("plot", option_models.PlotOptions),
+    ("echem.spectrum", option_models.SpectrumOptions),
     ("multiplot", option_models.MultiplotOptions),
     ("multimultiplot", option_models.MultiMultiplotOptions),
     ("multi_scatterplot", option_models.MultiScatterplotOptions),
@@ -178,6 +202,8 @@ def test_describe_options_accepts_bare_simulation_function_aliases(ecat_module, 
     assert list(bare["Option"]) == list(qualified_table["Option"])
 
 
+
+
 @pytest.mark.parametrize("target, option_cls", OPTION_MODEL_CASES)
 def test_common_package_options_smoke_where_supported(target, option_cls):
     baseline = dict(REQUIRED_OPTION_BASELINES.get(option_cls, {}))
@@ -237,6 +263,375 @@ def test_ca_plot_describes_specific_axis_inversion_controls(ecat_module):
     assert table.loc["invert charge axis", "Default"] is None
     assert "inherit" in table.loc["invert current axis", "Description"].lower()
     assert "inherit" in table.loc["invert charge axis", "Description"].lower()
+
+
+def test_spectrum_options_accept_aliases_and_emit_canonical_keys(ecat_module):
+    options = ecat_module.SpectrumOptions.from_options(
+        {
+            "segment": 2,
+            "nperseg": 128,
+            "plot scale": "semilogx",
+            "xscale": "log",
+        }
+    )
+    resolved = options.to_options_dict()
+
+    assert options.segments == 2
+    assert resolved["segments"] == 2
+    assert resolved["points per window"] == 128
+    assert resolved["plot scale"] == "semilogx"
+    assert resolved["xscale"] == "log"
+    assert "segment" not in resolved
+    assert "nperseg" not in resolved
+
+
+def test_spectrum_options_accept_fft_and_describe_both_methods(ecat_module):
+    options = ecat_module.SpectrumOptions.from_options({"method": "fft"})
+    described = ecat_module.describe_options(
+        "echem.spectrum",
+        {"print": False, "return": True},
+    ).set_index("Option")
+
+    assert options.to_options_dict()["method"] == "fft"
+    assert described.loc["method", "Choices"] == "welch, fft"
+
+
+def test_spectrum_describes_detrend_and_window_for_welch_and_fft(ecat_module):
+    described = ecat_module.describe_options(
+        "echem.spectrum",
+        {"print": False, "return": True},
+    ).set_index("Option")
+
+    for option_name in ("detrend", "window"):
+        description = described.loc[option_name, "Description"].lower()
+        assert "welch" in description
+        assert "fft" in description
+
+
+def test_spectrum_nfft_description_documents_transform_limit(ecat_module):
+    described = ecat_module.describe_options(
+        "echem.spectrum",
+        {"print": False, "return": True},
+    ).set_index("Option")
+
+    description = described.loc["nfft", "Description"].lower()
+    assert "2,000,000" in description
+    assert "transform" in description
+    assert "reduce nfft" in description
+    assert "narrow" in description
+
+
+@pytest.mark.parametrize(
+    ("target", "expected"),
+    [
+        (
+            "echem.spectrum",
+            "Analyze a generic electrochemistry signal with Welch PSD or a "
+            "one-sided FFT; requires a recorded Time column.",
+        ),
+        (
+            "ca.spectrum",
+            "Analyze a chronoamperometry signal with Welch PSD or a one-sided "
+            "FFT; requires recorded Time.",
+        ),
+        (
+            "cp.spectrum",
+            "Analyze a chronopotentiometry signal with Welch PSD or a one-sided "
+            "FFT; requires recorded Time.",
+        ),
+        (
+            "cv.spectrum",
+            "Analyze a cyclic-voltammetry signal with Welch PSD or a one-sided "
+            "FFT using recorded Time or time reconstructed from raw Potential "
+            "and scan rate, per selected segment.",
+        ),
+        (
+            "dpv.spectrum",
+            "Analyze a differential-pulse-voltammetry signal with Welch PSD or "
+            "a one-sided FFT using recorded Time or time reconstructed from "
+            "pulse period.",
+        ),
+    ],
+)
+def test_spectrum_public_descriptions_state_exact_time_contract(
+    ecat_module,
+    target,
+    expected,
+):
+    menu = ecat_module.describe_options(None, {"print": False, "return": True})
+    description = menu.loc[menu["Function"] == target, "Description"].iloc[0]
+
+    assert description == expected
+
+
+def test_spectrum_options_have_canonical_defaults(ecat_module):
+    assert ecat_module.SpectrumOptions.from_options({}).to_options_dict() == {
+        "method": "welch",
+        "column": "auto",
+        "segments": "all",
+        "time range": None,
+        "detrend": "constant",
+        "window": "hann",
+        "points per window": "auto",
+        "overlap": 0.5,
+        "nfft": None,
+        "resample": False,
+        "sampling tolerance": 0.01,
+        "frequency range": None,
+        "include dc": False,
+        "plot scale": "auto",
+        "xscale": None,
+        "yscale": None,
+        "plot": True,
+        "plot all": False,
+        "print": True,
+        "print all": False,
+        "pretty print": True,
+        "sig figs": 4,
+        "title": True,
+        "subtitle": "auto",
+        "xlabel": None,
+        "ylabel": None,
+        "legend": True,
+        "legend loc": "auto",
+        "legend outside": False,
+        "grid": False,
+        "color": None,
+        "colors": [],
+    }
+
+
+def test_spectrum_describes_only_its_public_option_fields(ecat_module):
+    described = ecat_module.describe_options(
+        "echem.spectrum",
+        {"print": False, "return": True},
+    )
+    documented = set(described["Option"])
+    resolved = set(ecat_module.SpectrumOptions.from_options({}).to_options_dict())
+
+    assert documented == resolved
+    assert {"xscale", "yscale"} <= documented
+    assert {"x scale", "y scale"}.isdisjoint(documented)
+
+
+def test_spectrum_set_defaults_round_trips_aliases_and_colors(ecat_module):
+    ecat_module.reset_defaults()
+    try:
+        ecat_module.set_defaults(
+            "spectrum",
+            {
+                "segment": [1, 2],
+                "nperseg": 64,
+                "colors": ["tab:blue", "tab:red"],
+            },
+        )
+
+        options = ecat_module.SpectrumOptions.from_options({}).to_options_dict()
+
+        assert options["segments"] == [1, 2]
+        assert options["points per window"] == 64
+        assert options["colors"] == ["tab:blue", "tab:red"]
+    finally:
+        ecat_module.reset_defaults()
+
+
+def test_spectrum_load_defaults_round_trips_aliases_and_colors(
+    ecat_module,
+    tmp_path,
+):
+    defaults_file = tmp_path / "spectrum-defaults.toml"
+    defaults_file.write_text(
+        """
+[spectrum]
+segment = 3
+nperseg = 128
+colors = ["black", "tab:orange"]
+""".strip(),
+        encoding="utf-8",
+    )
+    ecat_module.reset_defaults()
+    try:
+        ecat_module.load_defaults(defaults_file)
+
+        options = ecat_module.SpectrumOptions.from_options({}).to_options_dict()
+
+        assert options["segments"] == 3
+        assert options["points per window"] == 128
+        assert options["colors"] == ["black", "tab:orange"]
+    finally:
+        ecat_module.reset_defaults()
+
+
+def test_spectrum_defaults_reject_alias_collisions(ecat_module):
+    ecat_module.reset_defaults()
+    try:
+        with pytest.raises(
+            ecat_module.OptionError,
+            match="nperseg.*points per window|points per window.*nperseg",
+        ):
+            ecat_module.set_defaults(
+                "spectrum",
+                {"nperseg": 64, "points per window": 128},
+            )
+    finally:
+        ecat_module.reset_defaults()
+
+
+@pytest.mark.parametrize("option_name", ["x scale", "y scale"])
+def test_spectrum_options_reject_plot_value_scale_options(ecat_module, option_name):
+    with pytest.raises(ecat_module.OptionError, match=f"Unknown option '{option_name}'"):
+        ecat_module.SpectrumOptions.from_options({option_name: 2})
+
+
+@pytest.mark.parametrize(
+    "option_name, value, message",
+    [
+        ("method", "periodogram", "'method'"),
+        ("column", 1.5, "'column'"),
+        ("detrend", "median", "'detrend'"),
+        ("overlap", 1, "'overlap'"),
+        ("overlap", float("nan"), "'overlap'"),
+        ("overlap", float("inf"), "'overlap'"),
+        ("sampling tolerance", -0.01, "'sampling tolerance'"),
+        ("sampling tolerance", float("nan"), "'sampling tolerance'"),
+        ("sampling tolerance", float("inf"), "'sampling tolerance'"),
+        ("points per window", 1, "'points per window'"),
+        ("points per window", float("nan"), "'points per window'"),
+        ("points per window", float("inf"), "'points per window'"),
+        ("nfft", 0, "'nfft'"),
+        ("nfft", float("nan"), "'nfft'"),
+        ("nfft", float("inf"), "'nfft'"),
+        ("time range", [0], "'time range'"),
+        ("time range", [0, 0], "'time range'"),
+        ("time range", [1, 0], "'time range'"),
+        ("time range", [0, float("inf")], "'time range'"),
+        ("time range", [float("nan"), 1], "'time range'"),
+        ("frequency range", [-1, 1], "'frequency range'"),
+        ("frequency range", [1, 1], "'frequency range'"),
+        ("frequency range", [2, 1], "'frequency range'"),
+        ("frequency range", [0, float("inf")], "'frequency range'"),
+        ("frequency range", [float("nan"), 1], "'frequency range'"),
+        ("plot scale", "square", "'plot scale'"),
+    ],
+)
+def test_spectrum_options_reject_invalid_values(ecat_module, option_name, value, message):
+    with pytest.raises(ecat_module.OptionError, match=message):
+        ecat_module.SpectrumOptions.from_options({option_name: value})
+
+
+@pytest.mark.parametrize(
+    "option_name, value",
+    [
+        ("detrend", []),
+        ("detrend", {}),
+        ("plot scale", []),
+        ("plot scale", {}),
+    ],
+)
+def test_spectrum_options_reject_unhashable_choices_with_option_error(
+    ecat_module,
+    option_name,
+    value,
+):
+    with pytest.raises(ecat_module.OptionError, match=f"'{option_name}'"):
+        ecat_module.SpectrumOptions.from_options({option_name: value})
+
+
+def test_spectrum_options_reject_simultaneous_segment_spellings(ecat_module):
+    with pytest.raises(ecat_module.OptionError, match="segment.*segments|segments.*segment"):
+        ecat_module.SpectrumOptions.from_options({"segment": 1, "segments": [1, 2]})
+
+
+@pytest.mark.parametrize(
+    "segments",
+    ["first", 0, -1, True, [], (), [1, 0], [1, False], [1, 1.5]],
+)
+def test_spectrum_options_reject_invalid_segments(ecat_module, segments):
+    with pytest.raises(ecat_module.OptionError, match="'segments'"):
+        ecat_module.SpectrumOptions.from_options({"segments": segments})
+
+
+@pytest.mark.parametrize(
+    "option_name",
+    [
+        "resample",
+        "include dc",
+        "plot",
+        "plot all",
+        "print",
+        "print all",
+        "pretty print",
+        "legend",
+        "legend outside",
+        "grid",
+    ],
+)
+def test_spectrum_options_require_real_booleans(ecat_module, option_name):
+    with pytest.raises(ecat_module.OptionError, match=f"'{option_name}'"):
+        ecat_module.SpectrumOptions.from_options({option_name: 1})
+
+
+def test_spectrum_options_detach_caller_owned_mutable_values(ecat_module):
+    colors = ["tab:blue"]
+    segments = [1, 2]
+    time_range = [-1.0, 1.0]
+    frequency_range = [0.0, 10.0]
+    window = [0.25, 0.75]
+    options = ecat_module.SpectrumOptions.from_options(
+        {
+            "colors": colors,
+            "segments": segments,
+            "time range": time_range,
+            "frequency range": frequency_range,
+            "window": window,
+        }
+    )
+
+    colors.append("tab:red")
+    segments[0] = 3
+    time_range[0] = 0.0
+    frequency_range[1] = 20.0
+    window[0] = 1.0
+
+    assert options.colors == ["tab:blue"]
+    assert options.segments == [1, 2]
+    assert options.time_range == [-1.0, 1.0]
+    assert options.frequency_range == [0.0, 10.0]
+    assert options.window == [0.25, 0.75]
+
+    resolved = options.to_options_dict()
+    resolved["colors"].append("black")
+    resolved["segments"][0] = 4
+
+    assert options.colors == ["tab:blue"]
+    assert options.segments == [1, 2]
+    assert resolved["colors"] is not options.colors
+
+    direct_colors = ["tab:green"]
+    direct_window = [0.5, 0.5]
+    direct = ecat_module.SpectrumOptions(colors=direct_colors, window=direct_window)
+    direct_colors.append("black")
+    direct_window[0] = 1.0
+
+    assert direct.colors == ["tab:green"]
+    assert direct.window == [0.5, 0.5]
+
+
+@pytest.mark.parametrize(
+    "target",
+    ["cv.spectrum", "ca.spectrum", "cp.spectrum", "dpv.spectrum"],
+)
+def test_spectrum_method_aliases_describe_canonical_option_table(ecat_module, target):
+    canonical = ecat_module.describe_options(
+        "echem.spectrum",
+        {"print": False, "return": True},
+    )
+    described = ecat_module.describe_options(
+        target,
+        {"print": False, "return": True},
+    )
+
+    pd.testing.assert_frame_equal(described, canonical)
 
 
 def test_fowa_and_plateau_accept_n_cat_n_turn_aliases(ecat_module):

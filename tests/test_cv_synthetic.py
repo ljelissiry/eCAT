@@ -137,7 +137,7 @@ def test_cv_filter_returns_copy_and_records_resolved_metadata(cv_factory):
         "polyorder": 2,
     }
     assert filtered.processing_history[-1]["operation"] == "filter"
-    assert filtered.info()["filter"] == "savgol (window=7, polyorder=2)"
+    assert filtered.metadata()["filter"] == "savgol (window=7, polyorder=2)"
 
 
 @pytest.mark.parametrize(
@@ -1166,11 +1166,11 @@ def test_analysis_segment_data_selects_requested_segments(blank_echem_factory, e
     x2, y2 = obj.analysis_segment_data({"segment": 2})
     x_both, y_both = obj.analysis_segment_data({"segments": [1, 2]})
 
-    assert len(x1) == len(y1) == 24
-    assert len(x2) == len(y2) == 25
+    assert len(x1) == len(y1) == 25
+    assert len(x2) == len(y2) == 24
     assert x1[0] == pytest.approx(-0.3)
-    assert x1[-1] == pytest.approx(0.275)
-    assert x2[0] == pytest.approx(0.3)
+    assert x1[-1] == pytest.approx(0.3)
+    assert x2[0] == pytest.approx(0.275)
     assert x2[-1] == pytest.approx(-0.3)
     assert np.concatenate([x1, x2]).tolist() == pytest.approx(x_both.tolist())
     assert np.concatenate([y1, y2]).tolist() == pytest.approx(y_both.tolist())
@@ -1607,7 +1607,7 @@ def test_reverse_scan_peak_analysis_works_with_explicit_segment_and_guess(
     half_peak_result = obj.half_peak_potential(current_options)
 
     assert peak_result["Ep"] == pytest.approx(-0.1)
-    assert peak_result["index"] == 16
+    assert peak_result["index"] == 15
     assert np.isfinite(current_result["ip"])
     assert len(current_result["tangent line"]) == 2
     assert current_result["tangent start"] >= 0

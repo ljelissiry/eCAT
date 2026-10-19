@@ -771,6 +771,12 @@ def test_direct_dpv_constructor_uses_parse_result_after_legacy_ch_reader_removed
     assert obj.ir_uncomp_resistance == pytest.approx(5.0)
     assert obj.ir_comp_percent == pytest.approx(100 * 10.0 / 15.0)
 
+    metadata = obj.metadata()
+    assert metadata["type"] == "Differential Pulse Voltammetry"
+    assert metadata["software"] == "CH"
+    assert metadata["units"] == {"Potential": "V", "Current": "A"}
+    assert metadata["pulse period"] == pytest.approx(0.5)
+
 
 def test_ch_dpv_parser_exposes_expected_public_axis_contract(ecat_module, repo_root):
     obj = ecat_module.echem.from_file(str(_private_example_path(repo_root, "dpv")), {})
@@ -861,7 +867,7 @@ def test_generic_fallback_exposes_filename_gas_and_solvent_metadata(ecat_module,
     assert obj.gas == "CO2"
     assert obj.solvent == "MeCN"
     assert obj.stats()["gas"] == "CO2"
-    assert obj.txt_stats()["solvent"] == "MeCN"
+    assert obj._display_stats()["solvent"] == "MeCN"
 
     sorted_objects = ecat_module.sort([obj], ["gas"])
     assert sorted_objects == [obj]
@@ -973,7 +979,7 @@ def test_ch_ca_parser_reads_small_realistic_header_fields(ecat_module, fixtures_
     assert obj.data["Time"].tolist() == pytest.approx([0.1, 0.2, 0.3])
     assert obj.data["Current"].tolist() == pytest.approx([-3.675e-3, -3.676e-3, -3.632e-3])
 
-    stats = obj.txt_stats()
+    stats = obj._display_stats()
     assert stats["ir comp resistance"] == pytest.approx(52.8)
     assert stats["ir uncomp resistance"] == pytest.approx(13.2)
     assert stats["ir comp percent"] == pytest.approx(80.0)
@@ -1006,8 +1012,8 @@ def test_real_ch_exports_parse_ir_compensation_for_cv_dpv_and_cpe(ecat_module):
     assert cpe_obj.ir_uncomp_resistance == pytest.approx(0.0)
     assert cpe_obj.ir_comp_percent == pytest.approx(100.0)
 
-    assert "ir comp resistance" not in cv_obj.txt_stats()
-    assert "ir comp percent" not in cv_obj.txt_stats()
+    assert "ir comp resistance" not in cv_obj._display_stats()
+    assert "ir comp percent" not in cv_obj._display_stats()
 
     table, _meta = ecat_module.build_object_table(
         [cv_obj],

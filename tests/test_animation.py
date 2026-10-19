@@ -273,7 +273,10 @@ def test_animation_result_summary_reports_resolved_settings(ecat_module, cv_fact
 
 
 def test_animation_result_to_html_returns_string(ecat_module, cv_factory):
-    result = ecat_module.animate(cv_factory(), {"plot": False})
+    result = ecat_module.animate(
+        cv_factory(),
+        {"plot": False, "display format": "jshtml"},
+    )
 
     html = result.to_html()
 
@@ -290,6 +293,7 @@ def test_animation_render_override_ignores_internal_underscore_keys(ecat_module,
     resolved = dict(result.summary["resolved options"])
     resolved["_deduplicate labels explicit"] = False
 
+    resolved["display format"] = "jshtml"
     html = result.to_html(options=resolved)
 
     assert isinstance(html, str)
@@ -313,6 +317,17 @@ setTimeout(function() {
     assert "animabc123.play_animation();" in updated
 
 
+def test_animation_autoplay_helper_starts_html5_video(ecat_module):
+    import ecat.animation as animation_module
+
+    updated = animation_module._autoplay_html(
+        '<video data-ecat-animation controls><source src="movie.mp4"></video>'
+    )
+
+    assert "<video autoplay muted" in updated
+    assert "video.play()" in updated
+
+
 def test_animation_result_show_returns_none(ecat_module, cv_factory):
     result = ecat_module.animate(cv_factory(), {"plot": False})
     result.to_html = lambda options=None: "<html>ok</html>"
@@ -320,15 +335,17 @@ def test_animation_result_show_returns_none(ecat_module, cv_factory):
     assert result.show() is None
 
 
-def test_animation_result_display_returns_none(ecat_module, cv_factory):
+def test_animation_result_does_not_expose_display_alias(ecat_module, cv_factory):
     result = ecat_module.animate(cv_factory(), {"plot": False})
-    result.to_html = lambda options=None: "<html>ok</html>"
 
-    assert result.display() is None
+    assert not hasattr(result, "display")
 
 
 def test_animation_result_to_html_uses_save_pipeline(monkeypatch, ecat_module, cv_factory):
-    result = ecat_module.animate(cv_factory(), {"plot": False, "print": False})
+    result = ecat_module.animate(
+        cv_factory(),
+        {"plot": False, "print": False, "display format": "jshtml"},
+    )
     calls = []
 
     def fake_save(path, writer=None, progress_callback=None, **kwargs):
@@ -345,6 +362,114 @@ def test_animation_result_to_html_uses_save_pipeline(monkeypatch, ecat_module, c
 
     assert html == "<html>ok</html>"
     assert calls == [("HTMLWriter", True)]
+
+
+def test_animation_display_format_auto_prefers_html5_when_ffmpeg_is_available(
+    monkeypatch,
+    ecat_module,
+):
+    import ecat.animation as animation_module
+
+    monkeypatch.setattr(
+        animation_module.mpl_animation.writers,
+        "is_available",
+        lambda name: name == "ffmpeg",
+    )
+
+    assert animation_module._resolve_display_format({"display format": "auto"}) == "html5"
+
+
+def test_animation_display_format_auto_falls_back_to_jshtml_without_ffmpeg(
+    monkeypatch,
+    ecat_module,
+):
+    import ecat.animation as animation_module
+
+    monkeypatch.setattr(
+        animation_module.mpl_animation.writers,
+        "is_available",
+        lambda name: False,
+    )
+
+    assert animation_module._resolve_display_format({"display format": "auto"}) == "jshtml"
+
+
+def test_animation_result_to_html_can_embed_html5_video(
+    monkeypatch,
+    ecat_module,
+    cv_factory,
+):
+    result = ecat_module.animate(
+        cv_factory(),
+        {"plot": False, "print": False, "display format": "html5"},
+    )
+
+    def fake_save(path, writer=None, progress_callback=None, **kwargs):
+        assert writer == "ffmpeg"
+        Path(path).write_bytes(b"fake-mp4")
+        if callable(progress_callback):
+            progress_callback(0, 1)
+
+    from pathlib import Path
+
+    monkeypatch.setattr(result.animation, "save", fake_save)
+    monkeypatch.setattr(
+        ecat_module.animation.mpl_animation.writers,
+        "is_available",
+        lambda name: name == "ffmpeg",
+    )
+
+    html = result.to_html()
+
+    assert "<video" in html
+    assert "controls" in html
+    assert "data:video/mp4;base64," in html
+    assert "fake-mp4" not in html
+
+
+def test_animation_result_to_html_can_embed_gif(
+    monkeypatch,
+    ecat_module,
+    cv_factory,
+):
+    result = ecat_module.animate(
+        cv_factory(),
+        {"plot": False, "print": False, "display format": "gif"},
+    )
+
+    def fake_save(path, writer=None, progress_callback=None, **kwargs):
+        assert writer == "pillow"
+        Path(path).write_bytes(b"fake-gif")
+        if callable(progress_callback):
+            progress_callback(0, 1)
+
+    from pathlib import Path
+
+    monkeypatch.setattr(result.animation, "save", fake_save)
+
+    html = result.to_html()
+
+    assert "<img" in html
+    assert "data:image/gif;base64," in html
+
+
+def test_animation_result_to_html_rejects_html5_without_ffmpeg(
+    monkeypatch,
+    ecat_module,
+    cv_factory,
+):
+    result = ecat_module.animate(
+        cv_factory(),
+        {"plot": False, "print": False, "display format": "html5"},
+    )
+    monkeypatch.setattr(
+        ecat_module.animation.mpl_animation.writers,
+        "is_available",
+        lambda name: False,
+    )
+
+    with pytest.raises(RuntimeError, match="FFmpeg"):
+        result.to_html()
 
 
 def test_animation_result_save_uses_requested_path_and_format(monkeypatch, tmp_path, ecat_module, cv_factory):
@@ -541,7 +666,13 @@ def test_animation_setup_table_shows_auto_resolution(ecat_module, cv_factory):
 
     result = ecat_module.animate(
         [slow, fast],
-        {"plot": False, "trace mode": "auto", "schedule": "auto", "timing mode": "auto"},
+        {
+            "plot": False,
+            "display format": "auto",
+            "trace mode": "auto",
+            "schedule": "auto",
+            "timing mode": "auto",
+        },
     )
     table = animation_module._setup_table(result.summary)
 
@@ -550,20 +681,21 @@ def test_animation_setup_table_shows_auto_resolution(ecat_module, cv_factory):
     assert values["Timing Mode"] == "auto -> physical"
     assert values["Trace Mode"] == "auto -> draw"
     assert values["Schedule"] == "auto -> simultaneous"
+    assert values["Display Format"] in {"auto -> html5", "auto -> jshtml"}
     assert values["Loop"] == "Yes"
     assert values["Include Quiet Time"] == "No"
 
 
-def test_animate_with_plot_true_auto_displays_and_closes_static_figure(monkeypatch, ecat_module, cv_factory):
+def test_animate_with_plot_true_auto_shows_and_closes_static_figure(monkeypatch, ecat_module, cv_factory):
     import ecat.animation as animation_module
 
     calls = []
 
-    def fake_display(self, options=None):
+    def fake_show(self, options=None):
         calls.append(options)
         return self
 
-    monkeypatch.setattr(animation_module.AnimationResult, "display", fake_display)
+    monkeypatch.setattr(animation_module.AnimationResult, "show", fake_show)
     plt.close("all")
 
     result = ecat_module.animate(cv_factory(), {"plot": True, "print": False})

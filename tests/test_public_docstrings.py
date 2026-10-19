@@ -45,6 +45,7 @@ PUBLIC_METHOD_OPTIONS = {
     e.echem.xy: 'describe_options("plot")',
     e.echem.plot: 'describe_options("plot")',
     e.echem.animate: 'describe_options("animate")',
+    e.echem.spectrum: 'describe_options("echem.spectrum")',
     e.cv.x: 'describe_options("plot")',
     e.cv.y: 'describe_options("plot")',
     e.cv.xy: 'describe_options("plot")',
@@ -86,6 +87,18 @@ def test_curated_public_methods_have_options_references():
         assert doc, method
         assert "Parameters\n----------" in doc, method
         assert options_reference in doc, method
+
+
+def test_echem_spectrum_has_complete_numpy_style_public_docstring():
+    doc = _doc(e.echem.spectrum)
+
+    assert "Parameters\n----------" in doc
+    assert "options : dict or SpectrumOptions, optional" in doc
+    assert "Returns\n-------" in doc
+    assert "AnalysisResult" in doc
+    assert "Examples\n--------" in doc
+    assert 'e.describe_options("echem.spectrum")' in doc
+    assert 'result = obj.spectrum({"method": "welch", "plot": False})' in doc
 
 
 def test_core_public_classes_have_docstrings():

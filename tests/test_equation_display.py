@@ -185,7 +185,7 @@ def test_sevcik_equation_formatter_concentration_mode(ecat_module):
         scan_rate=0.1,
     )
 
-    assert "D = (R * T / (F^2 * n^3 * v * S^2))" in equation["symbolic"]
+    assert "D = (R * T / (F^3 * n^3 * v * S^2))" in equation["symbolic"]
     assert "i_p = m * C + b" in equation["symbolic"]
     assert "v = 0.1 V/s" in equation["definitions"]
     assert "n = 2" in equation["definitions"]

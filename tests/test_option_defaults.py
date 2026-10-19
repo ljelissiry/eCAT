@@ -227,6 +227,7 @@ def test_plot_options_include_animation_defaults(ecat_module):
         assert defaults["trace mode"] == "auto"
         assert defaults["schedule"] == "auto"
         assert defaults["timing mode"] == "auto"
+        assert defaults["display format"] == "auto"
         assert defaults["normalized duration"] == 2.0
         assert defaults["speedup"] == 1.0
         assert defaults["fps"] == 20
@@ -254,6 +255,9 @@ def test_describe_options_lists_animation_function(ecat_module):
     assert _option_row(df, "stride")["Category"] == "Animation"
     assert _option_row(df, "schedule")["Choices"] == "auto, simultaneous, staggered, sequential"
     assert _option_row(df, "timing mode")["Choices"] == "auto, physical, normalized"
+    assert _option_row(df, "display format")["Category"] == "Animation"
+    assert _option_row(df, "display format")["Choices"] == "auto, html5, jshtml, gif"
+    assert "FFmpeg" in _option_row(df, "display format")["Description"]
     assert "quiet time" in _option_row(df, "include quiet time")["Description"]
     assert _option_row(df, "progress")["Category"] == "Output/display"
     assert _option_row(df, "gradient by")["Category"] == "Color mapping"

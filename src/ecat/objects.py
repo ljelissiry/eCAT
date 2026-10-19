@@ -5,17 +5,21 @@ This module exposes the object classes used by the public eCAT API.
 
 import math
 import warnings
+from copy import deepcopy
 
 from .utils import *  # noqa: F401,F403
 from .options import *  # noqa: F401,F403
 from .options import _project_options
 from .parsers import (
     ParseResult,
+    _FILENAME_NUMBER,
+    _normalize_filename_number,
+    _parse_scan_rate_from_filename,
     exp_type_short as _exp_type_short,
     parse_text_file_to_result as _parse_text_file_to_result,
 )
 from ._file_formats import validate_default_text_input
-from ._cv_direction import cv_segment_scan_direction
+from ._cv_direction import cv_segment_scan_direction, split_cv_potential_segments
 from ._plot_style import _active_plot_style_value
 from .results import AnalysisResult
 
@@ -205,6 +209,9 @@ _DEFAULT_SOLVENTS = [
     "acetonitrile",
     "DCM",
     "DMF",
+    "DMA",
+    "DMAc",
+    "dimethylacetamide",
     "DMSO",
     "TEGDME",
 ]
@@ -227,6 +234,9 @@ _PARSER_TOKEN_CANONICAL = {
         "acetonitrile": "MeCN",
         "dcm": "DCM",
         "dmf": "DMF",
+        "dma": "DMAc",
+        "dmac": "DMAc",
+        "dimethylacetamide": "DMAc",
         "dmso": "DMSO",
         "tegdme": "TEGDME",
     },
@@ -370,7 +380,10 @@ def _detect_parser_tokens(name, values, kind):
         canonical = _canonicalize_parser_token(kind, token)
         pattern = rf"(?<![A-Za-z0-9\[\]]){re.escape(token)}(?![A-Za-z0-9\[\]])"
         for match in re.finditer(pattern, text, flags=re.IGNORECASE):
-            found.append((match.start(), canonical))
+            # Recognize the new DMA/DMAc aliases without rewriting the name
+            # supplied in the filename. Existing solvent conventions stay intact.
+            label = match.group(0) if kind == "solvents" and canonical == "DMAc" else canonical
+            found.append((match.start(), label))
     found.sort(key=lambda item: item[0])
     ordered = []
     for _position, canonical in found:
@@ -403,7 +416,7 @@ def _normalize_concentration_unit(unit):
 
 def _extract_concentration_tokens(tokens, idx, allow_lowercase_m_boundary=True):
     token = str(tokens[idx]).strip()
-    compact = re.fullmatch(r"(\d+(?:\.\d+)?|\.\d+)\s*([A-Za-zμ%]+)", token)
+    compact = re.fullmatch(rf"({_FILENAME_NUMBER})\s*([A-Za-zμ%]+)", token)
     if compact:
         raw_unit = compact.group(2)
         lower_unit = raw_unit.lower()
@@ -412,11 +425,11 @@ def _extract_concentration_tokens(tokens, idx, allow_lowercase_m_boundary=True):
                 return None
             if raw_unit == "m":
                 return None
-            return compact.group(1), _normalize_concentration_unit(raw_unit), idx + 1
+            return _normalize_filename_number(compact.group(1)), _normalize_concentration_unit(raw_unit), idx + 1
 
     if idx + 1 >= len(tokens):
         return None
-    number = re.fullmatch(r"(\d+(?:\.\d+)?|\.\d+)", token)
+    number = re.fullmatch(rf"({_FILENAME_NUMBER})", token)
     if not number:
         return None
     raw_unit = str(tokens[idx + 1]).strip()
@@ -425,14 +438,14 @@ def _extract_concentration_tokens(tokens, idx, allow_lowercase_m_boundary=True):
         return None
     if raw_unit == "m":
         return None
-    return number.group(1), _normalize_concentration_unit(raw_unit), idx + 2
+    return _normalize_filename_number(number.group(1)), _normalize_concentration_unit(raw_unit), idx + 2
 
 
 def _looks_like_concentration_boundary(tokens, idx):
     token = str(tokens[idx]).strip()
-    if re.fullmatch(r"(\d+(?:\.\d+)?|\.\d+)\s*([A-Za-zμ%]+)", token):
+    if re.fullmatch(rf"({_FILENAME_NUMBER})\s*([A-Za-zμ%]+)", token):
         return True
-    if idx + 1 < len(tokens) and re.fullmatch(r"(\d+(?:\.\d+)?|\.\d+)", token):
+    if idx + 1 < len(tokens) and re.fullmatch(_FILENAME_NUMBER, token):
         return bool(re.fullmatch(r"[A-Za-zμ%]+", str(tokens[idx + 1]).strip()))
     return False
 
@@ -1546,10 +1559,10 @@ class echem:
         
         # Regular expression pattern to extract compounds and concentrations from the temporary name
         compound_pattern = (
-            r'(\d+(?:\.\d+)?)\s*'  # numeric value
+            rf'(?<![A-Za-z0-9.,])({_FILENAME_NUMBER})\s*'  # complete numeric token
             r'([munμ]?M|L|%|equiv|x)\s*'  # unit (mM, μM, L, %, equiv, x …)
             r'(?=[\w(\[])'  # next char must be a word-char **or an open parenthesis or bracket**
-            r'([\w()\[\]\-+,]+?)_'  # the compound itself, allowing for characters including: [ ] + ,
+            r'([\w()\[\]\-+, ]+?)_'  # compound, including underscore-delimited phrases
         )
         
         # Use regular expressions to find all occurrences of compounds and concentrations in the temporary name
@@ -1562,14 +1575,15 @@ class echem:
             }
 
         combined = [
-            item for item in re.findall(compound_pattern, temp_name, flags=re.IGNORECASE)
-            if valid_concentration_match(item)
+            match.groups() for match in re.finditer(compound_pattern, temp_name, flags=re.IGNORECASE)
+            if valid_concentration_match(match.groups())
+            and (" " not in match.group(3).strip() or temp_name[match.start() - 1] == "_")
         ]
 
         # Format the extracted compounds and concentrations into separate lists
         compounds = [compound[-1].strip("_") for compound in combined]
         concentrations = [
-            f"{compound[0]} {_normalize_concentration_unit(compound[1])}"
+            f"{_normalize_filename_number(compound[0])} {_normalize_concentration_unit(compound[1])}"
             for compound in combined
         ]
 
@@ -2359,21 +2373,21 @@ class echem:
             'segments':segments
             }
 
-    def info(self):
-        """Print a compact information summary for one electrochemistry object.
-        
-        Parameters
-        ----------
-        None
+    def metadata(self):
+        """Return a machine-readable metadata snapshot for this object.
+
+        The snapshot combines common identity and provenance fields with the
+        class-specific values returned by ``stats()``. Mutating any returned
+        value does not mutate the source object.
         
         Returns
         -------
-        None
-            Prints information to the notebook output.
+        dict
+            Metadata and statistics for the object.
         
         Examples
         --------
-        >>> cv_obj.info()
+        >>> metadata = cv_obj.metadata()
         """
         electrode_parts = []
         for label, attr in [
@@ -2386,7 +2400,11 @@ class echem:
                 electrode_parts.append(f"{label}: {value}")
         info = {
             'name': getattr(self, 'name', None),
+            'type': getattr(self, 'type', None),
+            'software': getattr(self, 'software', None),
+            'file path': getattr(self, 'filepath', None),
             'folder path': getattr(self, 'folderpath', getattr(self, 'folder_path', None)),
+            'units': getattr(self, 'units', {}),
             'timestamp': getattr(self, 'timestamp', None),
             'creation time': getattr(self, 'creation_time', None),
             'modification time': getattr(self, 'modification_time', None),
@@ -2394,21 +2412,49 @@ class echem:
             'reference label': getattr(self, 'reference_label', None),
             'reference mode': getattr(self, 'reference_mode', None),
             'reference source file': getattr(self, 'reference_source_file', None),
+            'reference pair details': getattr(self, 'reference_pair_details', None),
             'ir comp resistance': getattr(self, 'ir_comp_resistance', None),
             'ir uncomp resistance': getattr(self, 'ir_uncomp_resistance', None),
             'ir comp percent': getattr(self, 'ir_comp_percent', None),
             'electrode': "; ".join(electrode_parts) if electrode_parts else None,
         }
+        parse_result = getattr(self, "parse_result", None)
+        if parse_result is not None:
+            info["parser"] = getattr(parse_result, "parser", None)
+            info["parser warnings"] = list(getattr(parse_result, "warnings", []) or [])
         filter_metadata = getattr(self, "filter_metadata", None)
         if filter_metadata:
             from .preprocessing import _filter_summary
 
             info["filter"] = _filter_summary(filter_metadata)
+        processing_history = getattr(self, "processing_history", None)
+        if processing_history:
+            info["processing history"] = processing_history
         stats = self.stats()
         info.update(stats)
-        return info
+        return deepcopy(info)
 
-    def combine_concs_chems(self, concentrations, compounds, options=None):
+    def spectrum(self, options=None):
+        """Analyze a physical-time signal with Welch PSD or a one-sided FFT.
+
+        Parameters
+        ----------
+        options : dict or SpectrumOptions, optional
+            Spectrum-analysis options. See ``e.describe_options("echem.spectrum")``.
+
+        Returns
+        -------
+        AnalysisResult
+            Spectrum table, summary, diagnostics, warnings, and optional figures.
+
+        Examples
+        --------
+        >>> result = obj.spectrum({"method": "welch", "plot": False})
+        """
+        from .spectral import spectrum_analysis
+        return spectrum_analysis(self, options)
+
+    def _combined_compound_labels(self, concentrations, compounds, options=None):
         if not compounds:
             return ''
 
@@ -2418,7 +2464,7 @@ class echem:
 
         return conc_and_chem
 
-    def txt_stats(self, options=None):
+    def _display_stats(self, options=None):
         if options is None:
             options = {}
 
@@ -2426,7 +2472,7 @@ class echem:
 
         stats["exp type"] = _exp_type_short(getattr(self, "type", ""))
 
-        stats["compounds"] = self.combine_concs_chems(
+        stats["compounds"] = self._combined_compound_labels(
             stats.get("concentrations", []),
             stats.get("compounds", []),
             options,
@@ -2540,17 +2586,7 @@ class cv(echem):
         try:
             self.scan_rate = float(name)
         except ValueError:
-            match = re.search(r'(\d+\.?\d*)[numμ]?Vs', name)[0]
-            if match:
-                # Extract the numeric part and convert it to a float (e.g., "100" to 0.1, "200" to 0.2)
-                value = float(re.search(r'(\d+\.?\d*)', match)[0])
-                prefix = re.search(r'[numμ]?Vs', match)[0][0]
-                conversion_dict = {
-                    "n": 1e-9,  # Nano (10^-9)
-                    "u": 1e-6,  # Micro (10^-6)
-                    "m": 1e-3,   # Milli (10^-3)
-                }
-                self.scan_rate = value * conversion_dict.get(prefix, 1)
+            self.scan_rate = _parse_scan_rate_from_filename(name)
 
         self.modify_by_options(options)
         self._refresh_parse_result(parser="manual")
@@ -2942,13 +2978,9 @@ class cv(echem):
     def _split_segment_arrays(x, y):
         x = np.asarray(x, dtype=float)
         y = np.asarray(y, dtype=float)
-        dx = np.diff(x)
-        change = np.where(np.diff(np.sign(dx)))[0] + 1
-        split_x = np.split(x, change)
-        split_y = np.split(y, change)
         return [
-            {"number": idx + 1, "x": sx, "y": sy}
-            for idx, (sx, sy) in enumerate(zip(split_x, split_y))
+            {"number": s["segment"], "x": x[s["start"]:s["stop"]], "y": y[s["start"]:s["stop"]]}
+            for s in split_cv_potential_segments(x)
         ]
 
     @staticmethod
@@ -3456,11 +3488,11 @@ class cv(echem):
         if seg_spec is None:
             return x, y
 
-        # split once
-        dx = np.diff(x)
-        change = np.where(np.diff(np.sign(dx)))[0] + 1
-        seg_x = np.split(x, change)
-        seg_y = np.split(y, change)
+        # Share reversal/hold ownership with parser counts and plotting.
+        bounds = split_cv_potential_segments(x)
+        x, y = np.asarray(x), np.asarray(y)
+        seg_x = [x[s["start"]:s["stop"]] for s in bounds]
+        seg_y = [y[s["start"]:s["stop"]] for s in bounds]
 
         def fetch(s):
             if 1 <= s <= len(seg_x):
@@ -3624,119 +3656,14 @@ class cv(echem):
             idx = int(np.argmin(np.abs(x - potential)))
 
         # Locate segment boundaries
-        dx = np.diff(x)
-        break_pts = np.where(np.diff(np.sign(dx)))[0] + 1  # switch in scan direction
-        seg_bounds = np.concatenate(([0], break_pts, [len(x)]))
+        bounds = split_cv_potential_segments(x)
+        if not 0 <= idx < len(x):
+            raise IndexError("point index is outside the CV data")
+        seg_bounds = np.array([s["start"] for s in bounds] + [len(x)])
 
         seg_idx = np.searchsorted(seg_bounds, idx, side="right") - 1
         start, end = seg_bounds[seg_idx], seg_bounds[seg_idx + 1]
         return seg_idx, slice(start, end), (start, end)
-
-    def fft(self, options=None):
-        """
-        Plots the FFT amplitude spectrum of the CV's current data.
-
-        This method helps visualize the frequency components of the current signal,
-        which can be useful for identifying noise characteristics.
-
-        Relevant options (to be managed by _cv_analysis_options or passed directly):
-            'fft_plot_title' (str, default: "FFT Amplitude Spectrum for [CV Name]"): Plot title.
-            'fft_plot_xlabel' (str, default: "Frequency (Hz)" or "Normalized Frequency"): X-axis label.
-            'fft_plot_ylabel' (str, default: "Amplitude"): Y-axis label.
-            'fft_ylog_scale' (bool, default: False): Whether to use a log scale for the y-axis.
-            # User might need to ensure these options are part of 'cv analysis' defaults
-            # or handle them if _cv_analysis_options doesn't cover them.
-        Returns:
-            tuple: (fig, ax) Matplotlib figure and axes objects of the plot.
-                   Returns (None, None) if plotting fails.
-        """
-        # Process options using the class's existing _cv_analysis_options method
-        # Note: self._cv_analysis_options is tailored for 'cv analysis'. You might need to
-        # keep FFT-specific options explicit at the call site
-        # or handle them locally if they are not part of 'cv analysis'.
-        options = self._cv_analysis_options(options)
-
-        plot_title_base = options.get('fft_plot_title_base', "FFT Amplitude Spectrum")
-        plot_title = f"{plot_title_base} for {self.name}"
-        plot_xlabel = options.get('fft_plot_xlabel', None)  # Default set later based on Fs
-        plot_ylabel = options.get('fft_plot_ylabel', "Amplitude")
-        ylog_scale = options.get('fft_ylog_scale', False)
-
-        try:
-            current_data = self.y(options).values  # Use processed options for y()
-        except Exception as e:
-            print(f"Error accessing current data for FFT: {e}")
-            return None, None
-
-        if len(current_data) == 0:
-            print("No current data points to perform FFT.")
-            return None, None
-
-        # --- Calculate Sampling Frequency (Fs) ---
-        sampling_frequency_Hz = 0
-        delta_t_s = 0
-        # self.delta_x is the potential step from the echem object, self.scan_rate is V/s
-        if hasattr(self, 'scan_rate') and self.scan_rate > 0 and \
-                hasattr(self, 'delta_x') and self.delta_x > 0:
-            delta_t_s = self.delta_x / self.scan_rate
-            if delta_t_s > 0:
-                sampling_frequency_Hz = 1.0 / delta_t_s
-            else:
-                print("Warning: Calculated Delta t for FFT is zero or negative. Using normalized frequency.")
-        else:
-            print("Warning: Scan rate or delta_x not available/valid. Using normalized frequency for FFT.")
-
-        # --- Perform FFT ---
-        N = len(current_data)
-        # Remove DC offset for better visualization of AC components
-        yf = np.fft.fft(current_data - np.mean(current_data))
-
-        if sampling_frequency_Hz > 0 and N > 0:
-            xf = np.fft.fftfreq(N, d=delta_t_s)[:N // 2]  # Frequencies up to Nyquist
-            effective_xlabel = plot_xlabel if plot_xlabel else "Frequency (Hz)"
-        elif N > 0:  # Fallback to normalized frequency
-            xf = np.fft.fftfreq(N, d=1)[:N // 2]  # d=1 for normalized frequency
-            effective_xlabel = plot_xlabel if plot_xlabel else "Normalized Frequency (cycles/sample)"
-            print("Displaying FFT with normalized frequency (0 to 0.5 cycles/sample).")
-        else:  # Should have been caught by len(current_data) == 0
-            return None, None
-
-        amplitude_spectrum = 2.0 / N * np.abs(yf[0:N // 2]) if N > 0 else np.array([])
-
-        if N <= 1 or len(xf) == 0 or len(amplitude_spectrum) == 0:
-            print("Warning: FFT resulted in empty spectrum arrays. Cannot plot.")
-            return None, None
-
-        # --- Plot FFT Spectrum ---
-        if options.get('plot'):
-            fig, ax = plt.subplots(
-                figsize=options.get('figure.figsize', (10, 5)))  # Use existing MPL defaults if possible
-
-            # Exclude DC component (xf[0], amplitude_spectrum[0]) for clearer plotting of AC components
-            if len(xf) > 1 and len(amplitude_spectrum) > 1:
-                ax.plot(xf[1:], amplitude_spectrum[1:])
-            elif len(xf) > 0 and len(amplitude_spectrum) > 0:  # Plot even if only DC (though less useful)
-                ax.plot(xf, amplitude_spectrum)
-
-            ax.set_title(plot_title)
-            ax.set_xlabel(effective_xlabel)
-            ax.set_ylabel(plot_ylabel)
-
-            if ylog_scale:
-                ax.set_yscale('log')
-
-            if sampling_frequency_Hz > 0 and len(xf) > 0:
-                ax.set_xlim(0, sampling_frequency_Hz / 2)  # Show up to Nyquist frequency
-            elif len(xf) > 0:  # Normalized frequency plot
-                ax.set_xlim(0, 0.5)  # Normalized frequency up to Nyquist (0.5 cycles/sample)
-
-            plt.tight_layout()
-            # The plot will be shown if used in an interactive environment, or can be saved by the user.
-            # To explicitly show here: plt.show()
-
-            return fig, ax
-
-        return xf, yf
 
     def filter(self, options=None):
         """Return a CV filtered with a reproducible SciPy-backed method.
@@ -5494,11 +5421,11 @@ class cv(echem):
             'segments': self.segments,
         }
     
-    def txt_stats(self, options=None):
+    def _display_stats(self, options=None):
         if options is None:
             options = {}
 
-        stats = super().txt_stats(options)
+        stats = super()._display_stats(options)
 
         if stats.get("gas") is None:
             stats["gas"] = ""
@@ -5619,11 +5546,11 @@ class dpv(echem):
             'comp R': getattr(self, 'comp_R', None),
         }
 
-    def txt_stats(self, options=None):
+    def _display_stats(self, options=None):
         if options is None:
             options = {}
 
-        stats = super().txt_stats(options)
+        stats = super()._display_stats(options)
 
         if stats.get("gas") is None:
             stats["gas"] = ""
@@ -6268,7 +6195,7 @@ class cp(echem):
             "Total duration (s)": total_dur,
         }
 
-    def txt_stats(self, options=None):
+    def _display_stats(self, options=None):
         if options is None:
             options = {}
 
@@ -6297,7 +6224,7 @@ class cp(echem):
         stats["technique"] = "CP"
         stats["solvent"] = getattr(self, "solvent", None)
         stats["gas"] = getattr(self, "gas", None) or ""
-        stats["compounds"] = self.combine_concs_chems(
+        stats["compounds"] = self._combined_compound_labels(
             list(getattr(self, "concentrations", []) or []),
             list(getattr(self, "compounds", []) or []),
             options,
@@ -6947,7 +6874,7 @@ class ca(echem):
         }
         return stats
 
-    def txt_stats(self, options=None):
+    def _display_stats(self, options=None):
         if options is None:
             options = {}
 
@@ -6969,7 +6896,7 @@ class ca(echem):
         stats["technique"] = "CA"
         stats["solvent"] = getattr(self, "solvent", None)
         stats["gas"] = getattr(self, "gas", None) or ""
-        stats["compounds"] = self.combine_concs_chems(
+        stats["compounds"] = self._combined_compound_labels(
             list(getattr(self, "concentrations", []) or []),
             list(getattr(self, "compounds", []) or []),
             options,
@@ -7157,7 +7084,8 @@ class ca(echem):
             scale, display_unit = scale_time_axis(np.asarray([float(value)], dtype=float), unit or "s", options.get("x unit", "auto"))
             display_value = float(value) * scale
         elif kind == "current":
-            scale, display_unit = scale_axis(np.asarray([float(value)], dtype=float), unit or "A", options.get("y unit", "auto"))
+            current_unit, _ = _resolve_ca_y_units(options.get("y unit", "auto"))
+            scale, display_unit = scale_axis(np.asarray([float(value)], dtype=float), unit or "A", current_unit)
             display_value = float(value) * scale
         text = self._chrono_format_number(display_value, options)
         if display_unit:
@@ -7442,6 +7370,20 @@ class ca(echem):
             rows.append(("TOF", values.get("TOF"), values.get("TOF unit", "s^-1"), "plain"))
         return rows
 
+    def _ca_current_display_value(self, value, current, options):
+        """Use the CA trace's unit choice and offset for current annotations."""
+        current_unit, _ = _resolve_ca_y_units(options.get("y unit", "auto"))
+        if options.get("corrected current", False):
+            # Corrected CA plots pass the baseline-corrected array directly
+            # to _plot_helper, rather than through y().
+            trace = current
+            value_scale = 1.0
+        else:
+            trace = self.y(options).to_numpy(dtype=float)
+            value_scale = options.get("y scale", 1.0)
+        scale, _ = self.scale_axis(trace, "Current", self.units.get("Current", "A"), current_unit)
+        return value * value_scale * scale + options.get("offset", 0)
+
     def current_at_time(self, time=None, options=None):
         """Return the CA current at a requested time by interpolation."""
         if isinstance(time, dict) and options in ({}, None):
@@ -7469,7 +7411,8 @@ class ca(echem):
                 plot_options["corrected current"] = True
             ax = self.plot(plot_options)
             scale, _unit = scale_time_axis(t, self.units.get("Time", "s"), options.get("x unit", "auto"))
-            ax.scatter([time * scale], [current_at], color=options.get("color", "black"), zorder=5)
+            display_current = self._ca_current_display_value(current_at, current, options)
+            ax.scatter([time * scale], [display_current], color=options.get("color", "black"), zorder=5)
 
         values = {
             "time": time,
@@ -7550,7 +7493,8 @@ class ca(echem):
                 plot_options["corrected current"] = True
             ax = self.plot(plot_options)
             scale, _unit = scale_time_axis(t, self.units.get("Time", "s"), options.get("x unit", "auto"))
-            ax.axhline(avg_current, color=options.get("fit color", "tab:red"), ls="--")
+            display_current = self._ca_current_display_value(avg_current, current, options)
+            ax.axhline(display_current, color=options.get("fit color", "tab:red"), ls="--")
             ax.axvspan(resolved_range[0] * scale, resolved_range[1] * scale, color="0.5", alpha=0.12)
 
         values = {

@@ -123,6 +123,40 @@ inplace = false
 plot = false
 print = true
 
+[spectrum]
+method = "welch"
+column = "auto"
+segments = "all"
+time_range = null
+detrend = "constant"
+window = "hann"
+points_per_window = "auto"
+overlap = 0.5
+nfft = null
+resample = false
+sampling_tolerance = 0.01
+frequency_range = null
+include_dc = false
+plot_scale = "auto"
+xscale = null
+yscale = null
+plot = true
+plot_all = false
+print = true
+print_all = false
+pretty_print = true
+sig_figs = 4
+title = true
+subtitle = "auto"
+xlabel = null
+ylabel = null
+legend = true
+legend_loc = "auto"
+legend_outside = false
+grid = false
+color = null
+colors = []
+
 [get_data]
 folder_path = "."
 delimiter = ","

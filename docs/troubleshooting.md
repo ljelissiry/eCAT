@@ -41,6 +41,34 @@
 - Check whether the object now uses dimensionless axes by default with `obj.x().name` and `obj.y().name`.
 - Override axes explicitly with `"x axis": "Potential"` or `"y axis": "Current"` when needed.
 
+## Spectrum Analysis Fails Or Looks Misleading
+
+- Use `obj.spectrum({"method": "welch"})` for averaged power spectral density
+  or `obj.spectrum({"method": "fft"})` for one-sided amplitude and phase. Both
+  include deterministic electrochemical signal variation as well as noise.
+- Inspect `result.summary["time source"]`, the reported sample rate, and the
+  Nyquist frequency before interpreting peaks. CA, CP, and generic objects need
+  recorded Time; CV can reconstruct time per segment from raw Potential and
+  scan rate, and DPV can reconstruct it from pulse period.
+- If sampling-interval deviation exceeds the default 1% tolerance, repair the
+  timestamps or set `"resample": True` to interpolate onto the median-interval
+  grid. Inspect the `plot all=True` time-domain diagnostic after resampling.
+- If the trace is too short or Welch reports weak averaging, select a wider
+  `"time range"` or use a smaller `"points per window"` value.
+- Keep the upper `"frequency range"` at or below the reported Nyquist
+  frequency. Frequencies above Nyquist cannot be resolved and may appear as
+  lower-frequency aliases.
+- DC is excluded by default. Set `"include dc": True` to retain it, but do not
+  combine a retained zero-frequency bin with a logarithmic x-axis.
+- A finite record can leak power into neighboring frequency bins. Detrending
+  and a Hann or other window reduce leakage but do not prove that a feature is
+  noise; compare the time-domain trace and vary defensible window settings.
+- `"plot scale"` controls spectrum-axis spacing, not numeric multiplication.
+  Ordinary `obj.plot()` scaling uses `"x scale"` / `"y scale"` to multiply
+  displayed data. Use spectrum `"plot scale": "linear"`, `"log-log"`,
+  `"semilogx"`, `"semilogy"`, or `"symlog"`, or direct `xscale` / `yscale`
+  overrides.
+
 ## Generic Text Loads But Metadata Is Missing
 
 - Generic fallback loading is intentionally limited.
@@ -53,7 +81,7 @@
 
 - Parser warnings are nonfatal diagnostics. They usually mean eCAT loaded the numeric table but inferred or could not find metadata such as scan rate, timestamp, step structure, or technique.
 - Use `e.parse_file(path)` when you want to inspect the parser contract before object promotion.
-- Use `obj.parse_result.warnings` and `obj.parse_result.raw_metadata` when an object loaded successfully but `obj.info()` looks incomplete.
+- Use `obj.parse_result.warnings` and `obj.parse_result.raw_metadata` when an object loaded successfully but `obj.metadata()` looks incomplete.
 - Header and filename scan rates are compared after conversion to V/s. Differences within 0.1% or `1e-6 V/s` are treated as acquisition/rounding noise. Larger disagreements warn, continue importing, and use the measured header value; inspect the filename and raw header before analysis.
 - If a NOVA ASCII or generic text file loads as a CV, confirm the potential/current units and scan rate before analysis.
 - If a generic text file contains time, potential, and current columns but no technique marker, eCAT keeps it generic rather than guessing CA, CP, or CV.

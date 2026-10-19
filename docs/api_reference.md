@@ -132,7 +132,7 @@ Wheel installations include the public Fe/PhOH CV, CA/CPE, and CP example folder
 For text imports, eCAT tries to recover useful metadata from filenames when the file itself does not provide it cleanly. The built-in filename parser looks for:
 
 - `gas`, such as `Ar`, `N2`, `CO`, or `CO2`
-- `solvent`, such as `MeCN`, `DMF`, `DMSO`, `DCM`, `THF`, or `H2O`
+- `solvent`, such as `MeCN`, `DMF`, `DMAc`, `DMSO`, `DCM`, `THF`, or `H2O`
 - `compounds` and paired `concentrations`
 - `scan rate`
 
@@ -154,6 +154,7 @@ Recognized scan-rate patterns include compact and spaced forms such as:
 - `100mVs`
 - `100 mV/s`
 - `0.1Vs`
+- `250mV_s` or `0p1V_s` (underscore in the rate unit)
 - `500uV/s`
 
 Recommended filename style is compact, ordered, and explicit:
@@ -163,6 +164,8 @@ Recommended filename style is compact, ordered, and explicit:
 CV_MeCN_Ar_0.1MTBAPF6_3mMFc_1mMFe_100mVs
 ```
 
+`DMA`, `DMAc`, and `dimethylacetamide` are recognized solvent tokens for N,N-dimethylacetamide, retaining the spelling supplied in the filename for stored metadata and display. This is filename interpretation, not independent verification of composition; use a custom parser override if a project uses the abbreviation differently. Matching respects token boundaries, so `DMAP` is not interpreted as `DMA`.
+
 Practical recommendations:
 
 - use explicit concentration units in every concentration token
@@ -170,6 +173,16 @@ Practical recommendations:
 - use canonical gas and solvent names consistently across a project
 - prefer underscores or similarly clean separators over long free-text filenames
 - treat human-readable space-delimited names as a fallback, not the primary naming convention
+
+Decimal marks `.`, `,`, and `p` are supported inside filename numbers: `0.5mMFc`, `0,5mMFc`, and `0p5mMFc` all represent 0.5 mM. Comma means a decimal mark, not a thousands separator. Use underscores between metadata fields and keep spaces within compound names, for example `0p5mM_ferrocene carboxylic acid_10mM_TBAPF6_0p1Vs`. The letter `p` in compound names is not globally replaced.
+
+Scan-rate precedence is **instrument header → reliable waveform estimate → filename fallback**. A usable waveform estimate takes precedence over the filename, even when they agree within tolerance. The original header and filename values remain available in parser provenance. Measured potentials and currents always come from the data columns. For CV exports, `control/V` (or `control/mV`) is retained separately as `Control Potential` in V; it does not replace measured `Potential`. When present, this recorded program is used for the rate estimate; otherwise measured potential/time is used.
+
+When header and filename scan rates are both missing, eligible waveforms can supply a rate in V/s. eCAT checks each ramp and leaves the rate unresolved when ramp rates disagree or time data are invalid. For dense ramps with at least 20 potential-change intervals, it excludes the first/last arrival interval and checks overlapping five-interval rates against the ramp average (5% tolerance). Sparse ramps retain individual-interval checks. Repeated staircase samples and identifiable extended holds are handled separately. Rates across ramps must agree within 0.1% or `1e-6 V/s`. This is a nominal-rate estimate, not certification of a constant-rate program; brief variations at boundaries or below these tolerances may be unresolved.
+
+Both filename and header rate units accept `mV_s` as well as `mV/s`. A waveform estimate differing from the selected header/filename value by more than 5% (absolute tolerance `1e-6 V/s`) produces a **Review scan rate** warning in the normal `get_data()` import printout. It reports both values and the source used for analysis. If no explicit header rate exists, the waveform estimate replaces the filename value; an explicit instrument-header rate remains selected and is flagged for review if it disagrees with the waveform. The existing tighter header-versus-filename comparison remains separate. `obj.parse_result.raw_metadata` includes `scan_rate_source`, `header_scan_rate`, `filename_scan_rate`, `waveform_scan_rate`, `waveform_rate_source`, `scan_rate_review_required`, and `waveform_rate_warnings`. A missing estimate means the waveform could not be checked; a false review flag alone does not certify agreement. Warnings remain on `obj.parse_result.warnings` when printing is disabled. Direct file imports also emit the mismatch as a Python `UserWarning`.
+
+EC-Lab `Cycle` and `Half Cycle` columns remain distinct. A complete cycle usually contains two directional sweep segments; partial cycles and holds mean that doubling the cycle count is not a general segment-count rule. When explicit segment metadata are absent, eCAT derives the count from the potential sweep history. Segment counting, analysis selection, colored plotting, and `find_segment()` share the same direction helper: the turning-point sample and any repeated vertex samples belong to the preceding sweep. Every row belongs to exactly one segment. This corrects the old analysis selection convention, which assigned the turning point to the following sweep; segment-local point indices can consequently change by one.
 
 Important parser rules:
 
@@ -185,11 +198,12 @@ These methods are available on eCAT objects unless a technique-specific object d
 
 | Method | Purpose |
 |---|---|
-| `obj.info()` | Print object metadata and basic import details. |
+| `obj.metadata()` | Return a machine-readable, independent snapshot of object metadata, provenance, reference information, units, processing history, and experiment statistics. |
 | `obj.stats()` | Return metadata and numeric ranges as a dictionary. |
 | `obj.x(options=None)` | Return the selected x-axis data. |
 | `obj.y(options=None)` | Return the selected y-axis data. |
 | `obj.xy(options=None)` | Return selected x and y arrays or series together. |
+| `obj.spectrum(options=None)` | Analyze a physically timed signal with Welch PSD or a calibrated one-sided FFT. |
 | `obj.animate(options=None)` | Build an animation for one object using the shared plotting surface. |
 
 | Name | Purpose |
@@ -199,6 +213,8 @@ These methods are available on eCAT objects unless a technique-specific object d
 | `show_groups(groups, options=None)` | Display already-created groups from `group()` or `sort_and_group()`. |
 
 Display helpers return `None` by default to avoid duplicate notebook output. `show(group)` delegates to `show_objects(group)` for one group, while `show(groups)` delegates to `show_groups(groups)` for nested grouped lists. Pass `{"return": True}` to return the displayed table when you need it for further work. Rich notebook output uses table captions for titled tables, while terminal/plain output keeps readable heading lines before the table. Numeric object-display values honor `sig figs`; recognized unit suffixes such as `(A)`, `(V)`, and `(s)` are displayed in the Value column. Use `show_objects(objects, {"columns": "available"})` to return the available column keys, `{"columns": "all"}` to show every non-internal column, or pass labels such as `"Scan Rate"` and aliases such as `"scan_rate"` in the column list.
+
+`metadata()` has the same contract on `cv`, `ca`, `cp`, and `dpv` objects. Common keys identify the object, experiment type, parser software, source path, stored units, reference correction, electrodes, and processing history; each class then adds its technique-specific `stats()` values. The returned structure is deep-copied, so changing nested lists or dictionaries does not alter the source object. Use `show()` for formatted human-readable output and `metadata()` when code needs reusable values.
 
 ## Plotting
 
@@ -257,14 +273,98 @@ e.multi_scatterplot(results_transformed, {"x column": "x transformed", "y column
 e.multi_scatterplot(results, {"y columns": ["kobs", "TOFmax"], "labels": ["kobs", "TOFmax"]})
 ```
 
+## Spectrum Analysis
+
+All imported electrochemistry objects inherit `obj.spectrum(options=None)`. It
+supports `cv`, `ca`, `cp`, `dpv`, and generic `echem` objects and returns a
+standard `AnalysisResult`.
+
+```python
+psd = cv_obj.spectrum({
+    "method": "welch",
+    "segments": "all",
+    "plot scale": "auto",  # logarithmic PSD y-axis
+})
+
+fft = ca_obj.spectrum({
+    "method": "fft",
+    "window": "hann",
+    "plot scale": "linear",
+    "plot all": True,
+})
+```
+
+Use Welch power spectral density (PSD) to estimate how signal power is
+distributed across frequency with averaging across overlapping windows. Use
+the one-sided FFT when calibrated component amplitude and phase are the main
+quantities of interest. Both methods analyze all variation in the selected
+signal, including electrochemical waveform shape, drift, transients, periodic
+interference, and noise; a spectrum is not automatically a noise spectrum.
+
+Timing is resolved before either transform:
+
+- CA and CP require a recorded numeric `Time` column.
+- CV uses recorded time when available; otherwise eCAT reconstructs time
+  independently within each selected segment from raw-potential increments and
+  scan rate. Segment boundaries are never bridged into one artificial clock.
+- DPV uses recorded time when available; otherwise eCAT reconstructs time from
+  `pulse_period`.
+- Generic `echem` objects require a recorded numeric `Time` column and a finite
+  numeric signal column. With `column="auto"`, eCAT prefers Current, then
+  Potential, then another numeric column other than Time or Segment.
+
+Recorded sampling must be uniformly spaced within `sampling tolerance`
+(default 1%). Set `resample=True` to linearly interpolate modestly irregular
+data onto the median-interval grid. Use `time range` before the transform and
+`frequency range` after it. `segments="all"` analyzes CV or stored Segment
+traces independently. DC is omitted by default; set `include dc=True` to retain
+the zero-frequency bin. A requested upper frequency cannot exceed the Nyquist
+frequency, one half of the resolved sample rate.
+
+The table always includes `Frequency / Hz`. Welch adds a PSD column in
+`signal_unit^2 / Hz`; FFT adds an amplitude column in the original signal unit
+and `Phase / rad`. Windowing reduces spectral leakage from finite records but
+also changes the apparent spectrum, so record the selected window and inspect
+the time-domain diagnostic before interpreting small features.
+
+Spectrum plotting uses a distinct scale vocabulary from ordinary object
+plotting. For example, `obj.plot({"y scale": 1e6})` multiplies displayed data,
+whereas `obj.spectrum({"plot scale": "semilogy"})` changes Matplotlib axis
+spacing without changing spectrum values. Spectrum `plot scale` accepts
+`"auto"`, `"linear"`, `"log-log"` (loglog), `"semilogx"`, `"semilogy"`, and
+`"symlog"`; `auto` uses semilog-y for Welch and linear axes for FFT. Direct
+`xscale` and `yscale` options override the preset and accept Matplotlib scale
+names. A retained DC bin is incompatible with a logarithmic x-axis.
+
+The returned `AnalysisResult` exposes:
+
+- `result.table`: frequency-bin data with unit metadata in
+  `result.table.attrs["units"]`
+- `result.units`: the same frequency, PSD/amplitude, and phase unit mapping
+- `result.summary`: method, signal/time source, segment selection, sampling,
+  Nyquist frequency, frequency-bin spacing, resampling, and peak-frequency
+  summaries
+- `result.diagnostics`: immutable resolved time traces, transform details,
+  window settings, and audit parameters
+- `result.warnings`: reductions or weak-averaging warnings recorded during
+  resolution and computation
+- `result.figure`, `result.axes`, and `result.figures`: the spectrum figure and,
+  with `plot all=True`, a separate resolved time-domain diagnostic
+
+Pass `print all=True` to add the full frequency-bin data table to the standard
+Parameters, Equations, and Summary output. See
+`describe_options("echem.spectrum")` or the technique-specific form such as
+`describe_options("cv.spectrum")` for the complete option contract.
+
 ## Animation
 
 | Name | Purpose | Options |
 |---|---|---|
 | `animate(obj_or_list, options=None)` | Animate one object or a list of objects through the normal eCAT plotting pipeline. | `describe_options("animate")` |
 | `obj.animate(options=None)` | Convenience method for animating one object directly. | `describe_options("animate")` |
-| `AnimationResult.show()` | Display the animation inline in a notebook when supported. | none |
-| `AnimationResult.save(path, format=None, options=None)` | Save the animation to GIF or MP4. | none |
+| `AnimationResult.show(options=None)` | Display the animation inline and start playback when supported. | `display format`, render overrides |
+| `AnimationResult.to_html(options=None)` | Return embeddable animation HTML without displaying or writing a file. | `display format`, render overrides |
+| `AnimationResult.save(path, format=None, options=None)` | Save HTML, GIF, or MP4; the path suffix selects direct GIF/MP4 export. | `display format` controls `.html` content |
 
 Animation is object-first: prefer `e.animate(cv_obj)` or `cv_obj.animate()` instead of overloading `plot()` or `multiplot()` for animation. Fully rendered frames reuse the existing plot and multiplot helpers, so titles, units, plot conventions, legends, colorbars, and scale bars match the static plotting surface.
 
@@ -274,15 +374,22 @@ Default behavior:
 - multiple objects with different scan rates: `schedule="simultaneous"` and `trace mode="draw"`
 - multiple objects with matched scan rates: `schedule="staggered"` and `trace mode="instant"`
 - `timing mode="auto"` uses physical timing when scan-rate or time metadata is available; otherwise it falls back to normalized timing
-- `cycle=True`, `fps=20`, `stagger time=0.5`, and `end hold=2`
+- `display format="auto"` uses compact HTML5 video with native controls when FFmpeg is available and falls back to Matplotlib JSHTML controls otherwise
+- explicit `display format="gif"` creates a lightweight inline image without playback controls
+- `loop=True`, `fps=20`, `stagger time=0.5`, and `end hold=2`
 - quiet time is excluded unless `{"include quiet time": True}` is passed
 
 Notebook example:
 
 ```python
-result = e.animate(cv_obj, {"trace mode": "draw", "plot convention": "IUPAC"})
+result = e.animate(cv_obj, {
+    "trace mode": "draw",
+    "display format": "auto",
+    "plot convention": "IUPAC",
+})
 result.show()
 result.save("cv.gif")
+result.save("cv.html")  # uses display format for the embedded content
 ```
 
 ## Filtering And Grouping
@@ -295,6 +402,19 @@ result.save("cv.gif")
 | `sort_and_group(objects, sort_keys=None, group_keys=None, options=None)` | Sort and group in one workflow. | `describe_options("sort_group")` |
 | `group_summary(objects, options=None)` | Summarize grouped object metadata. | `describe_options("group_summary")` |
 | `get_available_filter_values(objects, keys=None)` | Inspect possible values before filtering. | none |
+
+For `filter`, `sort`, `group`, and `sort_and_group`, `sig figs` controls numeric **matching**, without changing stored metadata or measured arrays. The default `"auto"` currently uses a deterministic five-significant-digit policy; it is a practical fallback, not an estimate of instrument accuracy. For example, 0.0999997 and 0.1000000 V/s share a key. An integer from 1 through 17 selects explicit precision; `None` requests exact matching. A per-field mapping such as `{"scan rate": 5, "concentrations": 4}` applies only to the listed fields; omitted fields remain exact. Discrete IDs such as segment counts and replicates are never rounded. Molar prefixes are normalized to M; nonmolar units (such as equivalents, fraction, percent, or volume) remain distinct. Bare numeric concentration criteria mean M. Scan-window endpoints are compared individually.
+
+Matching uses rounded keys rather than pairwise closeness: two nearby numbers on opposite rounding boundaries may remain separate, and group membership does not depend on input order. This replaces the former mixture of exact scalar matching and approximate concentration/window matching. Use explicit precision when closely spaced conditions must remain distinct. When printing is enabled, the resolved matching policy is reported separately from table display precision. Display-only `sig figs` in `show_objects` and `show_groups` still only formats tables.
+
+```python
+groups = e.group(cvs, "scan rate", {"sig figs": "auto"})
+at_100_mVs = e.filter(cvs, {"scan rate": 0.1}, {"sig figs": 5})
+exact_groups = e.group(cvs, "scan rate", {"sig figs": None})
+ordered = e.sort(cvs.copy(), "scan rate", {"sig figs": "auto"})
+```
+
+`sort` sorts the supplied list in place; use `.copy()` to preserve its original order. Precision changes comparison keys only.
 
 Filter `logic` combines different filter keys. For example, `{"logic": "AND"}`
 requires each top-level key such as `gas`, `species`, and `replicate` to match.
@@ -399,6 +519,8 @@ For CA current/charge overlays, `ca.plot({"plot charge": True})` keeps current o
 | `cp_obj.cycle_info(options=None)` | Summarize CP cycle capacity, efficiency, and potential metrics. | `describe_options("cp.cycle_info")` |
 | `cp_obj.plot_cycles(options=None)` | Plot selected CP cycles. | `describe_options("cp.plot_cycles")` |
 | `cp_obj.cycling_plot(options=None)` | Plot CP capacity and efficiency versus cycle number; accepts the same `cycles` selection forms as `plot_cycles()`. | `describe_options("cp.cycling_plot")` |
+
+CA current/rate analyses return current values in amperes. Plot markers and average-current lines follow the trace’s displayed units and offset, including automatic units and baseline-corrected current. With `"y unit": ["uA", "mC"]`, current annotations and current table entries use the first unit.
 
 DPV pulse metadata follows the same unit convention as CA/CP metadata: object
 attributes and `stats()` keys are unitless SI values, while printed tables and
@@ -580,6 +702,22 @@ can still retain names for traceability even when the printed table omits them.
 `nicholson_analysis()` returns an `AnalysisResult` with `result["data"]` and `result.table` for the Nicholson point table and `result["summary"]` / `result.summary` for equation metadata, fit statistics, and kinetic values. With `{"print": True}`, it prints Nicholson Analysis Parameters, Equations, and Summary; `print all=True` adds the compact Nicholson Analysis Data table. With `{"plot all": True}`, it produces one CV diagnostic plot and one Nicholson fit plot.
 
 `fit_rate`, `fit_peak_current`, and `fit_peak_potential` use the same direct model fitter as `fit_model`. Use `fit model` to choose the model and `fit init`, `fit bounds`, `fit residual`, `fit max evals`, and `fit indices` to control the fit. Use `fit line range` only to extend or shorten the plotted fit line after fitting; it does not change selected points, fitted parameters, residuals, R2, RMSE, or fit-table `fit x min` / `fit x max` values. Standalone `fit_model` also accepts concise context-specific names such as `model`, `init`, `bounds`, `residual`, `band`, and `indices`.
+
+`fit_peak_current` defaults to `"x transform": "^0.5"` (square root). Set a numeric exponent such as `0.5`, `2`, or `-0.5`; strings such as `"sqrt"`, `"square root"`, and `"^-0.5"` are also supported. `None` or `"identity"` disables the transform. The transform changes x **before** fitting; `xscale` changes only axis spacing. To estimate the exponent itself, use `{"x transform": "identity", "fit model": "power"}`. Powered composite units are grouped, for example `(V/s)^(1/2)`. See `e.describe_options("fit_peak_current")` for the same guidance in Python.
+
+For `sevcik_analysis`, specify `species` in mixtures so concentration is selected by compound identity, regardless of filename order. A scan-rate series requires a constant positive selected concentration; explicit `C` takes precedence and is in **mol/cm³** (1 mM = `1e-6` mol/cm³). A concentration series uses the selected species' varying molar concentrations and a fixed scan rate. Ambiguous species selection raises an error. The result reports the resolved concentration context; a numerical diffusion coefficient still requires the reversible, diffusion-controlled assumptions of the Randles–Sevcik equation.
+
+Sevcik preserves incoming row order. All-points least squares is order-independent, but `fit indices` selects positions in that order. Sort before selecting a range, and keep any per-CV peak guesses aligned with the sorted list:
+
+```python
+ordered = e.sort(cvs.copy(), "scan rate", {"print": False})
+sevcik = e.sevcik_analysis(ordered, {
+    "species": "Fc", "segment": 1, "plot all": True,
+    "fit indices": [0, 4],  # first four CVs in the explicitly sorted list
+})
+```
+
+`trumpet_analysis(..., {"plot all": True})` now adds the actual paired peak-selection diagnostics to the shared CV overlay. Compare those markers against the intended waves before interpreting the trumpet fit. Notebook 07 demonstrates Sevcik, standalone Nicholson, and trumpet diagnostics; notebook 09 demonstrates peak-current transformations.
 
 Scatter-fit helpers return `ScatterFitResult`, an `AnalysisResult` child, rather than tuples. Use `.table` for plotted/result data, `.fits` for fit parameters, `.fit_table` for the human fit-statistics table, and `.summary` for workflow metadata. Tuple unpacking such as `data, fits = e.fit_rate(...)` is not part of the beta API.
 
