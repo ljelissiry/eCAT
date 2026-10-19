@@ -6,6 +6,7 @@
 - Prefer reliable waveform scan rates over filename rates when no instrument-header rate is supplied; retain provenance and flag disagreements.
 - Unified CV sweep segmentation and added significant-figure matching controls for filtering, sorting, and grouping.
 - Improved species-aware concentration analysis, peak-current transform help, and trumpet diagnostics, with updated tutorials.
+- Fixed CA current/rate plot annotations to use the displayed current units and offset, while retaining numerical results in amperes. Corrected the Fc/Fc+ segment selection and current-at-potential label in tutorial 03.
 - Retain the established public simulation interface with standard ElectroKitty >=1.0.11.6. Experimental time-grid, repaired-build, and local-equilibrium work is excluded.
 
 

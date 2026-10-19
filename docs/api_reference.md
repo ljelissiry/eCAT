@@ -520,6 +520,8 @@ For CA current/charge overlays, `ca.plot({"plot charge": True})` keeps current o
 | `cp_obj.plot_cycles(options=None)` | Plot selected CP cycles. | `describe_options("cp.plot_cycles")` |
 | `cp_obj.cycling_plot(options=None)` | Plot CP capacity and efficiency versus cycle number; accepts the same `cycles` selection forms as `plot_cycles()`. | `describe_options("cp.cycling_plot")` |
 
+CA current/rate analyses return current values in amperes. Plot markers and average-current lines follow the trace’s displayed units and offset, including automatic units and baseline-corrected current. With `"y unit": ["uA", "mC"]`, current annotations and current table entries use the first unit.
+
 DPV pulse metadata follows the same unit convention as CA/CP metadata: object
 attributes and `stats()` keys are unitless SI values, while printed tables and
 auto plot subtitles put autoscaled units in the values, such as `10 mV` or

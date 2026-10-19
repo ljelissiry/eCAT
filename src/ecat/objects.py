@@ -7084,7 +7084,8 @@ class ca(echem):
             scale, display_unit = scale_time_axis(np.asarray([float(value)], dtype=float), unit or "s", options.get("x unit", "auto"))
             display_value = float(value) * scale
         elif kind == "current":
-            scale, display_unit = scale_axis(np.asarray([float(value)], dtype=float), unit or "A", options.get("y unit", "auto"))
+            current_unit, _ = _resolve_ca_y_units(options.get("y unit", "auto"))
+            scale, display_unit = scale_axis(np.asarray([float(value)], dtype=float), unit or "A", current_unit)
             display_value = float(value) * scale
         text = self._chrono_format_number(display_value, options)
         if display_unit:
@@ -7369,6 +7370,20 @@ class ca(echem):
             rows.append(("TOF", values.get("TOF"), values.get("TOF unit", "s^-1"), "plain"))
         return rows
 
+    def _ca_current_display_value(self, value, current, options):
+        """Use the CA trace's unit choice and offset for current annotations."""
+        current_unit, _ = _resolve_ca_y_units(options.get("y unit", "auto"))
+        if options.get("corrected current", False):
+            # Corrected CA plots pass the baseline-corrected array directly
+            # to _plot_helper, rather than through y().
+            trace = current
+            value_scale = 1.0
+        else:
+            trace = self.y(options).to_numpy(dtype=float)
+            value_scale = options.get("y scale", 1.0)
+        scale, _ = self.scale_axis(trace, "Current", self.units.get("Current", "A"), current_unit)
+        return value * value_scale * scale + options.get("offset", 0)
+
     def current_at_time(self, time=None, options=None):
         """Return the CA current at a requested time by interpolation."""
         if isinstance(time, dict) and options in ({}, None):
@@ -7396,7 +7411,8 @@ class ca(echem):
                 plot_options["corrected current"] = True
             ax = self.plot(plot_options)
             scale, _unit = scale_time_axis(t, self.units.get("Time", "s"), options.get("x unit", "auto"))
-            ax.scatter([time * scale], [current_at], color=options.get("color", "black"), zorder=5)
+            display_current = self._ca_current_display_value(current_at, current, options)
+            ax.scatter([time * scale], [display_current], color=options.get("color", "black"), zorder=5)
 
         values = {
             "time": time,
@@ -7477,7 +7493,8 @@ class ca(echem):
                 plot_options["corrected current"] = True
             ax = self.plot(plot_options)
             scale, _unit = scale_time_axis(t, self.units.get("Time", "s"), options.get("x unit", "auto"))
-            ax.axhline(avg_current, color=options.get("fit color", "tab:red"), ls="--")
+            display_current = self._ca_current_display_value(avg_current, current, options)
+            ax.axhline(display_current, color=options.get("fit color", "tab:red"), ls="--")
             ax.axvspan(resolved_range[0] * scale, resolved_range[1] * scale, color="0.5", alpha=0.12)
 
         values = {
