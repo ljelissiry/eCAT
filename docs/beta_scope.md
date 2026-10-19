@@ -31,10 +31,14 @@ The beta validates these existing workflows without redesigning them:
 - `e.echem.from_file(...)`
 - `e.get_data(...)`
 - `e.filter(...)`, `e.sort_and_group(...)`, and replicate filtering including `replicate = -1`
-- `x()`, `y()`, `xy()`, `stats()`, and `info()`
+- `x()`, `y()`, `xy()`, `stats()`, and `metadata()`
 - CV plotting, `multiplot`, and smoke-level figure export
 - CV `peak_potential()`, `peak_current()`, and `peak_width()`
 - CV normalization, current density, and `i/ip0` plotting paths
+- Welch PSD and one-sided FFT analysis through inherited `obj.spectrum()`:
+  recorded or per-segment reconstructed timing for CV, recorded timing for CA
+  and CP, recorded or pulse-period timing for DPV, and recorded Time plus a
+  numeric signal for generic `echem`
 - Reference-shift workflows already covered by tests
 - CSV/table export and eCAT Excel workbook export through `save_data(...)`
 
@@ -46,6 +50,15 @@ The beta validates these existing workflows without redesigning them:
 - `reversibility_analysis()` reports cautious, evidence-backed labels for one scan-rate series; it does not assign an EC/ECE or other coupled mechanism. Review the recorded decision tree and diagnostics before using the conclusion in a manuscript.
 - `surface_coverage_analysis()` assumes a surface-confined peak and reports both slope- and charge-derived estimates. Disagreement warnings should be resolved experimentally rather than hidden by averaging.
 - CA and CP are limited to import/plot confidence unless a specific analysis function has a passing test and human review.
+- Spectrum analysis reports the selected signal, timing provenance, sampling
+  diagnostics, Nyquist frequency, and transform settings, but it does not
+  classify spectral features as noise. CV reconstruction uses raw potential
+  increments and scan rate independently per segment; DPV reconstruction uses
+  pulse period. Generic objects cannot reconstruct missing time.
+- Welch and FFT assume uniformly sampled data. Irregular recorded sampling over
+  the configured tolerance fails unless `resample=True`; spectral leakage,
+  aliasing, short records, and electrochemical waveform structure still require
+  scientific interpretation.
 - Parser diagnostics are available through `obj.parse_result.warnings` and `obj.parse_result.raw_metadata`. Use these fields when a file loads but metadata looks incomplete.
 - Generic text loading is a fallback and may miss technique metadata, scan rate, units, or reference context.
 - IviumSoft text and DPV text beyond existing CH/public-fixture coverage still need representative files before they should be treated as beta-supported.
@@ -62,6 +75,6 @@ The beta validates these existing workflows without redesigning them:
 ## Recommended Beta-User Action
 
 Start with a folder of text exports, load with `get_data()`, inspect
-`obj.info()` and `obj.units`, plot the traces, run one core CV analysis, and
+`obj.metadata()` and `obj.units`, plot the traces, run one core CV analysis, and
 export one figure/table. Report any mismatch between expected and observed
 behavior with the beta feedback form.

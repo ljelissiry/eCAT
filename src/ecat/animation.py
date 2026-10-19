@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 from collections.abc import Mapping
 from dataclasses import dataclass
 import html
@@ -45,10 +46,6 @@ class AnimationResult:
     summary: dict
 
     def show(self, options=None):
-        self.display(options=options)
-        return None
-
-    def display(self, options=None):
         try:
             from IPython.display import HTML, display
         except Exception:
@@ -60,30 +57,12 @@ class AnimationResult:
 
     def to_html(self, options=None):
         render_options = _merged_render_options(self.summary.get("resolved options", {}), options)
-        fps = max(float(render_options.get("fps", self.summary.get("fps", 20))), 1.0)
-        default_mode = "loop" if bool(render_options.get("loop", self.summary.get("loop", True))) else "once"
-        progress = _AnimationRenderProgress(
-            total=self.summary.get("frame count"),
-            label="Rendering animation",
-            progress=render_options.get("progress", True),
-        )
-        try:
-            with tempfile.TemporaryDirectory() as temp_dir:
-                target = Path(temp_dir) / "animation.html"
-                writer = mpl_animation.HTMLWriter(
-                    fps=fps,
-                    embed_frames=True,
-                    default_mode=default_mode,
-                )
-                self.animation.save(
-                    str(target),
-                    writer=writer,
-                    progress_callback=progress.callback,
-                    **_save_kwargs(render_options, include_writer_args=False),
-                )
-                return target.read_text(encoding="utf-8")
-        finally:
-            progress.close()
+        display_format = _resolve_display_format(render_options)
+        if display_format == "html5":
+            return _render_html5(self, render_options)
+        if display_format == "gif":
+            return _render_gif(self, render_options)
+        return _render_jshtml(self, render_options)
 
     def save(self, path, format=None, options=None):
         path = Path(path)
@@ -108,6 +87,105 @@ class AnimationResult:
         finally:
             progress.close()
         return path
+
+
+def _resolve_display_format(options=None):
+    requested = str(dict(options or {}).get("display format", "auto"))
+    requested = requested.strip().lower().replace("_", "").replace("-", "")
+    if requested == "auto":
+        return "html5" if mpl_animation.writers.is_available("ffmpeg") else "jshtml"
+    if requested not in {"html5", "jshtml", "gif"}:
+        raise ValueError("Animation display format must be auto, HTML5, JSHTML, or GIF.")
+    return requested
+
+
+def _render_jshtml(result, render_options):
+    fps = max(float(render_options.get("fps", result.summary.get("fps", 20))), 1.0)
+    default_mode = "loop" if bool(render_options.get("loop", result.summary.get("loop", True))) else "once"
+    progress = _AnimationRenderProgress(
+        total=result.summary.get("frame count"),
+        label="Rendering animation",
+        progress=render_options.get("progress", True),
+    )
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            target = Path(temp_dir) / "animation.html"
+            writer = mpl_animation.HTMLWriter(
+                fps=fps,
+                embed_frames=True,
+                default_mode=default_mode,
+            )
+            result.animation.save(
+                str(target),
+                writer=writer,
+                progress_callback=progress.callback,
+                **_save_kwargs(render_options, include_writer_args=False),
+            )
+            return target.read_text(encoding="utf-8")
+    finally:
+        progress.close()
+
+
+def _render_html5(result, render_options):
+    if not mpl_animation.writers.is_available("ffmpeg"):
+        raise RuntimeError(
+            "HTML5 animation display requires FFmpeg. Install FFmpeg or use "
+            "{'display format': 'jshtml'} or {'display format': 'gif'}."
+        )
+    progress = _AnimationRenderProgress(
+        total=result.summary.get("frame count"),
+        label="Rendering animation",
+        progress=render_options.get("progress", True),
+    )
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            target = Path(temp_dir) / "animation.mp4"
+            result.animation.save(
+                str(target),
+                writer="ffmpeg",
+                progress_callback=progress.callback,
+                **_save_kwargs(render_options),
+            )
+            encoded = base64.b64encode(target.read_bytes()).decode("ascii")
+    finally:
+        progress.close()
+    loop = " loop" if bool(render_options.get("loop", result.summary.get("loop", True))) else ""
+    return (
+        '<video data-ecat-animation controls playsinline preload="metadata"'
+        f'{loop} style="display:block;max-width:100%;height:auto">'
+        f'<source src="data:video/mp4;base64,{encoded}" type="video/mp4">'
+        "Your browser does not support embedded video."
+        "</video>"
+    )
+
+
+def _render_gif(result, render_options):
+    if not mpl_animation.writers.is_available("pillow"):
+        raise RuntimeError(
+            "GIF animation display requires Pillow. Install Pillow or use "
+            "{'display format': 'jshtml'}."
+        )
+    progress = _AnimationRenderProgress(
+        total=result.summary.get("frame count"),
+        label="Rendering animation",
+        progress=render_options.get("progress", True),
+    )
+    try:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            target = Path(temp_dir) / "animation.gif"
+            result.animation.save(
+                str(target),
+                writer="pillow",
+                progress_callback=progress.callback,
+                **_save_kwargs(render_options),
+            )
+            encoded = base64.b64encode(target.read_bytes()).decode("ascii")
+    finally:
+        progress.close()
+    return (
+        '<img data-ecat-animation src="data:image/gif;base64,'
+        f'{encoded}" alt="eCAT animation" style="display:block;max-width:100%;height:auto">'
+    )
 
 
 def _normalize_animation_options(options=None):
@@ -527,6 +605,7 @@ def _setup_table(summary):
         return requested_value if requested_value is not None else empty
 
     rows = [
+        ("Display Format", _resolved_value("display format", summary.get("display format"))),
         ("Timing Mode", _resolved_value("timing mode", summary.get("timing mode"))),
         ("Trace Mode", _resolved_value("trace mode", summary.get("trace mode"))),
         ("Schedule", _resolved_value("schedule", summary.get("schedule"), empty="single")),
@@ -747,6 +826,20 @@ def _split_animation_override_options(override_options):
 def _autoplay_html(html_text):
     import re
 
+    if "<video" in html_text:
+        autoplay_html = html_text.replace(
+            "<video ",
+            '<video autoplay muted ',
+            1,
+        )
+        return autoplay_html + (
+            "\n<script>setTimeout(function() {"
+            "var videos = document.querySelectorAll('video[data-ecat-animation]');"
+            "var video = videos[videos.length - 1];"
+            "if (video) { var promise = video.play(); if (promise) { promise.catch(function() {}); } }"
+            "}, 0);</script>\n"
+        )
+
     match = re.search(r"([A-Za-z_][A-Za-z0-9_]*) = new Animation\(frames, img_id, slider_id,", html_text)
     if match is None:
         return html_text
@@ -815,6 +908,7 @@ def animate(obj_or_list, options=None):
         "resolved options": dict(resolved_options),
         **_timeline_summary(objects, resolved_options, is_list, trace_mode, schedule, timing_mode, durations, frame_times),
     }
+    summary["display format"] = _resolve_display_format(resolved_options)
     summary["trace starts"] = starts
     result = AnimationResult(
         animation=animation,
@@ -826,7 +920,7 @@ def animate(obj_or_list, options=None):
         _display_animation_setup(summary, resolved_options)
     if resolved_options.get("plot", True):
         plt.close(figure)
-        result.display()
+        result.show()
     return result
 
 

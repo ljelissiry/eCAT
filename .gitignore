@@ -43,3 +43,10 @@ notebooks/_outputs/
 notebooks/_scratch/
 tests/tmp_real_examples/
 tests/tmp_parser_examples/
+
+# Private collaborator data: keep experimental inputs out of source control.
+tests/private_data/
+**/[Mm]ariah*/
+*[Mm]ariah*.mpr
+*[Mm]ariah*.mpt
+*[Mm]ariah*.zip

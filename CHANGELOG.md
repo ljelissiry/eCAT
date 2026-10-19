@@ -1,6 +1,38 @@
 # Changelog
 
-## Unreleased
+## 0.1.0b7 - Release candidate - 2026-10-19
+
+- Added filename decimal aliases, preserved spaced species names and DMA/DMAc spelling, and supported scan-rate units such as mV_s.
+- Prefer reliable waveform scan rates over filename rates when no instrument-header rate is supplied; retain provenance and flag disagreements.
+- Unified CV sweep segmentation and added significant-figure matching controls for filtering, sorting, and grouping.
+- Improved species-aware concentration analysis, peak-current transform help, and trumpet diagnostics, with updated tutorials.
+- Retain the established public simulation interface with standard ElectroKitty >=1.0.11.6. Experimental time-grid, repaired-build, and local-equilibrium work is excluded.
+
+
+- Added compact animation display selection through `display format`: `auto`
+  prefers HTML5 video when FFmpeg is available and falls back to JSHTML, while
+  explicit HTML5, JSHTML, and GIF modes remain available for notebook display
+  and HTML export.
+- Simplified `AnimationResult` so `show()` is the sole public method for inline
+  animation rendering.
+- Reworked the README around a beginner-first installation and quickstart
+  workflow, added the eCAT logo and full package name, documented every
+  numbered quickstart notebook, and moved optional app/simulation guidance
+  after the core workflow.
+- Replaced the ambiguous object `info()` method with `metadata()` for
+  machine-readable metadata snapshots, made `show()` the sole public object
+  presentation API, and privatized the compact statistics/compound-label
+  helpers used internally by plotting. Metadata snapshots now expose common
+  identity, provenance, units, parser, reference, and processing fields across
+  CV, CA, CP, and DPV objects, and nested values are independent copies.
+  Human-readable `show()` tables now format source file and folder paths
+  relative to the active project when possible, without changing stored paths.
+- Replaced the retired CV-only `cv.fft()` diagnostic with inherited
+  `obj.spectrum()` for CV, CA, CP, DPV, and generic electrochemistry objects.
+  The typed workflow provides Welch power spectral density and calibrated
+  one-sided FFT amplitude/phase results, records measured or reconstructed
+  timing and sampling provenance, and returns standard tables, summaries,
+  diagnostics, warnings, and spectrum/time-domain figures.
 
 ## 0.1.0b6 - TestPyPI Packaging Trial - 2026-09-03
 

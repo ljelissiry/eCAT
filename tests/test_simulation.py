@@ -254,8 +254,11 @@ def test_simulated_cv_exposes_cv_like_data_access_and_segments(ecat_module):
     assert result.y().name == "Current"
     np.testing.assert_allclose(result.xy()[0], input_obj.E)
     segment_x, segment_y = result.analysis_segment_data({"segment": 2})
-    np.testing.assert_allclose(segment_x, [-0.2, 0.0, 0.2])
-    np.testing.assert_allclose(segment_y, [3e-6, 4e-6, 5e-6])
+    np.testing.assert_allclose(segment_x, [0.0, 0.2])
+    first_x, _ = result.analysis_segment_data({"segment": 1})
+    np.testing.assert_allclose(first_x, [0.2, 0.0, -0.2])
+    np.testing.assert_allclose(np.concatenate([first_x, segment_x]), input_obj.E)
+    np.testing.assert_allclose(segment_y, [4e-6, 5e-6])
 
 
 def test_simulated_cv_can_use_cv_analysis_methods(ecat_module):
@@ -279,7 +282,7 @@ def test_simulated_cv_can_use_cv_analysis_methods(ecat_module):
         backend_result=None,
     )
 
-    assert result.current_at_potential(-0.2, {"segment": 2, "plot": False, "print": False})[2] == pytest.approx((-0.2, 5e-6))
+    assert result.current_at_potential(-0.2, {"segment": 1, "plot": False, "print": False})[1] == pytest.approx((-0.2, 5e-6))
 
 
 def test_simulated_cv_objects_can_be_multiplotted(ecat_module, cv_factory):

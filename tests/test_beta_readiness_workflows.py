@@ -13,7 +13,7 @@ def test_beta_object_accessors_and_summaries_are_notebook_friendly(cv_factory):
     y = obj.y()
     xy = obj.xy()
     stats = obj.stats()
-    info = obj.info()
+    metadata = obj.metadata()
 
     assert x.name == "Potential"
     assert y.name == "Current"
@@ -24,9 +24,43 @@ def test_beta_object_accessors_and_summaries_are_notebook_friendly(cv_factory):
     assert stats["gas"] == "CO2"
     assert stats["solvent"] == "MeCN"
     assert stats["segments"] == 2
-    assert info["name"] == obj.name
-    assert info["reference mode"] == "none"
-    assert info["gas"] == "CO2"
+    assert metadata["name"] == obj.name
+    assert metadata["type"] == obj.type
+    assert metadata["software"] == obj.software
+    assert metadata["units"] == obj.units
+    assert metadata["reference mode"] == "none"
+    assert metadata["gas"] == "CO2"
+    assert not hasattr(obj, "info")
+    assert not hasattr(obj, "txt_stats")
+    assert not hasattr(obj, "combine_concs_chems")
+
+    metadata["compounds"].append("changed snapshot")
+    metadata["units"]["Current"] = "mA"
+
+    assert "changed snapshot" not in obj.compounds
+    assert obj.units["Current"] == "A"
+
+
+def test_combined_compound_display_uses_private_object_helper(
+    ecat_module,
+    cv_factory,
+):
+    obj = cv_factory(name="50mVs_sample_CO2_MeCN_10mM_Fc_run01")
+    calls = []
+
+    def combined_compound_labels(concentrations, compounds, options=None):
+        calls.append((concentrations, compounds, options))
+        return ["private helper sentinel"]
+
+    obj._combined_compound_labels = combined_compound_labels
+
+    table = ecat_module.show(obj, {"pretty print": False, "return": True})
+
+    values = dict(zip(table["Metric"], table["Value"]))
+    assert values["Compounds"] == "private helper sentinel"
+    assert len(calls) == 1
+    assert calls[0][0] == obj.concentrations
+    assert calls[0][1] == obj.compounds
 
 
 @pytest.mark.parametrize(
@@ -50,6 +84,11 @@ def test_beta_limited_ca_cp_objects_load_and_plot_smoke(
     assert type(obj).__name__ == expected_class
     assert obj.x().name == expected_x
     assert obj.y().name == expected_y
+
+    metadata = obj.metadata()
+    assert metadata["type"] == obj.type
+    assert metadata["software"] == obj.software
+    assert metadata["units"] == obj.units
 
     ax = obj.plot({"legend": False, "title": False})
 

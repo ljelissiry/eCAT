@@ -3,8 +3,12 @@
 from collections.abc import Mapping
 
 from .utils import *  # noqa: F401,F403
-from .options import FilterOptions, GroupSummaryOptions, SortGroupOptions
+from .options import (
+    FilterOptions, GroupSummaryOptions, SortGroupOptions,
+    _COLLECTION_PRECISION_FIELDS,
+)
 from .parsers import exp_type_short as _exp_type_short
+from .metadata import parse_concentration_value_and_unit
 from .plotting import (
     _coerce_display_columns,
     display_object_table,
@@ -12,6 +16,101 @@ from .plotting import (
     show_groups,
     show_objects,
 )
+
+
+_NAN_MATCH_KEY = object()
+
+
+def _metadata_match_key(key, value, options):
+    """Canonical decimal buckets shared by matching, grouping, and sorting.
+
+    Auto is a deterministic five-digit fallback, not inferred measurement
+    precision. Formatting to significant digits avoids magnitude-dependent
+    tolerances and gives transitive equivalence classes at rounding boundaries.
+    """
+    precision = options["sig figs"]
+    if isinstance(precision, dict):
+        precision = precision.get(key)
+    if precision == "auto":
+        precision = 5
+    if key not in _COLLECTION_PRECISION_FIELDS:
+        precision = None
+
+    def canonical(item):
+        if isinstance(item, (int, float, np.integer, np.floating)) and not isinstance(item, (bool, np.bool_)):
+            if np.isnan(item):
+                return _NAN_MATCH_KEY
+            if precision is not None and np.isfinite(item):
+                return float(format(item, f".{precision}g"))
+            return item
+        if isinstance(item, (list, tuple, np.ndarray, pd.Index)):
+            return tuple(canonical(part) for part in item)
+        if isinstance(item, dict):
+            return tuple((k, canonical(v)) for k, v in sorted(item.items()))
+        return item
+
+    if key == "species" and isinstance(value, (list, tuple)):
+        value = [_parse_species_match_value(item) for item in value]
+    if key == "concentrations" and isinstance(value, (list, tuple)):
+        value = [_parse_concentration_match_value(item) for item in value]
+    if key == "scan window" and isinstance(value, (list, tuple)):
+        value = sorted(value)
+    return canonical(value)
+
+
+def _parse_species_match_value(value):
+    text = str(value).strip()
+    match = re.match(
+        r"^([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)\s*([nmuμ]?M|L|%|equiv|x)\s*(.+)$",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if match is None:
+        return (None, None, _normalize_filter_value(text))
+    concentration, unit = _parse_concentration_match_value(match.group(1) + match.group(2))
+    return (concentration, unit, _normalize_filter_value(match.group(3)))
+
+
+def _parse_concentration_match_value(value):
+    """Keep dimensions in keys; a bare numeric concentration is in mol/L."""
+    if isinstance(value, (int, float, np.integer, np.floating)) and not isinstance(value, (bool, np.bool_)):
+        return (float(value), "M")
+    return parse_concentration_value_and_unit(value)
+
+
+def _metadata_value_for_matching(key, obj, getters):
+    # The public/display getter historically returns bare concentration numbers.
+    # Matching needs the original units, without changing that getter's contract.
+    if key == "concentrations":
+        return getattr(obj, "concentrations", [])
+    return getters[key](obj)
+
+
+def _collection_display_options(options):
+    """Keep matching precision out of scalar-only table-formatting options."""
+    display_options = options.copy()
+    precision = options["sig figs"]
+    if isinstance(precision, int):
+        display_options["sig figs"] = precision
+    else:
+        display_options.pop("sig figs", None)
+    return display_options
+
+
+def _print_matching_precision(options):
+    policy = options["sig figs"]
+    def describe(value):
+        if value is None:
+            return "exact"
+        if value == "auto":
+            return "auto = 5 significant digits (fallback; not inferred instrument resolution)"
+        return f"{value} significant digits"
+    if isinstance(policy, dict):
+        description = "; ".join(f"{key}: {describe(value)}" for key, value in sorted(policy.items()))
+        description += "; omitted fields: exact"
+    else:
+        description = describe(policy)
+    print(f"Numeric matching precision: {description}")
 
 def get_sort_group_dict():
     """Returns a dictionary of key functions used for sorting and grouping."""
@@ -528,7 +627,11 @@ def filter(object_list, filter_keys, options=None):
     filter_keys : dict
         Metadata filters to include or exclude.
     options : dict or FilterOptions, optional
-        Filter logic and print options. See ``e.describe_options("filter")``.
+        Filter logic, print, and ``sig figs`` matching options. Precision is
+        ``"auto"`` (five significant digits), ``None`` (exact), an integer
+        from 1 to 17, or a per-field mapping (omitted fields match exactly).
+        Auto is a fallback, not an estimate of instrument resolution.
+        See ``e.describe_options("filter")``.
     
     Returns
     -------
@@ -582,19 +685,20 @@ def filter(object_list, filter_keys, options=None):
     def _scan_window_contains(stat_window, requested_value):
         lo, hi = _canonicalize_scan_window(stat_window)
         req = float(requested_value)
-        return np.isclose(lo, req) or np.isclose(hi, req)
+        return numeric_matches("scan window", lo, req) or numeric_matches("scan window", hi, req)
 
     def _scan_window_exact_match(stat_window, requested_window):
         stat_lo, stat_hi = _canonicalize_scan_window(stat_window)
         req_lo, req_hi = _canonicalize_scan_window(requested_window)
-        return np.isclose(stat_lo, req_lo) and np.isclose(stat_hi, req_hi)
+        return numeric_matches("scan window", (stat_lo, stat_hi), (req_lo, req_hi))
+
+    def numeric_matches(key, actual, requested):
+        return _metadata_match_key(key, actual, options) == _metadata_match_key(key, requested, options)
 
     def _parse_filter_concentration(value):
-        if _is_numeric_scalar(value):
-            return float(value)
-        if isinstance(value, str):
+        if _is_numeric_scalar(value) or isinstance(value, str):
             try:
-                return concentration_to_float(value.replace(" ", ""))
+                return _parse_concentration_match_value(value)
             except ValueError:
                 return None
         return None
@@ -602,19 +706,8 @@ def filter(object_list, filter_keys, options=None):
     def _parse_species_filter_value(value):
         if not isinstance(value, str):
             return None
-
-        text = value.strip()
-        match = re.match(
-            r"^(\d+(?:\.\d+)?)\s*([nmuμ]?M|L|%|equiv|x)\s*(.+)$",
-            text,
-            flags=re.IGNORECASE,
-        )
-        if not match:
-            return {"compound": _normalize_filter_value(text), "concentration": None}
-
-        conc = _parse_filter_concentration(match.group(1) + match.group(2))
-        compound = _normalize_filter_value(match.group(3))
-        return {"compound": compound, "concentration": conc}
+        conc, unit, compound = _parse_species_match_value(value)
+        return {"compound": compound, "concentration": conc, "unit": unit}
 
     def _parse_species_stat_value(value):
         parsed = _parse_species_filter_value(value)
@@ -676,7 +769,11 @@ def filter(object_list, filter_keys, options=None):
                 requested_conc = _parse_filter_concentration(requested)
                 if requested_conc is None:
                     return False
-                return any(np.isclose(stat_conc, requested_conc) for stat_conc in stat_concs)
+                return any(
+                    stat_conc[1] == requested_conc[1]
+                    and numeric_matches(key, stat_conc[0], requested_conc[0])
+                    for stat_conc in stat_concs
+                )
 
             return _match_logical_filter_request(
                 requested_value,
@@ -701,7 +798,8 @@ def filter(object_list, filter_keys, options=None):
                         continue
                     if requested["concentration"] is None:
                         return True
-                    if stat["concentration"] is not None and np.isclose(
+                    if stat["unit"] == requested["unit"] and stat["concentration"] is not None and numeric_matches(
+                        key,
                         stat["concentration"],
                         requested["concentration"],
                     ):
@@ -738,9 +836,9 @@ def filter(object_list, filter_keys, options=None):
             return stat_norm == requested_norm
 
         if _is_iterable_filter_value(requested_value) and not isinstance(requested_value, str):
-            return stat_value in requested_value
+            return any(numeric_matches(key, stat_value, requested) for requested in requested_value)
 
-        return stat_value == requested_value
+        return numeric_matches(key, stat_value, requested_value)
 
     def matches_criteria(echem_object, rep_num_map, rep_count_map):
         results = []
@@ -757,7 +855,7 @@ def filter(object_list, filter_keys, options=None):
                     )
                 )
             else:
-                stat_value = opt_dict[key](echem_object)
+                stat_value = _metadata_value_for_matching(key, echem_object, opt_dict)
                 results.append(
                     matches_single_criterion(
                         stat_value,
@@ -806,6 +904,7 @@ def filter(object_list, filter_keys, options=None):
         )
 
         print(f"Filtering Criteria: {search_criteria}")
+        _print_matching_precision(options)
         if _filter_uses_collection_logic(filter_keys):
             print(
                 "Membership filters (compounds, concentrations, species) "
@@ -826,9 +925,9 @@ def filter(object_list, filter_keys, options=None):
             print("  " + ", ".join(valid_keys))
 
         elif isinstance(object_list[0], list):
-            show_groups(filtered_list, options)
+            show_groups(filtered_list, _collection_display_options(options))
         else:
-            show_objects(filtered_list, options)
+            show_objects(filtered_list, _collection_display_options(options))
 
     return filtered_list
 
@@ -843,7 +942,11 @@ def sort(object_list, sort_keys, options=None):
     sort_keys : str or sequence of str
         Sort/group keys such as ``"timestamp"`` or ``"scan rate"``.
     options : dict or SortGroupOptions, optional
-        Print and table-display options. See ``e.describe_options("sort_group")``.
+        Print and numeric matching options. ``sig figs`` uses decimal rounding
+        buckets: ``"auto"`` (default) means five significant digits, ``None``
+        means exact, and integers 1-17 or per-field mappings set precision.
+        Ties preserve input order; this function sorts the input list in place.
+        See ``e.describe_options("sort_group")``.
     
     Returns
     -------
@@ -865,7 +968,7 @@ def sort(object_list, sort_keys, options=None):
         return object_list  # Return unsorted list if keys are invalid
 
     def sortable_value(value):
-        if value is None:
+        if value is None or value is _NAN_MATCH_KEY:
             return (9, "")
         if isinstance(value, datetime):
             return (0, pd.Timestamp(value))
@@ -879,15 +982,15 @@ def sort(object_list, sort_keys, options=None):
             return (3, tuple((str(k).lower(), sortable_value(v)) for k, v in sorted(value.items())))
         return (4, str(value).lower())
 
-    def safe_key(f, default=None):
-        return lambda x: sortable_value(f(x) if f(x) is not None else default)
-
     for skey in reversed(sort_keys):
-        object_list.sort(key=safe_key(opt_dict[skey]))
+        object_list.sort(key=lambda obj: sortable_value(_metadata_match_key(
+            skey, _metadata_value_for_matching(skey, obj, opt_dict), options,
+        )))
 
     if options.get('print', True):
         print("\n=== Sorted Objects ===")
-        show_objects(object_list, options)
+        _print_matching_precision(options)
+        show_objects(object_list, _collection_display_options(options))
 
     return object_list
 
@@ -902,7 +1005,11 @@ def group(object_list, group_keys, options=None):
     group_keys : str or sequence of str
         Sort/group keys used to form groups.
     options : dict or SortGroupOptions, optional
-        Print and table-display options. See ``e.describe_options("sort_group")``.
+        Print and numeric matching options. ``sig figs`` uses the same decimal
+        rounding buckets as filter/sort: ``"auto"`` (default) means five
+        significant digits, ``None`` means exact, and integers 1-17 or per-field
+        mappings set precision. Stored metadata and data remain unchanged.
+        See ``e.describe_options("sort_group")``.
     
     Returns
     -------
@@ -924,18 +1031,11 @@ def group(object_list, group_keys, options=None):
         return object_list
 
     def get_group_stats(echem_object):
-        return {key: opt_dict[key](echem_object) for key in group_keys}
-
-    def make_hashable(value):
-        if isinstance(value, list):
-            return tuple(make_hashable(v) for v in value)
-        if isinstance(value, dict):
-            return tuple((k, make_hashable(v)) for k, v in sorted(value.items()))
-        return value
+        return {key: _metadata_value_for_matching(key, echem_object, opt_dict) for key in group_keys}
 
     def group_key(echem_object):
         stats = get_group_stats(echem_object)
-        return tuple((k, make_hashable(stats[k])) for k in group_keys)
+        return tuple((k, _metadata_match_key(k, stats[k], options)) for k in group_keys)
 
     grouped_dict = {}
     for echem_object in object_list:
@@ -946,7 +1046,8 @@ def group(object_list, group_keys, options=None):
 
     if options.get('print', True):
         print(f"\n=== {len(groups)} Groups Created ===\n")
-        show_groups(groups, options)
+        _print_matching_precision(options)
+        show_groups(groups, _collection_display_options(options))
 
     return groups
 
@@ -1172,7 +1273,9 @@ def sort_and_group(object_list, sort_keys=None, group_keys=None, options=None):
     group_keys : str or sequence of str, optional
         Keys used to form groups.
     options : dict or SortGroupOptions, optional
-        Print and table-display options. See ``e.describe_options("sort_group")``.
+        Print and numeric matching options, including the shared ``sig figs``
+        policy (default ``"auto"``: five significant digits). See
+        ``e.describe_options("sort_group")``.
     
     Returns
     -------

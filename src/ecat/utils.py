@@ -853,16 +853,13 @@ def format_sigfigs(number, sigfigs):
 
 
 def count_segments(x_values):
+    from ._cv_direction import split_cv_potential_segments
+
     if len(x_values) <= 1:
         return 1  # If there's only one or zero data points, return 1 segment
-
-    # Calculate the when the sign of the differences between consecutive x-values changes
-    differences_sign = np.diff(np.sign(np.diff(x_values)))
-
-    # Count the number of times the sign changes (i.e., change in direction)
-    num_segments = np.sum(differences_sign != 0) + 1
-
-    return num_segments
+    if np.isfinite(x_values).all() and np.ptp(x_values) == 0:
+        return 1  # Preserve the utility's constant-trace convention.
+    return len(split_cv_potential_segments(x_values))
 
 _AREA_UNIT_TO_M = {
     "m": 1.0,

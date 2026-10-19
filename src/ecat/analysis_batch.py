@@ -1822,13 +1822,14 @@ def _trumpet_analysis_payload(cvs, options=None):
         multiplot(cvs, _multiplot_options_from_mapping(options))
 
     half_wave_options = options.copy()
-    half_wave_options["plot"] = False
+    half_wave_options["plot"] = options.get("plot all", False)
     half_wave_options["print"] = False
     half_wave_options["plot all"] = False
     half_wave_options["print all"] = False
     half_wave_options["internal call"] = True
     half_wave_options["new plot"] = False
     half_wave_options["segments"] = [base_segment, paired_segment]
+    half_wave_options.update(_common_cv_plot_axis_options(cvs, options))
     potential_series = _resolve_complex_potential_series_map(
         raw_options,
         options,
@@ -2791,12 +2792,80 @@ def nicholson_analysis(cvs, options=None):
     )
 
 
+def _resolve_sevcik_concentrations(cvs, options, *, scan_rate_mode):
+    """Resolve one molar species by identity, preserving the CV input order."""
+    species = options.get("species")
+    manual = options.get("C")
+    if manual is not None:
+        if not scan_rate_mode:
+            raise ValueError("sevcik_analysis option 'C' is a fixed concentration in mol/cm^3 "
+                             "for scan-rate series; concentration series use CV metadata.")
+        manual = float(manual)
+        if not np.isfinite(manual) or manual <= 0:
+            raise ValueError("sevcik_analysis option 'C' must be positive and finite (mol/cm^3).")
+        return np.full(len(cvs), manual * 1000), {
+            "species": species,
+            "concentration source": "options['C'] (mol/cm^3)",
+            "concentration unit": "M",
+        }
+
+    per_cv_entries = [_species_concentration_entries(cv_obj) for cv_obj in cvs]
+    candidates = list(dict.fromkeys(entry["species"] for entries in per_cv_entries
+                                    for entry in entries if entry["unit"] == "M"))
+    if species is None:
+        if not scan_rate_mode:
+            candidates = list(dict.fromkeys(
+                entry["species"] for entry in _infer_varying_concentration_entries(cvs)
+                if entry["unit"] == "M"
+            ))
+        if len(candidates) != 1:
+            raise ValueError("sevcik_analysis could not uniquely resolve a molar species; "
+                             "provide options['species'] (or 'C' for a scan-rate series). "
+                             f"Candidates: {', '.join(candidates) or 'none'}.")
+        species = candidates[0]
+
+    values = []
+    for cv_obj, entries in zip(cvs, per_cv_entries):
+        matches = [entry for entry in entries if entry["species"] == species and entry["unit"] == "M"]
+        explicit_molar_zero = any(
+            zero_species == species and _parse_concentration_value_and_unit(zero_concentration) == (0.0, "M")
+            for zero_species, zero_concentration in zip(
+                getattr(cv_obj, "zero_concentration_compounds", []) or [],
+                getattr(cv_obj, "zero_concentrations", []) or [],
+            )
+        )
+        if not matches and explicit_molar_zero:
+            values.append(0.0)
+            continue
+        if not matches:
+            raise ValueError(f"sevcik_analysis: molar concentration for species {species!r} is missing "
+                             f"in {getattr(cv_obj, 'name', 'CV')!r}; record an explicit zero for a blank.")
+        if len(matches) != 1:
+            raise ValueError(f"sevcik_analysis: species {species!r} has ambiguous multiple molar "
+                             f"concentrations in {getattr(cv_obj, 'name', 'CV')!r}.")
+        values.append(matches[0]["value"])
+    values = np.asarray(values, dtype=float)
+    if np.any(~np.isfinite(values)) or np.any(values < 0):
+        raise ValueError("sevcik_analysis requires finite, nonnegative molar concentrations.")
+    if scan_rate_mode:
+        if values[0] <= 0 or not np.allclose(values, values[0], rtol=1e-10, atol=0):
+            raise ValueError(f"sevcik_analysis scan-rate series requires a constant positive "
+                             f"concentration for species {species!r}.")
+    elif np.allclose(values, values[0], rtol=1e-10, atol=0):
+        raise ValueError(f"sevcik_analysis requires varying concentrations for species {species!r}.")
+    return values, {"species": species, "concentration source": "CV metadata", "concentration unit": "M"}
+
+
 def _sevcik_analysis_payload(cvs, options=None):
     raw_options = options
     typed_options = SevcikAnalysisOptions.from_options(options)
     options = typed_options.to_options_dict()
     do_plot = options.get("plot", True)
     do_print = options.get("print", True)
+    if not do_plot:
+        options["plot fit"] = False
+    if len(cvs) < 2:
+        raise ValueError("sevcik_analysis requires at least two CVs.")
 
     segments, segment_selection = _resolve_auto_single_analysis_segment(
         cvs,
@@ -2822,26 +2891,25 @@ def _sevcik_analysis_payload(cvs, options=None):
     C = None
     v = None
 
-    # Determine type of analysis
-    similar, different = echem_similar_different(cvs)
-    if 'scan rate' in different:
-        if options.get("C") is not None:
-            C = options["C"]
-        elif len(cvs[0].concentrations) > 0:
-            C = concentration_to_float(cvs[0].concentrations[-1]) / 1e3  # mol/cm^3
-        else:
-            C = 0
-        for cv in cvs:
-            x_values.append(cv.scan_rate)
-        x_values = np.sqrt(np.asarray(x_values, dtype=float))
+    scan_rates = np.asarray([cv.scan_rate for cv in cvs], dtype=float)
+    if not np.all(np.isfinite(scan_rates)) or np.any(scan_rates <= 0):
+        raise ValueError("sevcik_analysis requires positive, finite scan rates.")
+    scan_rate_mode = not np.allclose(scan_rates, scan_rates[0], rtol=1e-10, atol=0)
+    concentration_values, concentration_info = _resolve_sevcik_concentrations(
+        cvs, options, scan_rate_mode=scan_rate_mode,
+    )
+    if scan_rate_mode:
+        C = concentration_values[0] / 1e3  # M to mol/cm^3
+        x_values = np.sqrt(scan_rates)
         data['Scan Rate^1/2 / (V s^-1)^1/2'] = x_values
     else:
-        v = cvs[0].scan_rate
-        diff_conc_idx = next((i for i in range(len(cvs[0].concentrations))
-                              if cvs[0].concentrations[i] != cvs[1].concentrations[i]), -1)
-        for cv in cvs:
-            x_values.append(concentration_to_float(cv.concentrations[diff_conc_idx]))
+        v = scan_rates[0]
+        x_values = concentration_values
         data['Concentration (M)'] = x_values
+    data["Species"] = concentration_info["species"]
+    data["Concentration / M"] = concentration_values
+    data["Concentration Source"] = concentration_info["concentration source"]
+    data.attrs["concentration selection"] = concentration_info
 
     internal_options = typed_options.for_peak_current().to_options_dict()
     internal_options["internal call"] = True
@@ -2878,13 +2946,14 @@ def _sevcik_analysis_payload(cvs, options=None):
             y_name = cv.y(options).name
             y_unit = cv.units.get(y_name, '')
             peak_current = cv.peak_current(cv_peak_options)["ip"]
-            scaled_peak_current, _ = scale_value(peak_current, y_unit, selected_unit=peak_unit)
-            segment_peaks.append(scaled_peak_current)
+            peak_scale, _ = scale_axis(np.asarray([peak_current]), y_unit, selected_unit=peak_unit)
+            segment_peaks.append(peak_current * peak_scale)
         peaks.append(segment_peaks)
 
     if do_plot:
         plt.figure()
-        plt.xlabel(r'(Scan Rate)$^{1/2}$ ((V/s)$^{1/2}$)' if 'scan rate' in different else 'Concentration (M)')
+        plt.xlabel(r'(Scan Rate)$^{1/2}$ ((V/s)$^{1/2}$)' if scan_rate_mode
+                   else f'{concentration_info["species"]} Concentration (M)')
         plt.ylabel(f'Peak {y_name} ({peak_unit})')
 
     for i, seg in enumerate(segments):
@@ -2921,18 +2990,18 @@ def _sevcik_analysis_payload(cvs, options=None):
             "sevcik_analysis requires a numeric electrode area. "
             "Set 'electrode area' or 'electrode diameter' when loading the CVs."
         ) from exc
-    if "cm^2" in peak_unit:
-        current_adjustment *= S
+    if _parse_current_density_unit(peak_unit) is not None:
+        density_scale, _ = scale_axis(np.ones(1), peak_unit, selected_unit="A/cm^2")
+        current_adjustment = density_scale * S
 
-    if S != 0 and (C is not None and C != 0):
+    if S != 0:
+        slope_adjustment = current_adjustment * (1 if scan_rate_mode else 1e3)
         for i, seg in enumerate(segments):
-            if 'scan rate' not in different:
-                current_adjustment *= 1e3  # mol/L to mol/cm^3
-            m = fits[i][0] * current_adjustment
-            if 'scan rate' in different:
+            m = fits[i][0] * slope_adjustment
+            if scan_rate_mode:
                 D = (R * T / (F * num_electrons) ** 3) * (m / (0.4463 * S * C)) ** 2
             else:
-                D = (R * T / (F ** 2 * num_electrons ** 3 * v * S ** 2)) * (m / 0.4463) ** 2
+                D = (R * T / (F ** 3 * num_electrons ** 3 * v * S ** 2)) * (m / 0.4463) ** 2
             diffusion_coefficients.append(float(D))
 
     sevcik_fit_table = _sevcik_fit_results_table(
@@ -2942,9 +3011,11 @@ def _sevcik_analysis_payload(cvs, options=None):
     )
 
     if do_print:
+        print(f"Species: {concentration_info['species'] or 'not specified'}; "
+              f"concentration source: {concentration_info['concentration source']}")
         _display_sevcik_parameter_table(
             _sevcik_parameter_table(
-                mode="scan rate" if "scan rate" in different else "concentration",
+                mode="scan rate" if scan_rate_mode else "concentration",
                 num_electrons=num_electrons,
                 temperature=T,
                 electrode_area=S,
@@ -2955,7 +3026,7 @@ def _sevcik_analysis_payload(cvs, options=None):
             options,
         )
         _display_sevcik_diffusion_equation(
-            mode="scan rate" if "scan rate" in different else "concentration",
+            mode="scan rate" if scan_rate_mode else "concentration",
             num_electrons=num_electrons,
             temperature=T,
             electrode_area=S,
@@ -3012,7 +3083,10 @@ def sevcik_analysis(cvs, options=None):
     payload = _sevcik_analysis_payload(cvs, options)
     return _scatter_result_from_payload(
         payload,
-        summary=_summary_with_segment_selection({"analysis": "Sevcik"}, payload),
+        summary=_summary_with_segment_selection({
+            "analysis": "Sevcik", **payload[1].attrs.get("concentration selection", {}),
+            "diffusion coefficients / cm^2 s^-1": payload[0],
+        }, payload),
     )
 
 
@@ -3652,6 +3726,10 @@ def _summary_with_segment_selection(summary, payload):
         selection = table.attrs.get("segment selection")
         if selection:
             merged["segment selection"] = selection
+        x_selection = table.attrs.get("x selection", {})
+        if x_selection.get("species") is not None:
+            merged["species"] = x_selection["species"]
+            merged["concentration unit"] = x_selection.get("unit")
     return merged
 
 
@@ -4033,15 +4111,17 @@ def _format_symbolic_axis_label(label, unit="", x_kind="custom", transform="", l
         return rf"$\log_{{10}}$({base})"
 
     operation, value = _normalize_transform_token(transform)
+    # A power applies to the whole unit, including a denominator or existing exponent.
+    powered_unit = f"({formatted_unit})" if re.search(r"[/\s^]", str(unit)) else formatted_unit
 
     if operation == "identity":
         return f"{base} ({formatted_unit})" if formatted_unit else base
     if operation == "power":
         power = _format_power_text(value)
         label_text = f"{base}$^{{{power}}}$"
-        return label_text + (f" ({formatted_unit}$^{{{power}}}$)" if formatted_unit else "")
+        return label_text + (f" ({powered_unit}$^{{{power}}}$)" if formatted_unit else "")
     if operation == "reciprocal":
-        return f"1/{base}" + (f" ({formatted_unit}$^{{-1}}$)" if formatted_unit else "")
+        return f"1/{base}" + (f" ({powered_unit}$^{{-1}}$)" if formatted_unit else "")
     if operation == "log10":
         if formatted_unit:
             return rf"$\log_{{10}}$({base} / {formatted_unit})"
@@ -4107,7 +4187,7 @@ def _normalize_transform_token(transform):
         return "power", float(transform)
 
     text = str(transform).strip().lower()
-    text = text.replace("_", " ").replace("-", " ")
+    text = text.replace("_", " ")
     compact = text.replace(" ", "")
 
     aliases = {
@@ -4131,8 +4211,9 @@ def _normalize_transform_token(transform):
         "abs": ("abs", None),
         "absolute": ("abs", None),
     }
-    if compact in aliases:
-        return aliases[compact]
+    alias = compact.replace("-", "")
+    if alias in aliases:
+        return aliases[alias]
 
     if compact.startswith("^"):
         return "power", float(compact[1:])
@@ -5214,6 +5295,7 @@ def _fit_peak_potential_payload(cvs, options=None):
 
     _attach_scatter_fit_table(data, fit_rows)
     data.attrs["fit model results"] = fit_model_results
+    data.attrs["x selection"] = extra
     _attach_segment_selection_to_table(data, segment_selection)
     if do_print:
         _print_fit_model_results(fit_model_results, options)
@@ -5499,6 +5581,7 @@ def _fit_peak_current_payload(cvs, options=None):
 
     _attach_scatter_fit_table(data, fit_rows)
     data.attrs["fit model results"] = fit_model_results
+    data.attrs["x selection"] = extra
     _attach_segment_selection_to_table(data, segment_selection)
     if do_print:
         _print_fit_model_results(fit_model_results, options)
@@ -6052,25 +6135,25 @@ def _format_sevcik_diffusion_equation(
     else:
         fit_latex = r"i_p=mC+b"
         formula_latex = (
-            r"D=\frac{RT}{F^2n^3\nu S^2}"
+            r"D=\frac{RT}{F^3n^3\nu S^2}"
             r"\left(\frac{m}{0.4463}\right)^2"
         )
         resolved_latex = (
             rf"D=\frac{{({R:.6g})({T:g})}}"
-            rf"{{({F:.6g})^2({n:g})^3({0 if v is None else v:g})({S:g})^2}}"
+            rf"{{({F:.6g})^3({n:g})^3({0 if v is None else v:g})({S:g})^2}}"
             r"\left(\frac{m}{0.4463}\right)^2"
         )
-        denominator = F ** 2 * n ** 3 * (0 if v is None else v) * S ** 2
+        denominator = F ** 3 * n ** 3 * (0 if v is None else v) * S ** 2
         compact_latex = (
             rf"D={R * T / denominator if denominator != 0 else 0:.6g}"
             r"\left(\frac{m}{0.4463}\right)^2"
         )
         symbolic_text = (
             "i_p = m * C + b; "
-            "D = (R * T / (F^2 * n^3 * v * S^2)) * (m / 0.4463)^2"
+            "D = (R * T / (F^3 * n^3 * v * S^2)) * (m / 0.4463)^2"
         )
         resolved_text = (
-            f"D = ({R:.6g} * {T:g} / ({F:.6g}^2 * {n:g}^3 "
+            f"D = ({R:.6g} * {T:g} / ({F:.6g}^3 * {n:g}^3 "
             f"* {_equation_value_text(v)} * {S:g}^2)) * (m / 0.4463)^2"
         )
         compact_text = (

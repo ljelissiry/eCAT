@@ -49,16 +49,16 @@ app = [
     "pywebview",
 ]
 simulation = [
-    "electrokitty",
+    "electrokitty>=1.0.11.6",
 ]
 simulation-all = [
-    "electrokitty",
+    "electrokitty>=1.0.11.6",
 ]
 all = [
     "dash",
     "dash-ag-grid",
     "pywebview",
-    "electrokitty",
+    "electrokitty>=1.0.11.6",
 ]
 dev = [
     "build",

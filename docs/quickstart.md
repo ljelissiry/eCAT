@@ -19,9 +19,12 @@ Check the first object:
 
 ```python
 obj = data[0]
-obj.info()
+obj.show()
+metadata = obj.metadata()
 obj.units
 ```
+
+`metadata()` works consistently for CV, CA, CP, and DPV objects. It returns an independent dictionary with common provenance and units plus the technique-specific values reported by that object's `stats()` method.
 
 ## Plot One CV
 

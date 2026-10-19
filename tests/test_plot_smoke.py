@@ -3382,7 +3382,8 @@ def test_multiplot_plot_segment_restricts_each_trace(ecat_module, cv_factory):
     ax = plt.gca()
 
     assert len(ax.lines) == 2
-    assert [len(line.get_xdata()) for line in ax.lines] == [10, 10]
+    # The turning point belongs to the preceding (first) sweep.
+    assert [len(line.get_xdata()) for line in ax.lines] == [11, 11]
     assert ax.get_legend() is None
     plt.close(fig)
 

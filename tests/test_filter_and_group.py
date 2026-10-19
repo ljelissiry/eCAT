@@ -724,16 +724,16 @@ def test_build_object_table_rounds_numeric_lists_for_display(
     assert "15234375" not in scan_window
 
 
-def test_cv_txt_stats_supports_potential_rounding_option(ecat_module, cv_factory):
+def test_cv_display_stats_supports_potential_rounding_option(ecat_module, cv_factory):
     potential = [-2.19818115234375, -1.49993896484375] * 11
     obj = cv_factory(potential=potential[:21])
 
     assert obj.stats()["low E"] == -2.19818115234375
 
-    default_stats = obj.txt_stats({})
+    default_stats = obj._display_stats({})
     assert default_stats["scan window"] == "[-2.2, -1.5]"
 
-    exactish_display_stats = obj.txt_stats({"potential rounding": None, "sig figs": 6})
+    exactish_display_stats = obj._display_stats({"potential rounding": None, "sig figs": 6})
     assert exactish_display_stats["scan window"] == "[-2.19818, -1.49994]"
 
 

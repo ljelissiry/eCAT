@@ -157,7 +157,7 @@ def test_app_dependencies_are_optional_extra(repo_root):
 def test_simulation_dependency_extra_remains_electrokitty(repo_root):
     pyproject = (repo_root / "pyproject.toml").read_text()
 
-    assert _pyproject_list(pyproject, "simulation") == {"electrokitty"}
+    assert _pyproject_list(pyproject, "simulation") == {"electrokitty>=1.0.11.6"}
 
 
 def test_app_launch_dependency_message_uses_app_extra(monkeypatch):
@@ -320,3 +320,26 @@ def test_distribution_name_is_distinct_from_public_import(repo_root):
     assert 'name = "ecat-electrochemistry"' in project_block
     assert f'ecat-electrochemistry=={ecat.__version__}' in readme_text
     assert "import ecat as e" in readme_text
+
+
+def test_readme_logo_header_uses_github_sized_html(repo_root):
+    readme_text = (repo_root / "README.md").read_text(encoding="utf-8")
+    first_line = readme_text.splitlines()[0]
+    logo_text = (
+        repo_root
+        / "apps"
+        / "workbench"
+        / "src"
+        / "ecat_app"
+        / "assets"
+        / "ecat-logo-app-icon.svg"
+    ).read_text(encoding="utf-8")
+
+    assert first_line.startswith(
+        '<h1><img src="apps/workbench/src/ecat_app/assets/ecat-logo-app-icon.svg"'
+    )
+    assert first_line.endswith(" eCAT: electroChemical Analysis Tools</h1>")
+    assert 'width="52"' in first_line
+    assert 'height="52"' in first_line
+    assert 'width="52"' in logo_text
+    assert 'height="52"' in logo_text

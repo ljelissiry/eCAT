@@ -83,6 +83,7 @@ def test_dpv_stats_include_common_name_metadata_and_dpv_fields(ecat_module, repo
 
     obj = ecat_module.echem.from_file(str(filepath), {})
     stats = obj.stats()
+    metadata = obj.metadata()
 
     assert stats["solvent"] == "MeCN"
     assert stats["gas"] == "CO2"
@@ -96,13 +97,17 @@ def test_dpv_stats_include_common_name_metadata_and_dpv_fields(ecat_module, repo
     assert stats["pulse period"] == pytest.approx(0.5)
     assert "amplitude (V)" not in stats
     assert "pulse period (s)" not in stats
+    assert metadata["type"] == "Differential Pulse Voltammetry"
+    assert metadata["software"] == "CH"
+    assert metadata["units"] == {"Potential": "V", "Current": "A"}
+    assert metadata["pulse period"] == pytest.approx(0.5)
 
 
 def test_dpv_txt_stats_uses_cv_style_scan_window_without_verbose_fields(ecat_module, repo_root):
     filepath = _private_dpv_path(repo_root)
 
     obj = ecat_module.echem.from_file(str(filepath), {})
-    stats = obj.txt_stats({})
+    stats = obj._display_stats({})
 
     assert stats["exp type"] == "DPV"
     assert stats["scan window"] == "[-1.2, -0.7]"

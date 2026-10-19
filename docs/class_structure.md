@@ -26,7 +26,9 @@ Key public methods include:
 
 - `from_file()`, `detect_software()`, `detect_experiment_type()`
 - `x()`, `y()`, `xy()`
-- `stats()`, `info()`
+- `stats()`, `metadata()`
+- `spectrum()`: inherited Welch PSD or one-sided FFT analysis; generic `echem`
+  objects require recorded Time and a finite numeric signal column
 - `plot()`, plus shared helpers used by analysis and plotting functions
 
 ### `cv`
@@ -45,7 +47,9 @@ Key public methods include:
 - `peak_potential()`, `peak_current()`, `peak_width()`, `half_peak_potential()`,
   `half_wave_potential()`
 - `current_at_potential()` and related CV analysis helpers
-- `stats()`, `plot()`
+- `stats()`, inherited `metadata()`, `plot()`
+- inherited `spectrum()`, using recorded Time or per-segment reconstruction
+  from raw Potential and scan rate
 
 ### `ca`
 
@@ -58,7 +62,8 @@ Owned variables include the inherited `echem` state plus:
 Key public methods include:
 
 - inherited `x()`, `y()`, `xy()`, `plot()`
-- `stats()`
+- `stats()`, inherited `metadata()`
+- inherited `spectrum()`, using recorded Time
 - CA-specific charge/current analysis helpers
 
 ### `cp`
@@ -76,7 +81,8 @@ Owned variables include the inherited `echem` state plus:
 Key public methods include:
 
 - inherited `x()`, `y()`, `xy()`, `plot()`
-- `stats()`
+- `stats()`, inherited `metadata()`
+- inherited `spectrum()`, using recorded Time
 - CP cycle and segment plotting/analysis helpers
 
 ### `dpv`
@@ -97,7 +103,9 @@ displayed values.
 Key public methods include:
 
 - inherited `x()`, `y()`, `xy()`, `plot()`
-- `stats()`, `txt_stats()`
+- `stats()`, `metadata()`
+- inherited `spectrum()`, using recorded Time or reconstruction from pulse
+  period
 - DPV peak analysis helpers
 
 ## Simulation Object Model

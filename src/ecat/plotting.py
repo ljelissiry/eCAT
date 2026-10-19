@@ -711,7 +711,7 @@ class _ScatterTrace:
     def __init__(self, name):
         self.name = str(name)
 
-    def txt_stats(self, options=None):
+    def _display_stats(self, options=None):
         return {"name": self.name}
 
 
@@ -1418,7 +1418,7 @@ def _display_folder_path_value(value):
 def _object_info_table(echem_object, options=None):
     if options is None:
         options = {}
-    info = echem_object.info()
+    info = echem_object.metadata()
     sig_figs = options.get("sig figs", 3)
 
     def split_metric_unit(key):
@@ -1459,7 +1459,7 @@ def _object_info_table(echem_object, options=None):
         else:
             concentrations = list(concentrations or [])
 
-        combine = getattr(echem_object, "combine_concs_chems", None)
+        combine = getattr(echem_object, "_combined_compound_labels", None)
         if callable(combine):
             combined = combine(concentrations, compounds, options)
         else:
@@ -1474,6 +1474,10 @@ def _object_info_table(echem_object, options=None):
 
     def format_info_value(key, value):
         _metric_key, unit = split_metric_unit(key)
+        if key == "file path":
+            return _format_path_for_display(value)
+        if key == "folder path":
+            return _display_folder_path_value(value)
         if key == "reference source file":
             return _single_object_reference_source_display(echem_object, value)
         if getattr(echem_object, "type", None) == "Differential Pulse Voltammetry":
@@ -2654,7 +2658,7 @@ def echem_similar_different(echem_list, options=None, ignore=None, return_values
     all_keys = []
 
     for obj in echem_list:
-        stats = obj.txt_stats(options).copy()
+        stats = obj._display_stats(options).copy()
         stats_rows.append(stats)
         for key in stats:
             if key not in all_keys:
@@ -3087,7 +3091,7 @@ def _detect_scan_rate_gradient_groups(echem_list, options):
         if scan_rate in (None, ""):
             continue
 
-        stats = obj.txt_stats(options).copy()
+        stats = obj._display_stats(options).copy()
         for key in ["scan rate", "scan window", "exp type"]:
             stats.pop(key, None)
 
@@ -3264,7 +3268,7 @@ def _detect_concentration_gradient_groups(echem_list, options):
             if entry.get("is_zero_absent") or entry.get("value", 0) <= 0:
                 continue
 
-            stats = obj.txt_stats(options).copy()
+            stats = obj._display_stats(options).copy()
             for key in ["compounds", "scan window", "exp type"]:
                 stats.pop(key, None)
 
@@ -5107,12 +5111,12 @@ def _resolve_multiplot_labels_title_subtitle(echem_list, options):
     if (
         user_labels is None
         and len(echem_list) > 1
-        and all(callable(getattr(obj, "txt_stats", None)) for obj in echem_list)
+        and all(callable(getattr(obj, "_display_stats", None)) for obj in echem_list)
     ):
         labels = []
 
         for echem_object in echem_list:
-            stats = echem_object.txt_stats(options)
+            stats = echem_object._display_stats(options)
             parts = []
 
             for difference in differences:
@@ -5217,7 +5221,7 @@ def _resolve_multiplot_labels_title_subtitle(echem_list, options):
         else:
             title = title[:-8]
 
-        group_stats = echem_list[0].txt_stats(options)
+        group_stats = echem_list[0]._display_stats(options)
         group_stats.pop('scan window', None)
         group_stats.pop('exp type', None)
 
@@ -5338,7 +5342,7 @@ def _deduplicate_multiplot_labels(echem_list, labels, options):
     normalized_fields = [str(field).strip().lower().replace("_", " ") for field in fields]
     if not validate_keys(normalized_fields, opt_dict, "deduplicate label"):
         return resolved
-    stats_by_index = [obj.txt_stats(options) for obj in echem_list]
+    stats_by_index = [obj._display_stats(options) for obj in echem_list]
 
     label_to_indices = {}
     for idx, label in enumerate(resolved):

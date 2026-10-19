@@ -1910,6 +1910,8 @@ def test_fowa_plot_all_main_trace_uses_full_cv_not_analysis_segment(
                 "redox potential": 0.0,
                 "redox mode": "manual",
                 "segment": 1,
+                # Isolate plotting from the fixture's discontinuous vertex current.
+                "wave range": [-0.2, 0.24],
                 "background correction": None,
                 "fit range": [0.1, 0.5],
                 "min fit points": 5,
@@ -1981,6 +1983,8 @@ def test_fowa_plot_all_plot_segments_controls_diagnostic_multiplot_only(
                 "redox potential": 0.0,
                 "redox mode": "manual",
                 "segment": 1,
+                # Isolate plotting from the fixture's discontinuous vertex current.
+                "wave range": [-0.2, 0.24],
                 "background correction": None,
                 "fit range": [0.1, 0.5],
                 "min fit points": 5,

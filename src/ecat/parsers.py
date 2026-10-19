@@ -8,13 +8,21 @@ import os
 import re
 import warnings as _warnings
 
+import numpy as np
 import pandas as pd
 
 from ._file_formats import validate_default_text_input
+from ._cv_direction import split_cv_potential_segments
 
 
 _SCAN_RATE_REL_TOLERANCE = 1e-3
 _SCAN_RATE_ABS_TOLERANCE = 1e-6
+_FILENAME_NUMBER = r"(?:\d+(?:[.,pP]\d+)?|[.,]\d+)(?:[eE][+-]?\d+)?"
+
+
+def _normalize_filename_number(value):
+    """Normalize decimal markers only within a matched numeric token."""
+    return str(value).replace(",", ".").replace("p", ".").replace("P", ".")
 
 
 def parse_ch_timestamp(time_str):
@@ -204,19 +212,20 @@ def _parse_labeled_string(lines, labels):
 def _parse_scan_rate_from_filename(name):
     text = str(name)
     match = re.search(
-        r"(\d+(?:\.\d+)?)\s*([numμm]?)\s*V\s*/?\s*s",
+        rf"(?<![A-Za-z0-9.,])({_FILENAME_NUMBER})\s*([numµμ]?)\s*V\s*[/_]?\s*s(?![A-Za-z0-9])",
         text,
         flags=re.IGNORECASE,
     )
     if not match:
         return None
-    value = float(match.group(1))
+    value = float(_normalize_filename_number(match.group(1)))
     prefix = match.group(2).lower()
     factor = {
         "": 1.0,
         "m": 1e-3,
         "u": 1e-6,
         "μ": 1e-6,
+        "µ": 1e-6,
         "n": 1e-9,
     }.get(prefix, 1.0)
     return value * factor
@@ -360,6 +369,8 @@ def _column_role(column):
     label = _normalize_column_label(column)
     if label in {"time", "t"} or label.startswith("time "):
         return "Time"
+    if "half cycle" in label:
+        return "Half Cycle"
     if "cycle" in label:
         return "Cycle"
     if label in {"ns", "step"} or label.endswith(" ns"):
@@ -522,11 +533,16 @@ def _canonicalize_data(df_raw, technique, warnings):
         if original_unit is not None:
             original_units[original_name] = original_unit
         role = _column_role(col)
+        # In CV exports control/V is the programmed voltage, not Ewe. Keep it
+        # separate; in other techniques 'control' can instead be a current.
+        if technique == "CV" and str(original_name).strip().lower() == "control" and original_unit in {"V", "mV"}:
+            role = "Control Potential"
         if role is None or role in used_roles:
             continue
 
         target_unit = {
             "Potential": "V",
+            "Control Potential": "V",
             "Current": "A",
             "Time": "s",
             "Charge": "C",
@@ -646,15 +662,16 @@ def _parse_scan_rate(lines):
             if value is None:
                 continue
             unit = None
-            if "mv/s" in lower:
+            unit_text = lower.replace("_", "/")
+            if "mv/s" in unit_text:
                 unit = "mV/s"
-            elif "v/s" in lower:
+            elif "v/s" in unit_text:
                 unit = "V/s"
             elif idx + 1 < len(lines):
                 next_line = str(lines[idx + 1]).strip()
-                if re.search(r"(?i)\bmV\s*/?\s*s\b", next_line):
+                if re.search(r"(?i)\bmV\s*[/_]?\s*s\b", next_line):
                     unit = "mV/s"
-                elif re.search(r"(?i)\bV\s*/?\s*s\b", next_line):
+                elif re.search(r"(?i)\bV\s*[/_]?\s*s\b", next_line):
                     unit = "V/s"
             if unit == "mV/s":
                 return value * 1e-3
@@ -662,24 +679,86 @@ def _parse_scan_rate(lines):
     return None
 
 
-def _parse_segments(lines, df_raw=None):
+def _parse_segments(lines):
     for line in lines:
         text = str(line).strip()
-        if re.match(r"^(?:N|Segment|Number of segments)\b", text, flags=re.IGNORECASE):
+        if re.match(r"^(?:N|Segments?|Number of segments)\b", text, flags=re.IGNORECASE):
             value = _parse_assignment_float(text)
             if value is not None:
                 return int(value)
-        if "nc cycles" in text.lower():
-            value = _parse_assignment_float(text)
-            if value is not None and value > 0:
-                return int(value)
-    if df_raw is not None:
-        for col in df_raw.columns:
-            if _column_role(col) == "Cycle":
-                values = pd.to_numeric(df_raw[col], errors="coerce").dropna()
-                if not values.empty:
-                    return int(values.nunique())
     return None
+
+
+def _observed_cv_sweeps(data):
+    if "Potential" not in data:
+        return []
+    try:
+        return split_cv_potential_segments(data["Potential"].to_numpy(dtype=float))
+    except ValueError:
+        return []
+
+
+def _infer_cv_scan_rate(data, units, sweeps, warnings):
+    """Estimate a common ramp rate from canonical, unshifted acquisition axes.
+
+    Use successive potential-change arrivals so repeated staircase samples do
+    not bias the estimate toward the instantaneous jump rate. Initial and vertex
+    holds are excluded. Isolated extended plateaus can be omitted only when the
+    majority of the ramp supports a common rate. A scalar is returned only when
+    every observed ramp has enough evidence and their rates agree. For dense
+    ramps (at least 20 intervals), omit the first/last arrival interval and
+    check overlapping five-interval rates to avoid differentiating voltage
+    noise. Sparse ramps retain the stricter individual-interval check.
+    """
+    if not sweeps or units.get("Time") != "s" or units.get("Potential") != "V":
+        return None, []
+    time = data["Time"].to_numpy(dtype=float)
+    potential = data["Potential"].to_numpy(dtype=float)
+    if not np.isfinite(time).all() or np.any(np.diff(time) <= 0):
+        warnings.append("Scan rate inference requires finite, strictly increasing acquisition times.")
+        return None, []
+    tolerance = max(float(np.ptp(potential)), float(np.max(np.abs(potential))), 1.0) * 1e-9
+    rates = []
+    for sweep in sweeps:
+        start = max(0, sweep["start"] - 1)
+        stop = sweep["stop"]
+        e, t = potential[start:stop], time[start:stop]
+        arrivals = np.flatnonzero(np.abs(np.diff(e)) > tolerance) + 1
+        if len(arrivals) < 2:
+            warnings.append("Scan rate could not be inferred: an observed ramp has too few potential changes.")
+            return None, rates
+        de = np.abs(np.diff(e[arrivals]))
+        dt = np.diff(t[arrivals])
+        slopes = de / dt
+        rate = float(np.median(slopes))
+        # A long interior hold adds elapsed time between change arrivals. Only
+        # remove slow outliers that contain repeated potential samples, and
+        # require at least two agreeing intervals constituting a clear majority.
+        held = (np.diff(arrivals) > 1) & (slopes < .5 * rate)
+        moving = slopes[~held]
+        if held.any() and len(moving) >= 2 and len(moving) / len(slopes) >= .6:
+            candidate = float(np.median(moving))
+            if np.allclose(moving, candidate, rtol=.05, atol=_SCAN_RATE_ABS_TOLERANCE):
+                de, dt = de[~held], dt[~held]
+                slopes, rate = moving, candidate
+                warnings.append("Scan rate inference excluded isolated extended potential holds within a ramp.")
+        if len(slopes) >= 20:
+            # Endpoints can straddle instrument updates at startup, reversal
+            # or termination. No interior observations are discarded.
+            de, dt = de[1:-1], dt[1:-1]
+            kernel = np.ones(5)
+            slopes = np.convolve(de, kernel, mode="valid") / np.convolve(dt, kernel, mode="valid")
+            rate = float(np.sum(de) / np.sum(dt))
+        if not np.allclose(slopes, rate, rtol=.05, atol=_SCAN_RATE_ABS_TOLERANCE):
+            warnings.append("Scan rate could not be inferred: rates vary within an observed ramp.")
+            return None, rates
+        rates.append(rate)
+    rate = float(np.median(rates))
+    if not np.allclose(rates, rates[0], rtol=_SCAN_RATE_REL_TOLERANCE, atol=_SCAN_RATE_ABS_TOLERANCE):
+        warnings.append("Scan rate was left unresolved because observed ramps have unequal scan rates.")
+        return None, rates
+    warnings.append("CV scan rate was inferred from canonical potential/time data across observed ramps.")
+    return rate, rates
 
 
 def _parse_reference_electrode(lines):
@@ -1032,15 +1111,57 @@ def _make_parse_result(
     header_scan_rate = _parse_scan_rate(header_lines)
     filename_scan_rate = _parse_scan_rate_from_filename(os.path.basename(filepath))
     metadata["scan_rate"] = header_scan_rate if header_scan_rate is not None else filename_scan_rate
+    scan_rate_source = "header" if header_scan_rate is not None else ("filename" if filename_scan_rate is not None else None)
+    sweeps = _observed_cv_sweeps(data) if technique == "CV" else []
+    inferred_scan_rates = []
+    waveform_scan_rate = None
+    waveform_rate_source = None
+    scan_rate_review_required = False
+    inference_warnings = []
+    if technique == "CV":
+        inference_data, inference_units, inference_sweeps = data, units, sweeps
+        waveform_rate_source = "potential/time"
+        if "Control Potential" in data and units.get("Control Potential") == "V":
+            inference_data = data.assign(Potential=data["Control Potential"])
+            inference_sweeps = _observed_cv_sweeps(inference_data)
+            waveform_rate_source = "control/time"
+        waveform_scan_rate, inferred_scan_rates = _infer_cv_scan_rate(
+            inference_data, inference_units, inference_sweeps, inference_warnings,
+        )
+        supplied_rate = metadata["scan_rate"]
+        supplied_source = scan_rate_source
+        if header_scan_rate is None and waveform_scan_rate is not None:
+            metadata["scan_rate"] = waveform_scan_rate
+            scan_rate_source = waveform_rate_source
+        if supplied_rate is None or scan_rate_source == waveform_rate_source:
+            warnings.extend(
+                warning.replace("canonical potential/time", "recorded control/time")
+                if waveform_rate_source == "control/time" else warning
+                for warning in inference_warnings
+            )
+        if supplied_rate is not None and waveform_scan_rate is not None and not math.isclose(
+            supplied_rate, waveform_scan_rate, rel_tol=.05,
+            abs_tol=_SCAN_RATE_ABS_TOLERANCE,
+        ):
+            scan_rate_review_required = True
+            message = (
+                f"Review scan rate for {_format_file_for_warning(filepath, display_root)}: "
+                f"{supplied_source} reports {_format_scan_rate_for_warning(supplied_rate)}, "
+                f"but {waveform_rate_source} estimates {_format_scan_rate_for_warning(float(f'{waveform_scan_rate:.4g}'))}; "
+                f"using {scan_rate_source} {'value' if scan_rate_source == 'header' else 'estimate'}."
+            )
+            warnings.append(message)
+            _warnings.warn(message, UserWarning, stacklevel=3)
     scan_rate_warning = _scan_rate_mismatch_warning(
         filepath,
         header_scan_rate,
         display_root=display_root,
     )
     if scan_rate_warning is not None:
+        scan_rate_review_required = True
         warnings.append(scan_rate_warning)
         _warnings.warn(scan_rate_warning, UserWarning, stacklevel=3)
-    metadata["segments"] = _parse_segments(header_lines, df_raw)
+    metadata["segments"] = _parse_segments(header_lines)
     if technique == "CP":
         metadata["segments"] = _count_nonzero_step_values(step_table, "Is") or metadata["segments"]
     metadata["quiet_time"] = parse_quiet_time_from_lines(header_lines)
@@ -1069,8 +1190,11 @@ def _make_parse_result(
     if technique == "CP":
         metadata.update(_cp_currents_from_step_table(step_table))
     if technique == "CV" and metadata["segments"] is None:
-        metadata["segments"] = 1
-        warnings.append("CV segment count was inferred from the data table.")
+        metadata["segments"] = len(sweeps) if sweeps else None
+        warnings.append(
+            "CV segment count was inferred from observed potential sweeps."
+            if sweeps else "CV segment count could not be inferred: no resolvable potential sweeps."
+        )
     if inferred:
         metadata["experiment_subtype"] = None
 
@@ -1093,6 +1217,14 @@ def _make_parse_result(
         "step_table": step_table,
         "external_channels": {},
         "parser_notes": "Technique inferred from canonical axes." if inferred else "",
+        "scan_rate_source": scan_rate_source,
+        "header_scan_rate": header_scan_rate,
+        "filename_scan_rate": filename_scan_rate,
+        "inferred_ramp_scan_rates": inferred_scan_rates,
+        "waveform_scan_rate": waveform_scan_rate,
+        "waveform_rate_source": waveform_rate_source,
+        "scan_rate_review_required": scan_rate_review_required,
+        "waveform_rate_warnings": inference_warnings,
     }
     return ParseResult(
         data=data,
