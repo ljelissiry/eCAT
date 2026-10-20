@@ -1454,7 +1454,7 @@ def _build_option_metadata():
     for section in ("filter", "sort_group"):
         update(section, {
             "sig_figs": {
-                "description": "Numeric metadata matching precision: 'auto' (default) uses a deterministic 5-significant-digit fallback; None matches exactly; integers 1-17 set significant digits. A field mapping applies precision only to named continuous fields (omitted fields match exactly). Decimal rounding buckets are shared by filter/sort/group; they do not infer instrument resolution or alter stored data. Categorical fields and integer IDs remain exact.",
+                "description": "Numeric metadata matching precision: 'auto' (default) uses 3 significant digits for scan windows and 5 for other continuous fields; None matches exactly; integers 1-17 set significant digits. A field mapping applies precision only to named continuous fields (omitted fields match exactly). Decimal rounding buckets are shared by filter/sort/group; they do not infer instrument resolution or alter stored data. Categorical fields and integer IDs remain exact.",
             },
         })
 

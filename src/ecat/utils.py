@@ -1273,8 +1273,9 @@ def fit(x, y, label="", degree=1, plot_fit=True, options=None):
     if plot_fit:
         fit_label_opt = options.get("fit label", False)
         if _fit_line_range_value(options, label=label, index=0) is None:
-            x_line = x_fit
-            y_line = y_hat
+            order = np.argsort(x_fit, kind="stable")
+            x_line = x_fit[order]
+            y_line = y_hat[order]
         else:
             x_line = _polyfit_line_x_values(x_fit, options, label=label, index=0)
             y_line = np.poly1d(coeffs)(x_line)
