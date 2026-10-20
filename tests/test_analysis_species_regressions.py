@@ -179,3 +179,25 @@ def test_sevcik_density_and_two_electron_scaling(ecat_module, cv_factory, monkey
         "num electrons": 2, "y axis": "Current Density", "y unit": unit,
     })
     assert result.summary["diffusion coefficients / cm^2 s^-1"] == pytest.approx([diffusion] * 2)
+
+
+def test_sevcik_fit_line_is_monotonic_with_unsorted_scan_rates(ecat_module, cv_factory, monkeypatch):
+    cvs, diffusion = _sevcik_cvs(ecat_module, cv_factory, monkeypatch,
+                                [0.001]*4, [0.2, 0.05, 0.3, 0.1])
+    result = _analyze(ecat_module, cvs, plot=True, species='Fc', **{'fit indices': [0, 3]})
+    for line in plt.gca().lines:
+        assert np.all(np.diff(line.get_xdata()) >= 0)
+    assert result.summary['diffusion coefficients / cm^2 s^-1'] == pytest.approx([diffusion]*2)
+    assert result.table['Scan Rate^1/2 / (V s^-1)^1/2'].tolist() == pytest.approx(np.sqrt([0.2,0.05,0.3,0.1]))
+
+
+def test_trumpet_missing_return_peak_identifies_curve_and_pair(ecat_module, cv_factory):
+    forward = np.linspace(-.5,.5,201)
+    reverse = np.linspace(.495,-.5,200)
+    potential = np.concatenate([forward,reverse,forward[1:],reverse])
+    current = np.concatenate([np.exp(-((forward-.2)/.04)**2),
+                              -np.exp(-((reverse+.2)/.04)**2),
+                              np.exp(-((forward[1:]-.2)/.04)**2), np.zeros_like(reverse)])*1e-6
+    cvs=[cv_factory(name=f'{rate}mVs_missing_return',potential=potential,current=current) for rate in [50,100]]
+    with pytest.raises(ValueError, match=r'trumpet_analysis.*50mVs_missing_return.*3.*4'):
+        ecat_module.trumpet_analysis(cvs, {'segments':[3,4],'plot':False,'print':False})

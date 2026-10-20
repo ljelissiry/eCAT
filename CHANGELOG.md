@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Use three significant figures for automatic scan-window matching, retaining five for other continuous metadata and preserving measured potentials.
+- Draw polynomial and Sevcik fit lines in increasing x order without changing input-order fit selections or statistics.
+- Identify the curve and segment pair when trumpet peak extraction fails.
+- Allow collection filtering for directly loaded objects without a folder attribute.
+- Update GitHub artifact actions to Node.js 24 versions.
+
 ## 0.1.0b7 - Release candidate - 2026-10-19
 
 - Added filename decimal aliases, preserved spaced species names and DMA/DMAc spelling, and supported scan-rate units such as mV_s.

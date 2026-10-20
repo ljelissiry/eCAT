@@ -1848,7 +1848,17 @@ def _trumpet_analysis_payload(cvs, options=None):
             potential_series,
             cv_index,
         )
-        half_wave = cv.half_wave_potential(cv_half_wave_options)
+        try:
+            half_wave = cv.half_wave_potential(cv_half_wave_options)
+        except ValueError as exc:
+            name = getattr(cv, "name", f"CV {cv_index + 1}")
+            raise ValueError(
+                f"trumpet_analysis could not extract paired peaks for {name!r} "
+                f"in segments {base_segment} and {paired_segment}: {exc} "
+                "Trumpet analysis requires resolved cathodic and anodic peaks "
+                "from the same redox couple. Inspect these sweeps with 'plot all': True "
+                "and check the peak-selection options; a shoulder is not automatically a peak."
+            ) from exc
         scan_rates.append(float(cv.scan_rate))
         deltas.append(half_wave["ΔE"])
         ep1_values.append(half_wave["peak 1"]["Ep"])

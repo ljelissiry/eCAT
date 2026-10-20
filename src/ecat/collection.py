@@ -24,7 +24,7 @@ _NAN_MATCH_KEY = object()
 def _metadata_match_key(key, value, options):
     """Canonical decimal buckets shared by matching, grouping, and sorting.
 
-    Auto is a deterministic five-digit fallback, not inferred measurement
+    Auto is a deterministic field-specific fallback, not inferred measurement
     precision. Formatting to significant digits avoids magnitude-dependent
     tolerances and gives transitive equivalence classes at rounding boundaries.
     """
@@ -32,7 +32,7 @@ def _metadata_match_key(key, value, options):
     if isinstance(precision, dict):
         precision = precision.get(key)
     if precision == "auto":
-        precision = 5
+        precision = 3 if key == "scan window" else 5
     if key not in _COLLECTION_PRECISION_FIELDS:
         precision = None
 
@@ -103,7 +103,7 @@ def _print_matching_precision(options):
         if value is None:
             return "exact"
         if value == "auto":
-            return "auto = 5 significant digits (fallback; not inferred instrument resolution)"
+            return "auto = 3 significant digits for scan windows; 5 significant digits otherwise (fallback; not inferred instrument resolution)"
         return f"{value} significant digits"
     if isinstance(policy, dict):
         description = "; ".join(f"{key}: {describe(value)}" for key, value in sorted(policy.items()))
@@ -120,7 +120,7 @@ def get_sort_group_dict():
         return echem_object.name
 
     def get_folderpath(echem_object):
-        return echem_object.folderpath
+        return getattr(echem_object, "folderpath", None)
 
     def get_compounds(echem_object):
         return getattr(echem_object, "compounds", [])
@@ -628,7 +628,8 @@ def filter(object_list, filter_keys, options=None):
         Metadata filters to include or exclude.
     options : dict or FilterOptions, optional
         Filter logic, print, and ``sig figs`` matching options. Precision is
-        ``"auto"`` (five significant digits), ``None`` (exact), an integer
+        ``"auto"`` (three significant digits for scan windows, five for other
+        fields), ``None`` (exact), an integer
         from 1 to 17, or a per-field mapping (omitted fields match exactly).
         Auto is a fallback, not an estimate of instrument resolution.
         See ``e.describe_options("filter")``.
@@ -943,7 +944,8 @@ def sort(object_list, sort_keys, options=None):
         Sort/group keys such as ``"timestamp"`` or ``"scan rate"``.
     options : dict or SortGroupOptions, optional
         Print and numeric matching options. ``sig figs`` uses decimal rounding
-        buckets: ``"auto"`` (default) means five significant digits, ``None``
+        buckets: ``"auto"`` (default) means three significant digits for scan windows
+        and five otherwise, ``None``
         means exact, and integers 1-17 or per-field mappings set precision.
         Ties preserve input order; this function sorts the input list in place.
         See ``e.describe_options("sort_group")``.
@@ -1006,8 +1008,8 @@ def group(object_list, group_keys, options=None):
         Sort/group keys used to form groups.
     options : dict or SortGroupOptions, optional
         Print and numeric matching options. ``sig figs`` uses the same decimal
-        rounding buckets as filter/sort: ``"auto"`` (default) means five
-        significant digits, ``None`` means exact, and integers 1-17 or per-field
+        rounding buckets as filter/sort: ``"auto"`` (default) means three
+        significant digits for scan windows and five otherwise, ``None`` means exact, and integers 1-17 or per-field
         mappings set precision. Stored metadata and data remain unchanged.
         See ``e.describe_options("sort_group")``.
     
@@ -1274,7 +1276,8 @@ def sort_and_group(object_list, sort_keys=None, group_keys=None, options=None):
         Keys used to form groups.
     options : dict or SortGroupOptions, optional
         Print and numeric matching options, including the shared ``sig figs``
-        policy (default ``"auto"``: five significant digits). See
+        policy (default ``"auto"``: three significant digits for scan windows,
+        five otherwise). See
         ``e.describe_options("sort_group")``.
     
     Returns
