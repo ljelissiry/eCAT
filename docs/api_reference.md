@@ -1082,6 +1082,70 @@ inputs into private backend-ready rates under `params["_compiled"]`. Fitting
 can still vary physical paths such as `reactions.0.K` and
 `reactions.0.k_exchange`; for each trial simulation, eCAT converts the current
 physical values into the `kf`/`kb` rates required by the backend.
+### Equilibrium units, updates and fitting
+
+A bare numeric `K` is dimensionless and uses activities. A string such as
+`"2 M^-1"`, or `{"K": 2, "K_unit": "M^-1"}`, supplies a concentration
+quotient. For products-minus-reactants stoichiometric numbers νᵢ, define
+`p = n_r - n_p` and `Γ = product(gamma_i**ν_i)`. Then:
+
+```text
+K = Kc_native * (c_standard**p) * Γ
+Kc_native = K / ((c_standard**p) * Γ)
+```
+
+| Symbol | Definition | Input/control |
+| --- | --- | --- |
+| `K` | Dimensionless activity equilibrium constant | `reactions.*.K` without concentration units |
+| `Kc_native` | Product/reactant concentration quotient, `(mol/m³)^(-p)` | Unit-bearing `K`; compiled `kf/kb` |
+| `c_standard` | Bulk activity standard, `mol/m³` | `activity.standard_concentration`; default `1000` |
+| `gamma_i` | Positive dimensionless activity coefficient | `activity.gamma.bulk`; default `1` |
+| `n_r`, `n_p`, `νᵢ` | Total reaction orders and signed species coefficients | Chemical reaction stoichiometry |
+
+For ideal `A+B=AB`, `2 M^-1 = 0.002 m³/mol`: dimensionless `K` is `2` at
+`1000 mol/m³` standard concentration and `0.2` at `100 mol/m³`.
+Both represent the same concentration quotient. The activity-based convention
+follows the [IUPAC equilibrium-constant definition](https://goldbook.iupac.org/terms/view/E02177).
+
+Supported unit-bearing inputs remain bulk association quotients: `M^-1`,
+`mM^-1`, `m^3/mol` and their existing aliases require `p=1`; explicit `native`
+uses the positive association order in the reaction. Unsupported powers,
+dissociation or surface concentration-unit inputs raise an error; use a correctly
+converted dimensionless activity `K` for those cases. Surface dimensionless
+constants use `activity.standard_coverage`. Structured `{"kind": ...}` inputs
+are not part of this release. Conflicting unit annotations and nonpositive or
+nonfinite constants are rejected.
+
+For eCAT optimizers, the base equilibrium values, `fit.fixed`, `fit.init` and
+`fit.bounds` are normalized to **dimensionless K once**, using the entered
+parameter context **after fixed standard-state and gamma updates**. Mapping
+insertion order does not affect that conversion. Bare numbers in these fields
+are dimensionless; strings can carry the supported concentration units.
+`best_params` and fitted parameter tables use dimensionless values with
+`K_unit="dimensionless"`. Simulation diagnostics include `K_dimensionless`,
+`logK` (natural logarithm), `K_concentration`, `kf` and `kb`.
+
+Activity-coefficient fitting remains supported. Its optimizer starting values
+and trial changes do not redefine this fixed unit-conversion context. If gamma
+or the standard state is varied, fixed dimensionless K bounds do **not** remain
+fixed concentration-quotient bounds. Prefer explicit dimensionless K inputs and
+bounds for such joint fits; inspect the reported quotient for interpretation.
+Ordinary `simulate_cv()` preserves the entered unit convention in its parameter
+mapping while compiling consistent physical rates.
+
+Group fits convert per-CV K starting values and bounds using each dataset's
+context. A shared K must have compatible dimensionless starts/bounds across
+curves; use explicit dimensionless starts/bounds or `per_cv=["reactions.0.K"]`
+when concentration-unit inputs would imply different shared settings. Other
+shared parameter bounds retain their existing behavior.
+
+Replacing `reactions.0.K` through `with_param()` or `with_params(set=...)`
+replaces its unit convention: a bare number is dimensionless; a unit-bearing
+string is converted in the updated context. Simultaneous fixed/context changes
+are applied before K conversion. Deep-merged reaction mappings likewise discard
+old unit labels unless the update explicitly supplies them; lists still replace
+as a whole. These rules do not reinterpret chemical rate `k` or species named `K`.
+
 Reaction-string dictionary keys may use either coefficient or repeated-species
 notation; for example, a `"A+A=B"` key matches a `C:2A=B` mechanism step.
 For a reaction with total reactant order `n_r`, product order `n_p`, and the

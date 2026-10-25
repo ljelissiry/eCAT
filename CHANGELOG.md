@@ -2,6 +2,8 @@
 
 ## 0.1.0b8 - Release candidate
 
+- Correct existing equilibrium-constant unit conversion and fitted init/bounds/updates, including dataset-specific contexts; preserve activity-coefficient fitting and keep experimental solver features separate.
+
 - Reconcile the editable Word guide and PDF with the release API, including option tables, equations, references, navigation and numerical limitations.
 - Support oxidative and reductive FOWA transforms with explicit reaction direction and fit lines bounded to the observed signal envelope.
 - Use the Agarwal Nicholson table consistently in standalone and reversibility analysis, with a selectable Lavagnini alternative; convert replicate mean separation before estimating rate parameters.
