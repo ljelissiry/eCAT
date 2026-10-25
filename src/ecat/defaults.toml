@@ -486,6 +486,7 @@ C = null
 num_electrons = 1
 
 [reversibility_analysis]
+psi_source = "agarwal table"
 plot = true
 print = true
 plot_all = false

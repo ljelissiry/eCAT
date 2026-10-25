@@ -2,6 +2,12 @@
 
 ## 0.1.0b8 - Release candidate
 
+- Reconcile the editable Word guide and PDF with the release API, including option tables, equations, references, navigation and numerical limitations.
+- Support oxidative and reductive FOWA transforms with explicit reaction direction and fit lines bounded to the observed signal envelope.
+- Use the Agarwal Nicholson table consistently in standalone and reversibility analysis, with a selectable Lavagnini alternative; convert replicate mean separation before estimating rate parameters.
+- Diagnose EC-Lab exports missing measured potential/current channels and report rejected reference-pair evidence without relaxing the acceptance threshold.
+- Document and recognize external development environments in the macOS source launcher.
+
 - Normalize filter/sort/group keys across case and underscore spellings; expose WE/RE/CE aliases and `filter()` inspection with bounded candidate printing.
 - Replace `get_available_filter_values()` with `filter(objects, fields)` or `filter(objects, "available", {"print": False})`; migrate the Workbench caller so all metadata choices remain available.
 - Preserve solvent labels from filenames, group known aliases by identity, and use the most frequent supplied spelling within a plot.

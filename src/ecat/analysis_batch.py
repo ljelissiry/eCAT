@@ -6,6 +6,7 @@ from pprint import pformat
 import warnings
 
 from scipy.optimize import OptimizeWarning
+from scipy.special import expit
 
 from .utils import *  # noqa: F401,F403
 from .options import *  # noqa: F401,F403
@@ -56,7 +57,7 @@ from .plotting import (
     pretty_table_column_label,
 )
 from .reference import midpoint_potential
-from ._cv_direction import resolve_cv_segment_pair_branches
+from ._cv_direction import resolve_cv_segment_pair_branches, split_cv_potential_segments
 from .results import AnalysisResult, analysis_result_from_table
 
 
@@ -2236,7 +2237,9 @@ def _nicholson_ir_drop_obvious(cv_obj):
 
 
 def _nicholson_psi_from_source(delta_ep_mv, options):
-    source = str(options.get("psi source", "agarwal table")).strip().lower()
+    from .options import _canonical_nicholson_psi_source
+
+    source = _canonical_nicholson_psi_source(options.get("psi source", "agarwal table"))
     if source in {"agarwal", "agarwal table", "table", "table 4"}:
         return _nicholson_psi_agarwal(delta_ep_mv), "agarwal table"
     if source in {"lavagnini", "empirical", "empirical equation"}:
@@ -8729,6 +8732,25 @@ def _fowa_reference_potential_symbol(redox_modes):
     return r"E_{\mathrm{ref}}"
 
 
+def _resolve_fowa_direction(potential, options):
+    """Resolve reaction polarity independently of the instrument current sign."""
+    direction = str(options.get("reaction direction", "auto")).strip().lower()
+    if direction in {"oxidation", "reduction"}:
+        return direction, 1 if direction == "oxidation" else -1
+    if direction != "auto":
+        raise ValueError("'reaction direction' must be 'auto', 'oxidation', or 'reduction'.")
+    try:
+        segments = split_cv_potential_segments(potential)
+        if len(segments) != 1:
+            raise ValueError("multiple sweep directions")
+    except ValueError as exc:
+        raise ValueError(
+            "FOWA cannot infer reaction direction from a constant-potential or mixed-direction "
+            "wave. Select one segment/wave range or set 'reaction direction' explicitly."
+        ) from exc
+    return ("oxidation", 1) if segments[0]["direction"] == "increasing" else ("reduction", -1)
+
+
 def _format_fowa_x_axis_label(plot_data=None, options=None):
     plot_data = [] if plot_data is None else list(plot_data)
     options = {} if options is None else options
@@ -8736,12 +8758,49 @@ def _format_fowa_x_axis_label(plot_data=None, options=None):
     if not redox_modes:
         redox_modes = [options.get("redox mode")]
     reference_symbol = _fowa_reference_potential_symbol(redox_modes)
-    return (
+    directions = {pdata.get("reaction direction", "reduction") for pdata in plot_data}
+    if not directions:
+        directions = {options.get("reaction direction", "reduction")}
+    sign = "-" if directions == {"oxidation"} else "" if directions == {"reduction"} else "-s"
+    label = (
         r"$\left[1+\exp\left("
-        r"\frac{nF}{RT}"
-        rf"(E-{reference_symbol})"
-        r"\right)\right]^{-1}$"
+        + sign + r"\frac{nF}{RT}"
+        + rf"(E-{reference_symbol})"
+        + r"\right)\right]^{-1}$"
     )
+    if sign == "-s":
+        label += "\n" + r"$s=+1$ oxidation; $s=-1$ reduction"
+    return label
+
+
+def _bounded_fowa_fit_line(slope, intercept, current, transformed_x=None):
+    """Intersect a display-only fitted line with the measured current envelope."""
+    finite_current = np.asarray(current, dtype=float)
+    finite_current = finite_current[np.isfinite(finite_current)]
+    empty = np.asarray([], dtype=float)
+    if not len(finite_current) or not np.isfinite(slope) or not np.isfinite(intercept):
+        return empty, empty
+    lower = min(0.0, float(np.min(finite_current)))
+    upper = max(0.0, float(np.max(finite_current)))
+    if slope == 0:
+        if not lower <= intercept <= upper:
+            return empty, empty
+        bounds = [0.0, 1.0]
+    else:
+        roots = sorted(((lower - intercept) / slope, (upper - intercept) / slope))
+        bounds = [max(0.0, roots[0]), min(1.0, roots[1])]
+        if bounds[1] <= bounds[0]:
+            return empty, empty
+    if transformed_x is not None:
+        domain = np.asarray(transformed_x, dtype=float)
+        domain = domain[np.isfinite(domain)]
+        if not len(domain):
+            return empty, empty
+        bounds = [max(bounds[0], float(domain.min())), min(bounds[1], float(domain.max()))]
+        if bounds[1] <= bounds[0]:
+            return empty, empty
+    x = np.asarray(bounds)
+    return x, slope * x + intercept
 
 
 def _plot_fowa_transformed(plot_data, results_df, options):
@@ -8785,19 +8844,11 @@ def _plot_fowa_transformed(plot_data, results_df, options):
         has_fit = np.isfinite(slope) and np.isfinite(intercept) and len(pdata["x fit"])
         if not has_fit:
             continue
-        if slope > 0:
-            y_end = float(np.nanmax(pdata["y fowa"]))
-            x_end = (y_end - intercept) / slope
-            x_end = max(0.0, min(1.0, x_end))
-        elif slope < 0:
-            y_end = float(np.nanmin(pdata["y fowa"]))
-            x_end = (y_end - intercept) / slope
-            x_end = max(0.0, min(1.0, x_end))
-        else:
-            x_end = min(1.0, float(np.nanmax(pdata["x fit"])))
-
-        x_fit_line = np.array([0.0, x_end])
-        y_fit_line = slope * x_fit_line + intercept
+        x_fit_line, y_fit_line = _bounded_fowa_fit_line(
+            slope, intercept, pdata["y fowa"], pdata["x fowa"]
+        )
+        if not len(x_fit_line):
+            continue
 
         if options.get("plot fit", True):
             fit_color = _fit_color_from_options(options, index=i, fallback=color)
@@ -10063,9 +10114,8 @@ def fowa(cvs, options=None):
         if catalyst_electrons <= 0:
             raise ValueError("'catalyst electrons' must be positive.")
 
-        x_fowa = 1.0 / (
-                1.0 + np.exp(catalyst_electrons * f * (x_wave - redox_potential))
-        )
+        reaction_direction, reaction_sign = _resolve_fowa_direction(x_wave, options)
+        x_fowa = expit(reaction_sign * catalyst_electrons * f * (x_wave - redox_potential))
         y_fowa = y_corr / ip0
 
         fit_enabled = bool(options.get("fit", True))
@@ -10180,6 +10230,7 @@ def fowa(cvs, options=None):
 
         results.append({
             "reference cv": None if ref_cv is None else ref_cv.name,
+            "reaction direction": reaction_direction,
             "ip0 source": ip0_source,
             "redox source": redox_source,
             "reference Ep": ref_Ep,
@@ -10224,6 +10275,7 @@ def fowa(cvs, options=None):
             "redox potential": redox_potential,
             "redox mode": redox_mode_used,
             "catalyst electrons": catalyst_electrons,
+            "reaction direction": reaction_direction,
             "color": resolved_color_map.get(id(cat_cv), options.get("color", "black")),
             "plot label": transformed_label_map.get(id(cat_cv), cat_cv.name),
             "ref color": resolved_color_map.get(id(ref_cv), "0.4") if ref_cv is not None else "0.4",

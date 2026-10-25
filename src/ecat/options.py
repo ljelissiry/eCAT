@@ -749,6 +749,7 @@ _OPTION_CATEGORY_BY_KEY = {
     "min_r2": "Fitting/analysis",
     "min_fit_points": "Fitting/analysis",
     "redox_mode": "Fitting/analysis",
+    "reaction_direction": "Fitting/analysis",
     "diagnostic_y_axis": "Fitting/analysis",
     "catalyst_electrons": "Fitting/analysis",
     "turnover_electrons": "Fitting/analysis",
@@ -1161,10 +1162,11 @@ OPTION_DESCRIPTIONS = {
     "print_all": "Request detailed row-level Data or evidence in addition to the default output. Parent analyses keep nested helper reports suppressed.",
     "print_conditions": "Print shared conditions, electrodes, and reference summaries above object tables. Known electrodes remain in table columns when this is False.",
     "print_local_slopes": "Whether to print local slope diagnostics.",
-    "psi_source": "Source used to resolve Nicholson psi values.",
+    "psi_source": "Nicholson conversion: Agarwal (2025) Table 4 by default; choose lavagnini or empirical for Lavagnini et al. (2004).",
     "recursive_search": "Recursively search subfolders during import.",
     "resample": "Whether to resample data before signal analysis.",
     "redox_mode": "Method used to resolve the reference redox potential.",
+    "reaction_direction": "FOWA reaction polarity: auto infers oxidation from an increasing-potential selected wave and reduction from a decreasing one, independently of current sign. Select one monotonic sweep, or explicitly choose oxidation/reduction for a return sweep.",
     "redox_potential": "Manual redox reference potential. In FOWA, the plural alias 'redox potentials' accepts per-CV values.",
     "reference_file": "Explicit file used as a reference-shift source.",
     "reference_guess": "Potential guess used to locate a reference wave.",
@@ -1282,6 +1284,7 @@ OPTION_CHOICES = {
     "fit_band": ["none", "confidence", "prediction", "both"],
     "psi_source": ["agarwal table", "empirical"],
     "redox_mode": ["half wave", "half peak", "manual"],
+    "reaction_direction": ["auto", "oxidation", "reduction"],
     "reference_mode": ["auto", "manual", "keyword", "file", "none"],
     "segment_color_mode": ["auto", "off", "discrete", "discrete gradient", "continuous gradient"],
     "transform_mode": ["log-log", "lineweaver-burk"],
@@ -4208,6 +4211,7 @@ class FOWAOptions:
     fit_alpha: int | float = 1
     min_r2: float = 0.98
     redox_mode: str = "half wave"
+    reaction_direction: str = "auto"
     min_fit_points: int = 20
     background_correction: str | None = "tangent"
     diagnostic_y_axis: str = "i/ip0"
@@ -4247,6 +4251,8 @@ class FOWAOptions:
         bad_fit_basis = [value for value in fit_basis_values if str(value).strip().lower() not in {"x", "y"}]
         if bad_fit_basis:
             raise OptionError("'fit basis' must be 'x' or 'y'.")
+        if str(self.reaction_direction).strip().lower() not in {"auto", "oxidation", "reduction"}:
+            raise OptionError("'reaction direction' must be 'auto', 'oxidation', or 'reduction'.")
         redox_mode = str(self.redox_mode).strip().lower()
         if redox_mode not in {"half wave", "half peak", "manual"}:
             raise OptionError("'redox mode' must be 'half wave', 'half peak', or 'manual'.")
@@ -4316,6 +4322,7 @@ class FOWAOptions:
         data["min fit points"] = self.min_fit_points
         data["min r2"] = self.min_r2
         data["redox mode"] = str(self.redox_mode).strip().lower()
+        data["reaction direction"] = str(self.reaction_direction).strip().lower()
         data["background correction"] = self.background_correction
         data["diagnostic y axis"] = str(self.diagnostic_y_axis).strip().lower()
         data["ecat shift warning threshold"] = self.ecat_shift_warning_threshold
@@ -4703,8 +4710,18 @@ class SevcikAnalysisOptions(PeakCurrentOptions):
         )
 
 
+def _canonical_nicholson_psi_source(value):
+    source = _choice_token(value)
+    if source in {"agarwal", "agarwal table", "table", "table 4"}:
+        return "agarwal table"
+    if source in {"lavagnini", "empirical", "empirical equation"}:
+        return "empirical"
+    raise OptionError("'psi source' must be 'agarwal table' or 'lavagnini' ('empirical').")
+
+
 @dataclass(frozen=True, slots=True)
 class ReversibilityAnalysisOptions(PeakCurrentOptions):
+    psi_source: str = "agarwal table"
     phase: str = "bulk"
     num_electrons: int | float = 1
     alpha: float = 0.5
@@ -4728,6 +4745,7 @@ class ReversibilityAnalysisOptions(PeakCurrentOptions):
 
     def validate(self):
         _validate_common_cv(self)
+        _canonical_nicholson_psi_source(self.psi_source)
         phase = _choice_token(self.phase)
         if phase not in {"bulk", "surface"}:
             raise OptionError("'phase' must be 'bulk' or 'surface'.")
@@ -4756,6 +4774,7 @@ class ReversibilityAnalysisOptions(PeakCurrentOptions):
         data = PeakCurrentOptions.to_options_dict(self)
         data.update({
             "phase": _choice_token(self.phase),
+            "psi source": _canonical_nicholson_psi_source(self.psi_source),
             "num electrons": self.num_electrons,
             "alpha": self.alpha,
             "D": self.d,
@@ -5057,6 +5076,7 @@ class NicholsonOptions(PeakCurrentOptions):
 
     def validate(self):
         _validate_common_cv(self)
+        _canonical_nicholson_psi_source(self.psi_source)
         if self.segment is None and self.segments is None:
             raise OptionError("'segment' or 'segments' is required for Nicholson.")
         if self.segments is not None:
@@ -5087,7 +5107,7 @@ class NicholsonOptions(PeakCurrentOptions):
         data["fit model"] = self.fit_model
         data["num electrons"] = self.num_electrons
         data["D"] = self.d
-        data["psi source"] = self.psi_source
+        data["psi source"] = _canonical_nicholson_psi_source(self.psi_source)
         data["nicholson delta ep min mv"] = self.nicholson_delta_ep_min_mv
         data["nicholson delta ep max mv"] = self.nicholson_delta_ep_max_mv
         data["fit through origin"] = self.fit_through_origin

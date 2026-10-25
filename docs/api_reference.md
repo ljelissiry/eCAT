@@ -2,6 +2,13 @@
 
 This page is a quick index of the public eCAT functions, classes, and common object methods. It is meant for users who want to discover what is available from Python without reading every tutorial first.
 
+Start with [loading](#loading-data), [object inspection](#inspecting-objects),
+[plotting](#plotting), [filtering and grouping](#filtering-and-grouping),
+[CV analysis](#cv-analysis), [other techniques](#other-technique-methods),
+[advanced analysis](#advanced-analysis), [result contracts](#result-contracts),
+[export](#export), or [options and defaults](#options-and-defaults).
+[Simulation](#simulation-namespace) describes the optional simulation API shipped in this release.
+
 ## Getting Help In Python
 
 ```python
@@ -87,6 +94,15 @@ With a numeric `reference guess`, both segments must sample the guess and candid
 
 Smoothing is applied to each full segment separately before the potential search mask, so it cannot cross switching vertices or create mask-edge peaks. `peak prominence=None` estimates a separate prominence threshold for every segment. Set `troubleshoot=True` to print segment, candidate, rejection, and selected-pair summaries and display a segment-colored diagnostic plot.
 
+Failed reference selection reports the failed criterion before the settings and detailed tables:
+
+- If every checked candidate pair exceeds `reference max delta ep` (default **0.20 V**), the message leads with that rejection. It lists up to 12 rejected pairs with their acquisition-order segment numbers, sweep directions, extrema, measured separation versus cutoff, and **unaccepted candidate midpoint**. Segment adjacency and similar midpoints do not establish a physical reference couple or cycle identity; cycle labels are not inferred.
+- Missing extrema, a guess not sampled by both sweeps, same-kind extrema, incorrect potential ordering, and mixed rejection causes receive different guidance. An all-pairs separation rejection does not default to moving the guess or widening the search window.
+- Broad separation can warrant investigating measured uncompensated resistance, appropriate iR compensation, electrode condition, and connections. These are possible checks, not an automatic diagnosis. Inspect the waveform and pair identity before interpreting a midpoint.
+- An explicit `reference max delta ep` override (also spelled `reference_max_delta_ep`) relaxes the acceptance check; it does not validate a pair. Use it only for a verified broader reference couple, record the chosen cutoff, and retain the source-file and pair diagnostics. eCAT never relaxes the cutoff automatically. Use a better reference file or an independently justified manual shift when no physical pair is established.
+
+This reporting does not change peak extraction, ranking, ambiguity checks, accepted midpoint calculations, or the existing reference provenance fields.
+
 Referenced imported objects retain the selected provenance in `obj.reference_pair_details`. It includes `Epa`, `Epc`, `delta_ep`, midpoint, anodic/cathodic segment numbers and scan directions, extremum kinds, currents, prominences, rejection counts, and the selection mode. The same dictionary is available in `obj.parse_result.metadata["reference_pair_details"]`. Raw potential remains available through `obj.x({"x axis": "Potential"})`; reference detection always uses that raw axis even if the object already has a virtual referenced axis.
 
 Text importers use the parser contract before object promotion for tested CH, BASI, EC-Lab-style, limited NOVA ASCII, and generic numeric/header text paths. These importers preserve raw header/column metadata and nonfatal warnings on `obj.parse_result`. Header and filename scan rates are normalized to V/s before comparison; differences within 0.1% or `1e-6 V/s` are treated as rounding noise, while genuine mismatches warn and retain the measured header value. Generic files with only potential/current columns can promote as CV-like fallbacks; ambiguous generic files containing time, potential, and current columns remain generic `echem` objects unless a vendor or user-supplied technique marker resolves the technique. IviumSoft text and DPV text beyond existing CH/private-fixture coverage still need representative files before they are treated as beta-supported workflows.
@@ -95,7 +111,7 @@ Text importers use the parser contract before object promotion for tested CH, BA
 
 | Name | Purpose |
 |---|---|
-| `open_app(host="127.0.0.1", port=0, browser=False, inline=False)` | Start the local eCAT app from Python or a notebook and return the local URL. |
+| `open_app(host="127.0.0.1", port=0, *, mode="local", browser=False, open_browser=True, inline=False, height=900, width=1400, title="eCAT Workbench", allow_code_execution=False, quiet=False)` | Start the local eCAT app from Python or a notebook and return the local URL. |
 
 The app uses optional dependencies. Install them with:
 
@@ -126,6 +142,14 @@ url = e.open_app()
 By default, `e.open_app()` opens the native app window. Use `ecat-app --browser` or `e.open_app(browser=True)` to open a browser tab instead. Use `e.open_app(inline=True)` to display browser mode in a notebook iframe when the notebook environment supports it. Browser mode uses `8050` by default and automatically chooses the next available port if that port is busy; native-window mode uses a private available port by default.
 
 Wheel installations include the public Fe/PhOH CV, CA/CPE, and CP example folders used by the app's example selector. Run `ecat-app --version` to report the package version used by the command.
+
+`open_browser=False` suppresses opening a tab in browser mode. `quiet=True`
+suppresses launcher URL printing. `height`, `width`, and `title` configure the
+native window; `height` also configures inline display. Native mode returns
+after the window closes; browser mode starts a daemon server thread and returns
+its URL. Code execution is an explicit local opt-in and is disabled in remote
+mode. These launcher options do not establish standalone macOS app signing or
+notarization.
 
 ### Filename Parsing And Recommended Names
 
@@ -216,6 +240,14 @@ Display helpers return `None` by default to avoid duplicate notebook output. `sh
 
 `metadata()` has the same contract on `cv`, `ca`, `cp`, and `dpv` objects. Common keys identify the object, experiment type, parser software, source path, stored units, reference correction, electrodes, and processing history; each class then adds its technique-specific `stats()` values. The returned structure is deep-copied, so changing nested lists or dictionaries does not alter the source object. Use `show()` for formatted human-readable output and `metadata()` when code needs reusable values.
 
+The base `echem.xy()` returns a pair of Series, while `cv.xy()` currently
+returns a pair of NumPy arrays. CV `x()`, `y()`, and `xy()` do not uniformly
+apply segment selection. For a selected sweep use
+`cv_obj.analysis_segment_data({"segment": 3})`, which returns the selected
+coordinates in acquisition order. Public segment selection is 1-based;
+the lower-level `find_segment(idx=... or potential=..., x=None, options=None)`
+returns a **0-based** segment index, slice and positional bounds.
+
 ## Plotting
 
 | Name | Purpose | Options |
@@ -228,6 +260,15 @@ Display helpers return `None` by default to avoid duplicate notebook output. `sh
 | `plotting_style(style=True)` | Apply notebook, publication, Savéant-inspired, or Matplotlib-default plotting styles. | `describe_options("plot")` |
 
 Available style values are `"notebook"`, `"publication"`, `"saveant"` / `"savéant"`, and `False` / `"matplotlib"` / `"default"` to restore Matplotlib defaults.
+
+`plotting_style()` returns the active profile name (or `"matplotlib"`) and
+changes Matplotlib settings for subsequent plots in the current process.
+
+`obj.plot()` and `multiplot()` normally return Matplotlib Axes (an empty
+`multiplot` input returns `[]`). `multimultiplot()` currently creates figures
+as side effects and returns `None`, despite its stale Figure docstring. For
+explicit axes ownership use `[e.multiplot(group) for group in groups]`.
+`multi_scatterplot()` returns a `ScatterFitResult` with `.figure` and `.axes`.
 
 Axis labels can use descriptive text or electrochemistry symbols through the plot option `symbol labels`. Use `{"symbol labels": True}` for compact labels such as `E`, `i`, `j`, `t`, and `Q`; use `False` for descriptive labels; use `"auto"` to follow the active plotting style. The Savéant style enables symbol labels by default. Normalized axes such as `i/ip0` and dimensionless normalization labels remain symbolic.
 
@@ -498,8 +539,8 @@ gas_subset = e.filter(cvs, {"gas": ["Ar", "CO2"]})
 | `cv_obj.half_wave_potential(guess_or_options=None, options=None)` | Estimate half-wave potential from paired peaks. A numeric first argument is shorthand for `guess potential`. | `describe_options("cv.half_wave_potential")` |
 | `cv_obj.current_at_potential(potential, options=None)` | Extract current at a requested potential. | `describe_options("cv.current_at_potential")` |
 | `cv_obj.plateau_current(options=None)` | Analyze plateau current for one CV. | `describe_options("cv.plateau_current")` |
-| `cv_obj.trim(window_or_options=None, options=None)` | Return one trimmed CV copy. A two-value first argument is shorthand for `potential window`. | `describe_options("trim")` |
-| `trim(cvs, window_or_options=None, options=None)` | Return trimmed CV copy/copies while preserving list or grouped-list shape. | `describe_options("trim")` |
+| `cv_obj.trim(potential_window=None, options=None, **kwargs)` | Return one trimmed CV copy by default. A two-value first argument supplies the potential window. `inplace=True` explicitly mutates the object. | `describe_options("trim")` |
+| `trim(cvs, window_or_options=None, options=None, **kwargs)` | Return trimmed CV copy/copies while preserving list or grouped-list shape; honors explicit `inplace=True`. | `describe_options("trim")` |
 | `normalize(cvs, options=None)` | Return normalized CV copy/copies. CV-only. | `describe_options("normalize")` |
 | `cv_obj.normalize(options=None)` | Normalize one CV in place and return itself. | `describe_options("cv.normalize")` |
 | `normalize_current(cvs, options=None)` | Return CV copy/copies with `i/ip0` current normalization. | `describe_options("normalize_current")` |
@@ -560,14 +601,38 @@ For CA current/charge overlays, `ca.plot({"plot charge": True})` keeps current o
 | `cp_obj.plot_cycles(options=None)` | Plot selected CP cycles. | `describe_options("cp.plot_cycles")` |
 | `cp_obj.cycling_plot(options=None)` | Plot CP capacity and efficiency versus cycle number; accepts the same `cycles` selection forms as `plot_cycles()`. | `describe_options("cp.cycling_plot")` |
 
-CA current/rate analyses return current values in amperes. Plot markers and average-current lines follow the trace’s displayed units and offset, including automatic units and baseline-corrected current. With `"y unit": ["uA", "mC"]`, current annotations and current table entries use the first unit.
-
 DPV pulse metadata follows the same unit convention as CA/CP metadata: object
 attributes and `stats()` keys are unitless SI values, while printed tables and
 auto plot subtitles put autoscaled units in the values, such as `10 mV` or
 `50 ms`.
 
+Return contracts and current limitations:
+
+| Method | Return and limitation |
+|---|---|
+| `dpv_obj.peak_potential(...)` | `(potential, index)` tuple, unlike the single-CV result container. |
+| `dpv_obj.fit_overlapping_peaks(options=None)` | Two-component DataFrame with fitted potential, amplitude, sigma and baseline/current values; `.attrs` retains baseline, fitted parameters and covariance. `closely_spaced_peaks` is an alias. This linear-baseline/two-Gaussian model is descriptive, not a mechanistic deconvolution. |
+| `ca_obj.current_at_time(...)`, `average_current(...)`, `rate_at_time(...)`, `average_rate(...)`, `charge(...)`, `time_at_charge(...)` | `ChronoAnalysisResult` with named values, `.table` and optional `.axes`. Time is in seconds and raw charge is in C. Molecular rate and TOF require appropriate stoichiometry, efficiency and catalyst-quantity inputs. |
+| `cp_obj.get_cycles({})` | Dictionary with `t`, `v` and `seg_idxs`, not a list of DataFrames. The clock is reconstructed from `sample_int`, and boundaries are inferred from large potential slopes. |
+| `cp_obj.cycle_info({})` | DataFrame of cycle capacities, energies, potentials and efficiencies. Verify programmed-current metadata and segmentation first. |
+| `cp_obj.plot_cycles(...)` | Matplotlib Axes. |
+| `cp_obj.cycling_plot(...)` | `(Figure, (capacity_axes, efficiency_axes))`. |
+
+In this checkout, `cp.get_cycles()` and `cp.cycle_info()` require an explicit
+options dictionary despite their `None` defaults; use `{}`. The current
+`ca.time_at_charge()` interpolation assumes increasing cumulative charge and
+does not resolve multiple crossings of nonmonotonic charge. Out-of-range
+targets raise `ValueError`. These are implementation limitations, not promises
+of corrected behavior.
+
+DPV overlap options include `guess potentials`, `fit window`, `center window`,
+`sigma guess`, `sigma min`, `sigma max`, `plot` and `print`. There is currently
+no dedicated `describe_options("dpv.fit_overlapping_peaks")` table; an unknown
+section returns the menu instead.
+
 ## Advanced Analysis
+
+See [method-specific papers and reviews](analysis_reading.md), including the original FOWA work and the Ecat/2 interpretation paper.
 
 Notebook-facing analysis reports follow one shared order: Parameters,
 Equations, Summary, then Data only when `print all=True`. Empty sections are
@@ -582,7 +647,7 @@ returned result. See the [analysis output contract](analysis_output_contract.md)
 | `surface_coverage_analysis(cvs, options=None)` | Surface coverage and electroactive loading from independent peak-slope and tangent-corrected charge methods. | `describe_options("surface_coverage_analysis")` |
 | `trumpet_analysis(cvs, options=None)` | Trumpet analysis from paired peak potentials. | `describe_options("trumpet_analysis")` |
 | `nicholson_analysis(cvs, options=None)` | Nicholson-style heterogeneous electron-transfer analysis. | `describe_options("nicholson_analysis")` |
-| `tafel_analysis(cv_or_list, TOF_max, thermodynamic_potential, redox_potential, options=None)` | Tafel-style turnover-frequency curves for one CV or a CV series; multi-CV calls reuse the shared `multiplot()` label, color, gradient, legend, and colorbar options. | `describe_options("tafel_analysis")`; also accepts common `multiplot` styling options |
+| `tafel_analysis(cv, TOF_max, thermodynamic_potential, redox_potential, options=None)` | `cv` accepts one CV or a CV series; multi-CV calls reuse the shared `multiplot()` label, color, gradient, legend, and colorbar options. | `describe_options("tafel_analysis")`; also accepts common `multiplot` styling options |
 | `fit_model(x_or_result, y=None, model=None, options=None)` | Fit direct scatter models such as linear, power, power offset, exponential, Michaelis-Menten, and logistic. | standalone options |
 | `fit_rate(df_or_result, options=None)` | Fit rate or transformed result tables; accepts a DataFrame or an `AnalysisResult` and uses `.table` by default. | `describe_options("fit_rate")` |
 | `plateau_current(cvs, options=None)` | Batch plateau-current workflow. | `describe_options("plateau_current")` |
@@ -616,11 +681,13 @@ For `phase="bulk"`, eCAT evaluates evidence in this order:
    Nicholson rate-estimation range whenever the conversion is defined.
    Nicholson-derived rate estimates are used only for `0.1 <= psi <= 7`;
    the Matsuda-Ayabe boundary, not the Nicholson fitting window, controls the
-   region label. The printed equations explicitly label the Nicholson
-   peak-separation approximation
+   region label. Both this analysis and `nicholson_analysis` default to
+   linear interpolation of Agarwal (2025), Table 4. Select
+   `{"psi source": "lavagnini"}` (alias `"empirical"`) for
    `psi = [-0.6288 + 0.0021(n Delta Ep / mV)] /
-   [1 - 0.017(n Delta Ep / mV)]` and the separate Matsuda-Ayabe
-   classification thresholds.
+   [1 - 0.017(n Delta Ep / mV)]`. The printed equation reflects the selected
+   source; the result summary records it. See [both method sources](analysis_reading.md).
+   The table is not extrapolated; the surface model does not use this conversion.
 3. Resolve `D` from the explicit `D` option first. If `D` is omitted and exact
    `species`, concentration, electrode area, and temperature information are
    available, fit both peak-current branches against `sqrt(scan rate)` and
@@ -757,7 +824,7 @@ sevcik = e.sevcik_analysis(ordered, {
 })
 ```
 
-`trumpet_analysis(..., {"plot all": True})` now adds the actual paired peak-selection diagnostics to the shared CV overlay. Compare those markers against the intended waves before interpreting the trumpet fit. A base `segment` chooses an adjacent partner automatically; use `segments: [3, 4]` to fix the pair explicitly. Both branches must contain resolved peaks of the same redox couple. A shoulder or monotonic return sweep cannot provide a peak potential automatically. Failure messages identify the curve and selected pair; inspect the overlay rather than lowering detection thresholds merely to obtain a kinetic result. Notebook 07 demonstrates Sevcik, standalone Nicholson, and trumpet diagnostics; notebook 09 demonstrates peak-current transformations.
+`trumpet_analysis(..., {"plot all": True})` now adds the actual paired peak-selection diagnostics to the shared CV overlay. Compare those markers against the intended waves before interpreting the trumpet fit. Notebook 07 demonstrates Sevcik, standalone Nicholson, and trumpet diagnostics; notebook 09 demonstrates peak-current transformations.
 
 Scatter-fit helpers return `ScatterFitResult`, an `AnalysisResult` child, rather than tuples. Use `.table` for plotted/result data, `.fits` for fit parameters, `.fit_table` for the human fit-statistics table, and `.summary` for workflow metadata. Tuple unpacking such as `data, fits = e.fit_rate(...)` is not part of the beta API.
 
@@ -765,7 +832,7 @@ Scatter-fit plots use matching point and fit-line colors by default. This applie
 
 When `fit_model(..., {"print": True})` is used, the default pretty output is adaptive. Simple fits print a concise `Field`/`Value` table with model settings, fit statistics, fitted parameter names/count, and fitted values with standard errors inline when available. More constrained or complex fits print separate `Fit Model Details` and `Fit Model Parameters` tables, including initial values, bounds, final values, and standard errors. Auto switches to details for explicit `fit init`, explicit `fit bounds`, custom formula/callable models, constrained models such as power offset/logistic/Michaelis-Menten, three or more parameters, or parameters at a bound. Use `{"print fit": "summary"}` or `{"print fit": "details"}` to force the style. Printed equations are the general model equations so parameter meanings remain visible; plot labels use the fitted equation with numeric values, formatted by `sig figs`. `fit_rate(..., {"print": True})` uses the same human table. Transforms such as `{"transform mode": "log-log"}` only change the coordinates being fit; they do not change or relabel the selected fit model. Use `{"fit model": "power"}` when you want a direct power-law model. Use `{"pretty print": False}` for a compact dictionary-style summary. eCAT warns when fit points equal the fitted-parameter count and gives a stronger underdetermined warning when fewer points than parameters are supplied. If SciPy cannot estimate parameter covariance, eCAT suppresses the low-level `OptimizeWarning`, stores `covariance_warning` and `covariance_message` in the fit summary, prints a `Fit Warning` row, and leaves unavailable standard errors blank.
 
-Fitting helpers keep row selection and fit-line drawing separate. Polynomial fit lines, including Sevcik lines, are drawn in increasing x order even when input CVs are unsorted; fitting statistics and row-based selection retain the original order. `fit indices` is row/position based; `[start, stop]` follows Python slicing, so it includes `start`, excludes `stop`, and accepts `None` on either side. A nested list such as `[[0, 3], [6, 9]]` performs one fit across disconnected row windows. A dictionary creates separate named fits, and each value may itself contain disconnected windows, for example `{"early": [0, 3], "tail": [[6, 9], [9, None]]}`. The selected rows determine fitted parameters, while result tables still report predictions and residuals for the original rows where applicable. `fit line range` changes only the displayed x-domain.
+Fitting helpers keep row selection and fit-line drawing separate. `fit indices` is row/position based; `[start, stop]` follows Python slicing, so it includes `start`, excludes `stop`, and accepts `None` on either side. A nested list such as `[[0, 3], [6, 9]]` performs one fit across disconnected row windows. A dictionary creates separate named fits, and each value may itself contain disconnected windows, for example `{"early": [0, 3], "tail": [[6, 9], [9, None]]}`. The selected rows determine fitted parameters, while result tables still report predictions and residuals for the original rows where applicable. `fit line range` changes only the displayed x-domain.
 
 SciPy optimizer controls remain explicit. `fit method` accepts `auto`, `lm`, `trf`, or `dogbox`; common controls include `fit sigma`, `fit absolute sigma`, `fit check finite`, `fit nan policy`, and `fit jac`. Advanced `scipy.optimize.curve_fit` keywords can be supplied in `curve fit options`. eCAT retains ownership of `p0`, `bounds`, and `full_output`, which are controlled through `fit init`, `fit bounds`, and the result object.
 
@@ -780,6 +847,34 @@ quad = e.fit_model(
 ```
 
 The same custom model forms work through `fit_rate`, `fit_peak_current`, and `fit_peak_potential` with the `fit model` option. Formula strings support arithmetic, `^` for powers, and selected math functions such as `exp`, `log`, `log10`, and `sqrt`; arbitrary Python code is not evaluated.
+
+## Result Contracts
+
+| Workflow | Returned value |
+|---|---|
+| Peak potential/current/width and wave diagnostics on a CV | `CVAnalysisResult`: named dictionary keys, base-unit `.primary`, display `.table`, diagnostics and optional axes. |
+| `fit_model`, `fit_rate`, `fit_peak_current`, `fit_peak_potential`, `sevcik_analysis`, `trumpet_analysis` | `ScatterFitResult`: `.table`, `.fits`, `.fit_table`, `.fit_model_results` when applicable, and optional figures. Tuple unpacking is unsupported. |
+| `fowa`, `tafel_analysis`, `nicholson_analysis`, `plateau_current`, `reversibility_analysis`, `surface_coverage_analysis`, `obj.spectrum` | `AnalysisResult`; available tables, diagnostics and figures vary by workflow. FOWA plotting side effects are not reliably collected in the result. The current `plateau_current` implementation returns this container despite its stale DataFrame docstring. |
+
+For table-based results, use `result.table` for column access and pandas
+operations. `result.to_dataframe(kind="table")` also accepts `"fit table"`,
+`"raw"` and `"transformed"` and may return `None` for an absent optional table.
+It does not copy the table. `result.show()` prints and returns `None` by default;
+`result.show({"return": True})` returns the table where supported.
+
+```python
+fit = e.fit_model([1, 2, 3], [2, 4, 6], model="linear",
+                  options={"plot": False, "print": False})
+parameters = fit.fit_table
+fit.to_csv("fit.csv", index=False)
+fit.to_excel("fit.xlsx", include_metadata=True)
+```
+
+`to_csv(path_or_buf=None, *args, **kwargs)` follows pandas semantics: without a
+path it returns CSV text. `to_excel(excel_writer, *, sheet_name="table",
+index=False, include_metadata=True, **kwargs)` writes the primary table and
+available metadata sheets and returns `None`. Both require a primary table.
+These result exports differ from `save_data`, which exports experiment objects.
 
 ## Export
 
@@ -845,6 +940,8 @@ Simulation uses ElectroKitty as an optional backend. Importing `ecat` and `ecat.
 ```bash
 python -m pip install "ecat-electrochemistry[simulation]"
 ```
+
+`cv_data()` reconstructs time from selected potential and scan rate; recorded time and explicit holds are not preserved. Its selection and stride also determine backend input spacing in this release. Retain important preceding history and verify numerical resolution before interpreting fits. Use `cv_data(cv)` to convert a measured CV before calling `simulate_cv()`; the fitting functions accept measured CVs directly.
 
 Simulation option dictionaries are discoverable through:
 
@@ -1068,3 +1165,9 @@ Examples of categories that are not part of the beta public API:
 - compatibility wrappers
 
 Prefer the names listed in this reference for new notebooks.
+
+## Analysis equations
+
+See [equations, symbol definitions, units, and controlling options](analysis_equations.md) and [method sources](analysis_reading.md). Both `nicholson_analysis()` and bulk `reversibility_analysis()` now default to the Agarwal (2025) table; use `{"psi source": "lavagnini"}` for the empirical alternative.
+
+For repeated scans, `reversibility_analysis()` converts the mean measured peak separation at each scan rate, retaining every individual scan and its eligibility flags in the diagnostics. It does not average per-scan ψ values.

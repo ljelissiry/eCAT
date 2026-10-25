@@ -118,7 +118,7 @@ def test_matsuda_ayabe_regions_use_literature_boundaries(ecat_module):
 
 
 def test_nicholson_lambda_and_k0_use_dimensionless_definition(ecat_module):
-    evidence = ecat_module._nicholson_evidence(120.0)
+    evidence = ecat_module._nicholson_evidence(120.0, {"psi source": "lavagnini"})
     assert evidence["eligible"] is True
     assert evidence["psi"] == pytest.approx(
         (-0.6288 + 0.0021 * 120.0) / (1 - 0.017 * 120.0)
@@ -139,7 +139,7 @@ def test_nicholson_lambda_and_k0_use_dimensionless_definition(ecat_module):
 
 
 def test_matsuda_lambda_survives_above_nicholson_k0_range(ecat_module):
-    evidence = ecat_module._nicholson_evidence(62.6)
+    evidence = ecat_module._nicholson_evidence(62.6, {"psi source": "lavagnini"})
 
     assert evidence["psi"] > 7
     assert np.isfinite(evidence["Lambda"])
@@ -196,7 +196,8 @@ def test_chemical_conclusion_uses_physical_branch_current_evidence(ecat_module):
     assert coupled["trend toward unity"] is True
 
 
-def test_bulk_series_reports_quantitative_reversible_to_quasi_transition(ecat_module):
+@pytest.mark.parametrize("source, eligible", [("agarwal table", 4), ("lavagnini", 2)])
+def test_bulk_series_reports_quantitative_reversible_to_quasi_transition(ecat_module, source, eligible):
     delta_eps = (0.0610, 0.0626, 0.0626, 0.0634, 0.0658)
     cvs = [
         _WaveCV(rate, delta_ep=delta_ep, ratio=0.98)
@@ -205,7 +206,7 @@ def test_bulk_series_reports_quantitative_reversible_to_quasi_transition(ecat_mo
 
     result = ecat_module.reversibility_analysis(
         cvs,
-        {"D": 1e-5, "plot": False, "print": False},
+        {"D": 1e-5, "psi source": source, "plot": False, "print": False},
     )
 
     assert result.summary["electrochemical conclusion"] == (
@@ -216,8 +217,8 @@ def test_bulk_series_reports_quantitative_reversible_to_quasi_transition(ecat_mo
     assert "quasi-reversible" in reason
     assert "Lambda" in reason
     assert "0.025" in reason and "0.5" in reason
-    assert result.summary["Nicholson eligible points"] == 2
-    assert len(result.fits["Nicholson k0 values"]) == 2
+    assert result.summary["Nicholson eligible points"] == eligible
+    assert len(result.fits["Nicholson k0 values"]) == eligible
 
 
 class _WaveCV:
@@ -647,3 +648,57 @@ def test_reversibility_display_adds_name_for_replicate_scan_rates(ecat_module):
 
     assert display_table.columns[0] == "Name"
     assert display_table["Name"].tolist()[:2] == ["25mVs_rep1", "25mVs_rep2"]
+
+
+@pytest.mark.parametrize('source,label', [('agarwal table','agarwal table'), ('lavagnini','lavagnini empirical')])
+def test_reversibility_uses_shared_nicholson_conversion(ecat_module, source, label):
+    cvs = [_WaveCV(v, delta_ep=d, ratio=1) for v,d in zip([.025,.05,.1,.2,.5],[.08,.10,.12,.15,.18])]
+    result = ecat_module.reversibility_analysis(cvs, {'D':1e-5, 'psi source':source, 'plot':False, 'print':False})
+    assert result.summary['psi source'] == label
+    for _, row in result.data.iterrows():
+        expected, _ = ecat_module._nicholson_psi_from_source(row['n Delta Ep / mV'], {'psi source':source})
+        assert row['psi'] == pytest.approx(expected)
+        assert row['Lambda'] == pytest.approx(np.sqrt(np.pi)*expected)
+    sections = dict(ecat_module._reversibility_equation_sections(result))
+    formula = sections['Nicholson Peak-Separation Conversion']['symbolic']
+    assert ('Agarwal' in formula) == (source == 'agarwal table')
+
+
+def test_reversibility_default_psi_is_agarwal_and_does_not_extrapolate(ecat_module):
+    assert ecat_module.ReversibilityAnalysisOptions.from_options({}).psi_source == 'agarwal table'
+    assert ecat_module._nicholson_evidence(100)['psi'] == pytest.approx(.558)
+    assert ecat_module._nicholson_evidence(100.5)['psi'] == pytest.approx((.558+.544)/2)
+    assert np.isnan(ecat_module._nicholson_evidence(215)['psi'])
+    assert not ecat_module._nicholson_evidence(213)['eligible']
+
+
+def test_reversibility_rate_summary_honors_separation_gate(ecat_module):
+    cvs = [_WaveCV(v, delta_ep=.213, ratio=1) for v in [.025,.05,.1,.2,.5]]
+    result = ecat_module.reversibility_analysis(cvs, {'D':1e-5,'plot':False,'print':False})
+    assert not result.data['Nicholson eligible'].any()
+    assert result.summary['Nicholson eligible points'] == 0
+    assert result.fits['Nicholson k0 values'] == []
+
+
+@pytest.mark.parametrize("source", ["agarwal table", "lavagnini"])
+def test_nicholson_converts_mean_separation_with_mixed_domain_replicates(ecat_module, source):
+    cvs = [
+        _WaveCV(rate, delta_ep=separation, ratio=1.0)
+        for rate in (0.025, 0.05, 0.1, 0.2, 0.5)
+        for separation in (0.200, 0.220)
+    ]
+    result = ecat_module.reversibility_analysis(
+        cvs, {"D": 1e-5, "psi source": source, "plot": False, "print": False}
+    )
+    means = result.diagnostics["rate means"]
+    expected = ecat_module._nicholson_evidence(210.0, {"psi source": source})
+    assert len(result.data) == 10
+    assert len(means) == 5
+    assert means["replicate count"].tolist() == [2] * 5
+    assert means["n Delta Ep / mV"].to_numpy() == pytest.approx([210.0] * 5)
+    assert means["psi"].to_numpy() == pytest.approx([expected["psi"]] * 5)
+    assert means["Lambda"].to_numpy() == pytest.approx([expected["Lambda"]] * 5)
+    assert "psi std" not in means
+    assert result.summary["Nicholson aggregation"] == "conversion of scan-rate mean peak separation"
+    # The original out-of-domain repeat remains visible, not silently discarded.
+    assert not result.data.loc[result.data["n Delta Ep / mV"] > 212, "Nicholson eligible"].any()

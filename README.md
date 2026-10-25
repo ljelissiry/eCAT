@@ -184,3 +184,9 @@ pytest -q
 ```
 
 Release maintainers should follow the [release guide](https://github.com/ljelissiry/eCAT/blob/master/docs/releasing.md).
+
+## User guide and analysis methods
+
+- [User guide (PDF)](eCAT%20Guide.pdf) and [editable Word guide](eCAT%20Guide.docx)
+- [API reference](docs/api_reference.md), [analysis equations and options](docs/analysis_equations.md), and [method references](docs/analysis_reading.md)
+- [Guide maintenance](docs/guide-maintenance.md) and [development environments](docs/development-environments.md)

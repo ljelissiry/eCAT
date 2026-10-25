@@ -1026,3 +1026,26 @@ def test_collection_usability_option_aliases(ecat_module):
     assert opts.to_options_dict()['display columns']==['WE']
     opts=ecat_module.SortGroupOptions.from_options({'Solvent_Grouping':' LABEL '})
     assert opts.to_options_dict()['solvent grouping']=='label'
+
+
+@pytest.mark.parametrize('model_name', ['ReversibilityAnalysisOptions','NicholsonOptions'])
+def test_nicholson_source_option_is_shared_and_validated(ecat_module, model_name):
+    model = getattr(ecat_module, model_name)
+    for key in ['psi source','psi_source','PSI SOURCE']:
+        assert model.from_options({key:'Agarwal_Table'}).to_options_dict()['psi source'] == 'agarwal table'
+        assert model.from_options({key:'Lavagnini'}).to_options_dict()['psi source'] == 'empirical'
+    with pytest.raises(ecat_module.OptionError, match='psi source'):
+        model.from_options({'psi source':'unknown'})
+    for name in ['reversibility_analysis','nicholson_analysis']:
+        schema = ecat_module.describe_options(name, {'print':False,'return':True})
+        assert 'psi source' in schema['Option'].values
+
+
+
+@pytest.mark.parametrize("key", ["reaction direction", "reaction_direction", "Reaction Direction"])
+def test_fowa_reaction_direction_option_is_registered_and_canonical(ecat_module, key):
+    options = ecat_module.FOWAOptions.from_options({key: "Oxidation"}).to_options_dict()
+    assert options["reaction direction"] == "oxidation"
+    assert ecat_module.FOWAOptions.from_options({}).reaction_direction == "auto"
+    with pytest.raises(ecat_module.OptionError, match="reaction direction"):
+        ecat_module.FOWAOptions.from_options({key: "sideways"})
