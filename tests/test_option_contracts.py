@@ -1004,3 +1004,25 @@ def test_simulation_option_normalizer_supports_spaces_and_underscores():
     assert normalized["trim mode"] == "expand"
     assert sim._normalize_post_correction_mode(normalized) == "offset"
     assert sim._normalize_residual_normalization(normalized) == "max_abs_measured"
+
+
+def test_collection_usability_options_are_discoverable(ecat_module):
+    for function, expected in {
+        'filter': {'candidate limit', 'display columns'},
+        'sort_group': {'solvent grouping', 'display columns'},
+        'get_data': {'display columns'},
+    }.items():
+        table=ecat_module.describe_options(function, {'print':False,'return':True})
+        assert expected.issubset(set(table['Option']))
+        assert all(table.loc[table['Option'].isin(expected),'Description'].str.len()>20)
+    table=ecat_module.describe_options('filter', {'print':False,'return':True})
+    text=table.loc[table['Option']=='sig figs','Description'].iloc[0]
+    assert '3' in text and 'scan window' in text and '5' in text
+
+
+def test_collection_usability_option_aliases(ecat_module):
+    opts=ecat_module.FilterOptions.from_options({'CANDIDATE_LIMIT':None,'Display_Columns':['WE']})
+    assert opts.to_options_dict()['candidate limit'] is None
+    assert opts.to_options_dict()['display columns']==['WE']
+    opts=ecat_module.SortGroupOptions.from_options({'Solvent_Grouping':' LABEL '})
+    assert opts.to_options_dict()['solvent grouping']=='label'

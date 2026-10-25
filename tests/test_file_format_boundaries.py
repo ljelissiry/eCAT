@@ -108,7 +108,8 @@ def test_get_data_discovers_txt_and_mpt_and_skips_mpr(
     ]
     assert all(type(obj).__name__ == "cv" for obj in objects)
     output = capsys.readouterr().out
-    assert "2 supported text files found." in output
+    assert "supported text files found." not in output
+    assert "Candidates: 2; Loaded: 2; Failed: 0; Unsupported: 1; References used: 0" in output
     assert "Unsupported binary files skipped (1):" in output
     assert "`binary.mpr`" in output
     assert "EC-Lab ASCII `.mpt`" in output

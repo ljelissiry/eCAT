@@ -288,14 +288,14 @@ def test_filter_rejects_removed_composition_key(ecat_module, cv_factory, capsys)
     assert result == [obj]
     assert "Invalid filter key" in out
     assert "species" in out
-    assert "composition" not in ecat_module.get_available_filter_values([obj])
+    assert "composition" not in ecat_module.filter([obj], options={'print':False})
 
 
 def test_available_filter_values_and_group_use_species_key(ecat_module, cv_factory):
     fc = cv_factory(name="100mVs_MeCN_3mMFc")
     h2o = cv_factory(name="100mVs_MeCN_2.8MH2O")
 
-    available = ecat_module.get_available_filter_values([fc, h2o], keys=["species"])
+    available = ecat_module.filter([fc, h2o], ["species"], {"print":False})
     groups = ecat_module.group([fc, h2o], "species", {"print": False})
 
     assert available == {"species": ["2.8 M H2O", "3 mM Fc"]}
@@ -325,7 +325,7 @@ def test_filter_unknown_option_suggests_logic(ecat_module, cv_factory):
         ecat_module.filter([obj], {"gas": "CO2"}, {"logc": "AND"})
 
 
-def test_get_available_filter_values_includes_last_replicate_marker(ecat_module, cv_factory):
+def test_filter_inspection_includes_last_replicate_marker(ecat_module, cv_factory):
     base_time = datetime(2026, 4, 16, 12, 0, 0)
 
     rep1 = cv_factory(name="50mVs_sample_CO2_MeCN_10mM_Fc_run01")
@@ -333,7 +333,7 @@ def test_get_available_filter_values_includes_last_replicate_marker(ecat_module,
     rep2 = cv_factory(name="50mVs_sample_CO2_MeCN_10mM_Fc_run02")
     rep2.timestamp = base_time + timedelta(minutes=5)
 
-    values = ecat_module.get_available_filter_values([rep1, rep2], keys=["replicate"])
+    values = ecat_module.filter([rep1, rep2], ["replicate"], {"print":False})
 
     assert values["replicate"] == [1, 2, -1]
 

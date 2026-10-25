@@ -975,7 +975,10 @@ OPTION_DESCRIPTIONS = {
     "colorbar_tick_labels": "Which colorbar ticks receive text labels.",
     "colorbar_tick_pad": "Padding between colorbar ticks and labels.",
     "colorbar_trace_ticks": "Show tick marks for each trace value on gradient colorbars.",
-    "columns": "Number of columns expected in imported data files.",
+    "columns": "Legacy import hint retained for custom-reader compatibility; built-in text readers infer columns from the file. Not a display selector.",
+    "display_columns": "Additional metadata columns in object/conditions tables, or 'all'. Does not alter imported data or analysis result columns.",
+    "candidate_limit": "Maximum candidate values printed per field during inspection or after a failed filter; None prints all. Inspection returns all values regardless of this limit.",
+    "solvent_grouping": "Group/sort solvents by canonical identity (ACN and MeCN together) or by preserved label. Display labels are never rewritten.",
     "compounds": "Compound names associated with the electrochemical object.",
     "custom_formula": "Callable custom kinetic formula used instead of the built-in formula.",
     "custom_reader": "User-provided file reader for custom import formats.",
@@ -1156,7 +1159,7 @@ OPTION_DESCRIPTIONS = {
     "print": "Whether to emit output. False suppresses output; it is independent of pretty print.",
     "progress": "Whether to show a rendering/export progress bar when animations are displayed or saved.",
     "print_all": "Request detailed row-level Data or evidence in addition to the default output. Parent analyses keep nested helper reports suppressed.",
-    "print_conditions": "Whether to include condition columns in printed object tables.",
+    "print_conditions": "Print shared conditions, electrodes, and reference summaries above object tables. Known electrodes remain in table columns when this is False.",
     "print_local_slopes": "Whether to print local slope diagnostics.",
     "psi_source": "Source used to resolve Nicholson psi values.",
     "recursive_search": "Recursively search subfolders during import.",
@@ -1454,7 +1457,7 @@ def _build_option_metadata():
     for section in ("filter", "sort_group"):
         update(section, {
             "sig_figs": {
-                "description": "Numeric metadata matching precision: 'auto' (default) uses 3 significant digits for scan windows and 5 for other continuous fields; None matches exactly; integers 1-17 set significant digits. A field mapping applies precision only to named continuous fields (omitted fields match exactly). Decimal rounding buckets are shared by filter/sort/group; they do not infer instrument resolution or alter stored data. Categorical fields and integer IDs remain exact.",
+                "description": "Numeric metadata matching precision: 'auto' (default) uses 3 significant digits for scan windows and 5 for other numeric fields; None matches exactly; integers 1-17 set significant digits. A field mapping applies precision only to named continuous fields (omitted fields match exactly). Decimal rounding buckets are shared by filter/sort/group; they do not infer instrument resolution or alter stored data. Categorical fields and integer IDs remain exact.",
             },
         })
 
@@ -2787,12 +2790,21 @@ def _validate_common_cv(opts):
             raise OptionError("'peak kind' must be 'both', 'infer', 'max', or 'min'.")
 
 
+def _validate_display_columns(value):
+    if value is None or isinstance(value, str):
+        return
+    if isinstance(value, (list, tuple)) and all(isinstance(item, str) for item in value):
+        return
+    raise OptionError("'display columns' must be a column name, a list/tuple of names, 'all', or None.")
+
+
 @dataclass(frozen=True, slots=True)
 class ImportOptions:
     folder_path: str = "."
     delimiter: str = ","
     decimal: str = "."
     columns: int = 3
+    display_columns: object = field(default_factory=list)
     software: str | None = None
     experiment_type: str | None = None
     custom_reader: object | None = None
@@ -2834,6 +2846,7 @@ class ImportOptions:
         return _coerce_options(cls, options, ["get_data"])
 
     def validate(self):
+        _validate_display_columns(self.display_columns)
         if not isinstance(self.recursive_search, bool):
             raise OptionError("'recursive search' must be True or False.")
         if self.sort_keys is not None and not isinstance(self.sort_keys, (str, list, tuple)):
@@ -5146,13 +5159,21 @@ class FilterOptions:
     mode: str = "include"
     logic: str | None = None
     sig_figs: int | str | dict[str, int | str | None] | None = "auto"
+    candidate_limit: int | None = 12
+    display_columns: object = field(default_factory=list)
 
     @classmethod
     def from_options(cls, options=None):
         return _coerce_options(cls, options, ["filter"])
 
     def validate(self):
+        _validate_display_columns(self.display_columns)
         _collection_precision_option(self.sig_figs)
+        if self.candidate_limit is not None and (
+            isinstance(self.candidate_limit, bool) or not isinstance(self.candidate_limit, Integral)
+            or self.candidate_limit < 1
+        ):
+            raise OptionError("'candidate limit' must be a positive integer or None (all values).")
         mode = str(self.mode).strip().lower()
         if mode not in {"include", "exclude"}:
             raise OptionError("'mode' must be 'include' or 'exclude'.")
@@ -5167,6 +5188,8 @@ class FilterOptions:
             "mode": str(self.mode).strip().lower(),
             "logic": None if self.logic is None else str(self.logic).strip().upper(),
             "sig figs": _collection_precision_option(self.sig_figs),
+            "candidate limit": self.candidate_limit,
+            "display columns": self.display_columns,
         }
 
 
@@ -5176,13 +5199,18 @@ class SortGroupOptions:
     pretty_print: bool = True
     print_conditions: bool = True
     sig_figs: int | str | dict[str, int | str | None] | None = "auto"
+    solvent_grouping: str = "identity"
+    display_columns: object = field(default_factory=list)
 
     @classmethod
     def from_options(cls, options=None):
         return _coerce_options(cls, options, ["sort_group"])
 
     def validate(self):
+        _validate_display_columns(self.display_columns)
         _collection_precision_option(self.sig_figs)
+        if str(self.solvent_grouping).strip().lower() not in {"identity", "label"}:
+            raise OptionError("'solvent grouping' must be 'identity' or 'label'.")
 
     def to_options_dict(self):
         return {
@@ -5190,6 +5218,8 @@ class SortGroupOptions:
             "pretty print": self.pretty_print,
             "print conditions": self.print_conditions,
             "sig figs": _collection_precision_option(self.sig_figs),
+            "solvent grouping": str(self.solvent_grouping).strip().lower(),
+            "display columns": self.display_columns,
         }
 
 
@@ -5200,13 +5230,15 @@ class GroupSummaryOptions:
     sig_figs: int = 3
     group_keys: object = None
     columns: object = field(default_factory=list)
+    solvent_grouping: str = "identity"
 
     @classmethod
     def from_options(cls, options=None):
         return _coerce_options(cls, options, ["group_summary"])
 
     def validate(self):
-        return None
+        if str(self.solvent_grouping).strip().lower() not in {"identity", "label"}:
+            raise OptionError("'solvent grouping' must be 'identity' or 'label'.")
 
     def to_options_dict(self):
         return {
@@ -5215,6 +5247,7 @@ class GroupSummaryOptions:
             "sig figs": self.sig_figs,
             "group keys": self.group_keys,
             "columns": self.columns,
+            "solvent grouping": str(self.solvent_grouping).strip().lower(),
         }
 
 

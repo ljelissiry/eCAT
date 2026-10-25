@@ -1305,8 +1305,9 @@ def test_multiplot_passes_default_expanded_options_to_each_curve(
     assert isinstance(ax, mpl.axes.Axes)
     assert len(observed_options) == 2
     assert all(opts["legend"] is False for opts in observed_options)
-    assert all(opts["title"] == "auto" for opts in observed_options)
-    assert all(opts["subtitle"] == "auto" for opts in observed_options)
+    # The containing multiplot owns the shared titles, including solvent labels.
+    assert all(opts["title"] is False for opts in observed_options)
+    assert all(opts["subtitle"] is False for opts in observed_options)
     assert all(opts["legend outside"] is False for opts in observed_options)
     assert all(opts["print"] is False for opts in observed_options)
     assert observed_options[0]["offset"] == pytest.approx(0)

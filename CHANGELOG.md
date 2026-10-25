@@ -1,6 +1,12 @@
 # Changelog
 
-## Unreleased
+## 0.1.0b8 - Release candidate
+
+- Normalize filter/sort/group keys across case and underscore spellings; expose WE/RE/CE aliases and `filter()` inspection with bounded candidate printing.
+- Replace `get_available_filter_values()` with `filter(objects, fields)` or `filter(objects, "available", {"print": False})`; migrate the Workbench caller so all metadata choices remain available.
+- Preserve solvent labels from filenames, group known aliases by identity, and use the most frequent supplied spelling within a plot.
+- Report import totals and per-folder outcomes, keep subfolder paths relative to the import root, and avoid repeating reference-folder paths.
+- Show shared electrodes once above object tables and differing electrodes in per-file columns; add explicit display-column controls.
 
 - Use three significant figures for automatic scan-window matching, retaining five for other continuous metadata and preserving measured potentials.
 - Draw polynomial and Sevcik fit lines in increasing x order without changing input-order fit selections or statistics.
@@ -8,7 +14,7 @@
 - Allow collection filtering for directly loaded objects without a folder attribute.
 - Update GitHub artifact actions to Node.js 24 versions.
 
-## 0.1.0b7 - Release candidate - 2026-10-19
+## 0.1.0b7 - 2026-10-19
 
 - Added filename decimal aliases, preserved spaced species names and DMA/DMAc spelling, and supported scan-rate units such as mV_s.
 - Prefer reliable waveform scan rates over filename rates when no instrument-header rate is supplied; retain provenance and flag disagreements.

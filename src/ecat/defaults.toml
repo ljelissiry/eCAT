@@ -158,6 +158,7 @@ color = null
 colors = []
 
 [get_data]
+display_columns = []
 folder_path = "."
 delimiter = ","
 decimal = "."
@@ -658,6 +659,9 @@ overpotential_range = [0, 1]
 color = "black"
 
 [filter]
+sig_figs = "auto"
+candidate_limit = 12
+display_columns = []
 print = true
 pretty_print = true
 print_conditions = true
@@ -665,11 +669,15 @@ mode = "include"
 logic = null
 
 [sort_group]
+sig_figs = "auto"
+solvent_grouping = "identity"
+display_columns = []
 print = true
 pretty_print = true
 print_conditions = true
 
 [group_summary]
+solvent_grouping = "identity"
 print = true
 pretty_print = true
 sig_figs = 3

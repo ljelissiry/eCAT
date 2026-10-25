@@ -77,7 +77,7 @@ Folder loaders return an empty list (`[]`) when no supported files are found or 
 
 Every loaded object exposes `obj.parse_result`, a `ParseResult` with a consistent parser contract: `.data`, `.units`, `.technique`, `.software`, `.metadata`, `.raw_metadata`, `.warnings`, `.source`, and `.parser`. Use `parse_file(...)` when you want that contract directly for parser debugging or importer tests. Normal analysis workflows should use `echem.from_file(...)` or `get_data(...)`.
 
-`get_data(..., {"print": False})` suppresses folder discovery, unsupported-file, conversion, reference, warning, and object-summary output. Set `troubleshoot=True` when you intentionally want per-file diagnostic output; troubleshoot output remains visible even when the ordinary summary is disabled.
+`get_data({"folder path": path, "print": False})` suppresses folder discovery, unsupported-file, conversion, reference, warning, and object-summary output. `get_data` accepts one options argument. Set `troubleshoot=True` when you intentionally want per-file diagnostic output; troubleshoot output remains visible even when the ordinary summary is disabled.
 
 ### Automatic Reference-Couple Pairing
 
@@ -396,14 +396,48 @@ result.save("cv.html")  # uses display format for the embedded content
 
 | Name | Purpose | Options |
 |---|---|---|
-| `filter(objects, filter_keys, options=None)` | Include or exclude objects by metadata. | `describe_options("filter")` |
+| `filter(objects, filter_keys=None, options=None)` | Select objects with a criteria dictionary, or inspect available values with a field list/omitted criteria. | `describe_options("filter")` |
 | `sort(objects, sort_keys, options=None)` | Sort objects by metadata. | `describe_options("sort_group")` |
 | `group(objects, group_keys, options=None)` | Group objects by metadata. | `describe_options("sort_group")` |
 | `sort_and_group(objects, sort_keys=None, group_keys=None, options=None)` | Sort and group in one workflow. | `describe_options("sort_group")` |
-| `group_summary(objects, options=None)` | Summarize grouped object metadata. | `describe_options("group_summary")` |
-| `get_available_filter_values(objects, keys=None)` | Inspect possible values before filtering. | none |
+| `group_summary(object_list, group_keys=None, options=None)` | Return a DataFrame summarizing existing groups, or group internally with explicit keys. | `describe_options("group_summary")` |
 
-For `filter`, `sort`, `group`, and `sort_and_group`, `sig figs` controls numeric **matching**, without changing stored metadata or measured arrays. The default `"auto"` uses three significant digits for scan-window endpoints and five for other continuous fields; it is a practical fallback, not an estimate of instrument accuracy. For example, 0.0999997 and 0.1000000 V/s share a key. An integer from 1 through 17 selects explicit precision; `None` requests exact matching. A per-field mapping such as `{"scan rate": 5, "concentrations": 4}` applies only to the listed fields; omitted fields remain exact. Discrete IDs such as segment counts and replicates are never rounded. Molar prefixes are normalized to M; nonmolar units (such as equivalents, fraction, percent, or volume) remain distinct. Bare numeric concentration criteria mean M. Scan-window endpoints are compared individually: −1.00073 V matches −1.0 V with auto precision, while +1.4 V and +1.6 V remain distinct. This is magnitude-dependent significant-digit rounding, not a fixed voltage tolerance; use an explicit precision or `None` when needed.
+For `filter`, `sort`, `group`, and `sort_and_group`, `sig figs` controls numeric **matching**, without changing stored metadata or measured arrays. The default `"auto"` uses three significant digits for scan-window endpoints and five significant digits for other numeric metadata; it is a practical fallback, not an estimate of instrument accuracy. For example, 0.0999997 and 0.1000000 V/s share a key. An integer from 1 through 17 selects explicit precision; `None` requests exact matching. A per-field mapping such as `{"scan rate": 5, "concentrations": 4}` applies only to the listed fields; omitted fields remain exact. Discrete IDs such as segment counts and replicates are never rounded. Molar prefixes are normalized to M; nonmolar units (such as equivalents, fraction, percent, or volume) remain distinct. Bare numeric concentration criteria mean M. Scan-window endpoints are compared individually: −1.00073 V matches −1.0 V with auto precision, while +1.4 V and +1.6 V remain distinct. This is magnitude-dependent significant-digit rounding, not a fixed voltage tolerance; use explicit precision or `None` when needed.
+
+Collection keys accept case and underscore variants: `NAME`, `Name`, and `name` are equivalent, as are `Scan_Rate` and `scan rate`. Values match without changing the original display labels. `WE`, `RE`, and `CE` alias `working electrode`, `reference electrode`, and `counter electrode`; missing electrode values sort last and display as `unspecified` in electrode columns. Physical reference-electrode metadata is independent of the corrected potential reference label.
+
+Object/conditions displays used by imports, filtering, sorting, and `show_objects`/`show_groups` summarize electrodes automatically:
+
+- Each known electrode role with the same supplied value across every object appears on an `[Electrodes]` line, ordered **WE, RE, CE**, between `[Conditions]` and `[Reference]` when those headings are present. A single object qualifies; each displayed group is evaluated separately.
+- Differing roles become **Working Electrode**, **Reference Electrode**, or **Counter Electrode** columns automatically. Missing values prevent a shared claim and display as `unspecified`; roles missing everywhere are omitted unless requested. Reference-electrode construction and filling-solution details are preserved, not normalized into one identity.
+- Plain-text output uses the same shared line and appends per-file electrode values beside each file. Explicit `columns`/`display columns` requests remain additive, including shared electrode fields and `"all"`.
+- `"print conditions": False` suppresses shared headings and keeps known electrodes in per-file columns/text. Querying `columns="available"` remains silent. These display changes do not modify object metadata, potentials, or reference corrections.
+
+Solvent labels retain the spelling supplied in filenames (for example, ACN stays ACN). Filters recognize preset aliases such as ACN, MeCN, and acetonitrile. Sorting/grouping uses solvent identity by default; pass `{"solvent grouping": "label"}` to keep different aliases separate (case differences alone do not split a label). Group summaries retain all supplied labels when an identity group contains multiple aliases. This does not alter stored solvent names or convert mixed-solvent compositions into a pure-solvent identity. Within each plot, known solvent aliases combine under the supplied spelling used by the most plotted entries; ties use the first spelling encountered. For example, two ACN entries and one MeCN entry share the label ACN and are eligible for a shared scan-rate or concentration colorbar. Other differing conditions can still create separate gradient groups. Automatic titles, subtitles, and legend context use that same spelling. Explicit user labels remain unchanged. Individual object metadata and conditions tables retain original spellings. Colorbar ticks describe the numeric variable, such as scan rate.
+
+Subfolders match exactly relative to the selected import root. Both slash styles are accepted, including `r"series\A"`; a parent-folder criterion does not automatically select descendants. Printed relative subfolders never acquire a notebook-working-directory prefix.
+
+| Option | Applies to | Default | Behavior |
+|---|---|---|---|
+| `sig figs` | filter/sort/group | `"auto"` | Three significant digits for scan-window endpoints, five for other numeric fields; explicit integer, `None`, or field mapping overrides. |
+| `candidate limit` | filter | `12` | Maximum values printed per field during inspection or after no matches; `None` prints all. Returned inspection dictionaries are never truncated. |
+| `solvent grouping` | sort/group/group_summary | `"identity"` | `"identity"` combines known aliases; `"label"` keeps their labels separate. |
+| `display columns` | get_data/filter/sort/group | `[]` | Additional object-table columns, e.g. `["WE", "RE", "CE"]`, or `"all"`. Does not select imported data columns or analytical result columns. |
+
+`filter(cvs, ["solvent", "scan window"])` returns a dictionary of all distinct values present, without truncation; keys are canonical lowercase names and values preserve stored labels/precision. Omit the criteria argument or pass `"available"` to inspect every field. Inspection rejects unknown fields. Dictionary criteria always return objects (`{}` selects all); a field list always returns values (`[]` returns an empty dictionary). Inspection reports stored values, without merging solvent aliases or applying matching precision. The standalone `get_available_filter_values()` helper has been removed; replace `e.get_available_filter_values(cvs, keys=["scan rate"])` with `e.filter(cvs, ["scan rate"], {"print": False})`. Scan-window candidates are `[low, high]` pairs. Both filtering forms remain available:
+
+```python
+# Match either measured endpoint (using the selected matching precision).
+endpoint_matches = e.filter(cvs, {"Scan_Window": -1.0})
+# Match both endpoints; endpoint order does not matter.
+window_matches = e.filter(cvs, {"scan window": [-1.0, 0.5]})
+choices = e.filter(cvs, ["SOLVENT", "RE", "scan window"])
+all_choices = e.filter(cvs, "available", {"print": False})
+# No-match diagnostics without truncation:
+selected = e.filter(cvs, {"WE": "GC"}, {"candidate limit": None})
+```
+
+A scalar scan-window criterion matches an endpoint, not any potential inside the interval. Significant-figure matching does not collapse a nonzero endpoint to zero; no extra absolute tolerance is applied.
 
 Matching uses rounded keys rather than pairwise closeness: two nearby numbers on opposite rounding boundaries may remain separate, and group membership does not depend on input order. This replaces the former mixture of exact scalar matching and approximate concentration/window matching. Use explicit precision when closely spaced conditions must remain distinct. When printing is enabled, the resolved matching policy is reported separately from table display precision. Display-only `sig figs` in `show_objects` and `show_groups` still only formats tables.
 
@@ -415,6 +449,12 @@ ordered = e.sort(cvs.copy(), "scan rate", {"sig figs": "auto"})
 ```
 
 `sort` sorts the supplied list in place; use `.copy()` to preserve its original order. Precision changes comparison keys only.
+
+`group` returns nested lists containing the original objects.
+`sort_and_group` sorts a shallow list copy and returns groups when either key
+argument is supplied: an omitted `group_keys` uses `sort_keys`, and vice versa.
+With both omitted it prints guidance and returns the original list.
+`filter(objects, ["scan rate"], {"print": False})` returns a dictionary without printing. Field inspection rejects unknown keys. Use a list for a single field; the string `"available"` is reserved for inspecting all fields.
 
 Filter `logic` combines different filter keys. For example, `{"logic": "AND"}`
 requires each top-level key such as `gas`, `species`, and `replicate` to match.

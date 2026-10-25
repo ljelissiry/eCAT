@@ -62,7 +62,6 @@ from .animation import animate
 from .app import open_app
 from .collection import (
     filter,
-    get_available_filter_values,
     group,
     group_summary,
     sort,
@@ -147,7 +146,6 @@ __all__ = [
     "group",
     "sort_and_group",
     "group_summary",
-    "get_available_filter_values",
     "show",
     "show_groups",
     "show_objects",

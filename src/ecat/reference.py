@@ -1034,7 +1034,9 @@ def _print_reference_correction_summary(
                 folder_items.append((folder_label, "none"))
             else:
                 shift = ref_shift_guess.get(ref_file)
-                ref_text = _format_reference_display(ref_file, root_abs, quote=True)
+                # The folder is already printed on this line. Retain relative
+                # parent steps so an inherited reference remains unambiguous.
+                ref_text = _format_reference_display(ref_file, folder_abs, quote=True)
                 if shift is not None:
                     ref_text = f"{ref_text} = {round_sigfigs(shift, 4)} V"
                 folder_items.append((folder_label, ref_text))

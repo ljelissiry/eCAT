@@ -30,7 +30,7 @@ from .objects import (
     dpv,
     echem,
 )
-from .plotting import _coerce_display_columns, show_objects
+from .plotting import _coerce_display_columns, _display_table, _object_has_reference_metadata, show_objects
 from .collection import sort
 from .reference import (
     _apply_reference_map,
@@ -778,6 +778,62 @@ __all__ = [
     "get_data_from_excel",
 ]
 
+def _physical_file_key(filepath):
+    """Identify a reference source once, including symbolic and hard links."""
+    try:
+        stat = os.stat(filepath)
+        return (stat.st_dev, stat.st_ino)
+    except OSError:
+        return os.path.normcase(os.path.realpath(filepath))
+
+
+def _print_import_summary(
+    root_abs, visited_folders, candidate_files, all_files, loaded_files,
+    reference_records, options,
+):
+    """Report direct-folder counts; reference sources overlap file outcomes."""
+    columns = ["Candidates", "Loaded", "Failed", "Unsupported", "References used"]
+    counts = {folder: dict.fromkeys(columns, 0) for folder in visited_folders}
+    candidate_set = set(candidate_files)
+    loaded_set = set(loaded_files)
+    discovered_sources = {}
+    for filepath in all_files:
+        folder_counts = counts[os.path.dirname(filepath)]
+        if filepath in candidate_set:
+            folder_counts["Candidates"] += 1
+            folder_counts["Loaded" if filepath in loaded_set else "Failed"] += 1
+        else:
+            folder_counts["Unsupported"] += 1
+        discovered_sources.setdefault(_physical_file_key(filepath), os.path.dirname(filepath))
+
+    reference_sources = {
+        _physical_file_key(record["ref_file"]): os.path.dirname(os.path.abspath(record["ref_file"]))
+        for record in reference_records
+        if record.get("ref_file") and record.get("shift") is not None
+    }
+    external_references = 0
+    for source, source_folder in reference_sources.items():
+        folder = source_folder if source_folder in counts else discovered_sources.get(source)
+        if folder is None:
+            external_references += 1
+        else:
+            counts[folder]["References used"] += 1
+
+    totals = {column: sum(row[column] for row in counts.values()) for column in columns}
+    totals["References used"] += external_references
+    print("Import totals — " + "; ".join(f"{column}: {totals[column]}" for column in columns))
+    if len(visited_folders) > 1:
+        rows = [
+            {"Folder": os.path.relpath(folder, root_abs).replace(os.sep, "/"), **counts[folder]}
+            for folder in sorted(visited_folders, key=lambda path: os.path.relpath(path, root_abs))
+        ]
+        _display_table(pd.DataFrame(rows), options, title="Import by folder (direct counts)", index=False, escape="html")
+    if reference_sources:
+        print("References used counts unique source files and overlaps the other file counts.")
+    if external_references:
+        print(f"External reference sources: {external_references} (included in reference total).")
+
+
 def get_data(options=None):
     """Read electrochemistry text files from a folder into eCAT objects.
     
@@ -841,6 +897,9 @@ def get_data(options=None):
             search_pattern = os.path.join(glob_root, "*")
 
         candidates = glob.glob(search_pattern, recursive=recursive)
+        visited_folders = {root_abs}
+        if recursive:
+            visited_folders.update(os.path.abspath(p) for p in candidates if os.path.isdir(p))
         all_files = [os.path.abspath(p) for p in candidates if os.path.isfile(p)]
         text_files = [p for p in all_files if is_supported_text_file(p)]
         unsupported_binary_files = [
@@ -859,9 +918,11 @@ def get_data(options=None):
 
     if unsupported_binary_files and emit_output:
         print(f"Unsupported binary files skipped ({len(unsupported_binary_files)}):")
-        for filepath in sorted(unsupported_binary_files):
+        for filepath in sorted(unsupported_binary_files)[:5]:
             display_name = _format_reference_display(filepath, root_abs, quote=True)
             print(f"  - {display_name}")
+        if len(unsupported_binary_files) > 5:
+            print(f"  ... {len(unsupported_binary_files) - 5} more binary files omitted.")
         print(
             "eCAT does not read BioLogic EC-Lab `.mpr` binaries. "
             "Export EC-Lab ASCII `.mpt`, convert externally, or use a custom reader.\n"
@@ -869,7 +930,7 @@ def get_data(options=None):
 
     if len(file_paths) == 0:
         if len(all_files) == 0 and emit_output:
-            print(f"No files were found in the folder:\n {_format_path_for_display(root_abs)}")
+            print("No files were found in the folder.")
         elif emit_output:
             suffix_counts = {}
             for p in all_files:
@@ -879,19 +940,19 @@ def get_data(options=None):
                 suffix_counts[suffix] = suffix_counts.get(suffix, 0) + 1
 
             suffix_summary = ", ".join(
-                f"{ext}: {count}" for ext, count in sorted(suffix_counts.items())
+                f"{ext}: {count}" for ext, count in sorted(suffix_counts.items())[:5]
             )
+            if len(suffix_counts) > 5:
+                suffix_summary += f", ... {len(suffix_counts) - 5} more extension types omitted"
 
             print(
                 f"Found {len(all_files)} file(s) in the folder, but none were supported "
                 f"text files ({', '.join(sorted(SUPPORTED_TEXT_SUFFIXES))}).\n"
-                f"Folder:\n {_format_path_for_display(root_abs)}\n"
                 f"File types found: {suffix_summary}"
             )
+        if emit_output:
+            _print_import_summary(root_abs, visited_folders, text_files, all_files, [], [], options)
         return []
-    elif emit_output:
-        noun = "file" if len(file_paths) == 1 else "files"
-        print(f"{len(file_paths)} supported text {noun} found.\n")
 
     # ---------------------------
     # 3. Build raw objects and sort
@@ -928,6 +989,7 @@ def get_data(options=None):
     if not object_list:
         if emit_output:
             print("No supported text files could be converted into eCAT objects.")
+            _print_import_summary(root_abs, visited_folders, text_files, all_files, [], [], options)
         return []
 
     sort_keys = options.get("sort keys", ["subfolder", "timestamp"])
@@ -945,7 +1007,6 @@ def get_data(options=None):
     reference_mode = reference_config.get("mode", "none")
     reference_label = reference_config.get("label", None)
     reference_guess = reference_config.get("guess", "auto")
-    reference_active = reference_mode != "none" or bool(options.get("reference map"))
     manual_shift = reference_mode == "manual"
 
     # ---------------------------
@@ -1190,6 +1251,9 @@ def get_data(options=None):
         _print_import_warnings(import_warnings)
 
     if emit_output:
+        _print_import_summary(
+            root_abs, visited_folders, text_files, all_files, file_paths, reference_records, options,
+        )
         _print_reference_correction_summary(
             reference_config=reference_config,
             reference_info=reference_info,
@@ -1205,7 +1269,7 @@ def get_data(options=None):
     elif print_output:
         print_options = options.copy()
 
-        if reference_active:
+        if any(_object_has_reference_metadata(obj) for obj in object_list):
             extra_cols = [
                 "reference shift",
                 "reference label",
@@ -1213,12 +1277,17 @@ def get_data(options=None):
                 "reference source",
             ]
 
-            existing_cols = _coerce_display_columns(print_options.get("columns", []))
+            display_columns = print_options.get("display columns", [])
+            if isinstance(display_columns, str) and display_columns.strip().lower() == "all":
+                existing_cols = display_columns
+            else:
+                existing_cols = _coerce_display_columns(display_columns)
+                for col in extra_cols:
+                    if col not in existing_cols:
+                        existing_cols.append(col)
 
-            for col in extra_cols:
-                if col not in existing_cols:
-                    existing_cols.append(col)
-
+            print_options["display columns"] = existing_cols
+            # Keep the legacy display alias in this display-only options copy.
             print_options["columns"] = existing_cols
 
         show_objects(object_list, print_options)

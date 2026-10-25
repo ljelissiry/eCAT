@@ -18,7 +18,7 @@ python -m pip install --pre ecat-electrochemistry
 For a reproducible install of this exact beta, pin the release:
 
 ```bash
-python -m pip install "ecat-electrochemistry==0.1.0b7"
+python -m pip install "ecat-electrochemistry==0.1.0b8"
 ```
 
 On Windows PowerShell, activate the environment with:
@@ -30,7 +30,7 @@ On Windows PowerShell, activate the environment with:
 To install the current tagged beta directly from GitHub instead, first make sure [Git](https://git-scm.com/downloads) is installed:
 
 ```bash
-python -m pip install --upgrade "git+https://github.com/ljelissiry/eCAT.git@v0.1.0b7"
+python -m pip install --upgrade "git+https://github.com/ljelissiry/eCAT.git@v0.1.0b8"
 ```
 
 Confirm that the notebook kernel sees the same environment:
@@ -39,7 +39,7 @@ Confirm that the notebook kernel sees the same environment:
 python -c "import ecat as e; print(e.__version__)"
 ```
 
-The beta version is `0.1.0b7`.
+The beta version is `0.1.0b8`.
 
 ## Quickstart
 
