@@ -186,7 +186,7 @@ def test_no_candidates_reports_search_root_only_once(ecat_module, tmp_path, caps
     if unsupported:
         (tmp_path / "notes.pdf").write_text("notes")
     assert _load(tmp_path) == []
-    assert capsys.readouterr().out.count(str(tmp_path)) == 1
+    assert capsys.readouterr().out.count(tmp_path.as_posix()) == 1
 
 
 def test_reference_import_preserves_all_display_columns(ecat_module, tmp_path, monkeypatch):

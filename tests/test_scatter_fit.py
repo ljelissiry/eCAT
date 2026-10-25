@@ -5604,5 +5604,6 @@ def test_fit_draws_sorted_line_without_reordering_selected_statistics(ecat_modul
     np.testing.assert_allclose(line.get_xdata(), [1, 2, 3, 4])
     np.testing.assert_allclose(line.get_ydata(), [3, 5, 7, 9])
     np.testing.assert_array_equal(stats['x fit'], x[:4])
-    np.testing.assert_array_equal(stats['y fit'], y[:4])
+    # Predicted values include least-squares roundoff across BLAS/platforms.
+    np.testing.assert_allclose(stats['y fit'], y[:4], rtol=1e-14, atol=1e-14)
     np.testing.assert_allclose(coeffs, [2, 1])

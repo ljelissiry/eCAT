@@ -1190,3 +1190,33 @@ def test_folder_reference_summary_paths_are_relative_to_each_listed_folder(ecat_
     sample = next(obj for obj in objects if obj.filepath.endswith('sample.txt'))
     assert sample.reference_source_file == str(local / 'Fc_local.txt')
     assert sample.reference_shift == pytest.approx(0.0, abs=1e-12)
+
+
+@pytest.mark.parametrize("path_style", ["posix", "windows"])
+def test_folder_reference_summary_normalizes_native_separators(ecat_module, monkeypatch, capsys, path_style):
+    import ntpath
+    import posixpath
+    from types import SimpleNamespace
+
+    from ecat import reference
+
+    path = ntpath if path_style == "windows" else posixpath
+    root = r"C:\data" if path_style == "windows" else "/data"
+    local = path.join(root, "series", "A")
+    deep = path.join(local, "deep")
+    root_reference = path.join(root, "Fc_root.txt")
+    local_reference = path.join(local, "Fc_local.txt")
+    # Simulate native path operations without changing the process-wide os module.
+    monkeypatch.setattr(reference, "os", SimpleNamespace(path=path, sep=path.sep))
+    reference._print_reference_correction_summary(
+        {"mode": "keyword", "keyword": "Fc"},
+        reference_info={
+            "ref_mapping": {root: root_reference, local: local_reference, deep: local_reference},
+            "ref_shift_guess": {root_reference: 0.0, local_reference: 0.0},
+        },
+        root_abs=root,
+    )
+    output = capsys.readouterr().out
+    assert "    Base Folder: `Fc_root.txt` = 0 V" in output
+    assert "    series/A: `Fc_local.txt` = 0 V" in output
+    assert "    series/A/deep: `../Fc_local.txt` = 0 V" in output

@@ -1028,7 +1028,7 @@ def _print_reference_correction_summary(
         folder_items = []
         for folder_abs in sorted(ref_mapping):
             rel_folder = os.path.relpath(folder_abs, root_abs)
-            folder_label = "Base Folder" if rel_folder == "." else rel_folder
+            folder_label = "Base Folder" if rel_folder == "." else rel_folder.replace(os.sep, "/")
             ref_file = ref_mapping[folder_abs]
             if ref_file is None:
                 folder_items.append((folder_label, "none"))
