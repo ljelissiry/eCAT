@@ -101,6 +101,7 @@ def _surface_coverage_equation_bundle():
 
 def _bulk_reversibility_equation_sections(
     *,
+    psi_source="agarwal table",
     include_sevcik=False,
     include_rate=False,
     include_irreversible=False,
@@ -154,6 +155,13 @@ def _bulk_reversibility_equation_sections(
             },
         ),
     ]
+    from .options import _canonical_nicholson_psi_source
+
+    if _canonical_nicholson_psi_source(psi_source) == "agarwal table":
+        sections[0][1].update({
+            "symbolic": "psi = linear interpolation of Agarwal (2025) Table 4 at n Delta Ep in mV",
+            "symbolic latex": r"\psi=\mathrm{interp}_{\mathrm{Agarwal\ Table\ 4}}(n\Delta E_p/\mathrm{mV})",
+        })
     if include_sevcik:
         sections.append(
             (
@@ -242,6 +250,7 @@ def _reversibility_equation_sections(result):
     ) or "irreversible" in conclusion
     diffusion = _finite_float(result.summary.get("D / cm^2 s^-1"))
     return _bulk_reversibility_equation_sections(
+        psi_source=("empirical" if result.summary.get("psi source") == "lavagnini empirical" else "agarwal table"),
         include_sevcik=bool(sevcik),
         include_rate=bool(np.isfinite(diffusion) and diffusion > 0),
         include_irreversible=include_irreversible,
@@ -470,7 +479,7 @@ def _linear_regression(x, y):
     }
 
 
-def _nicholson_evidence(n_delta_ep_mv):
+def _nicholson_evidence(n_delta_ep_mv, options=None):
     """Resolve Nicholson psi and Matsuda-Ayabe Lambda from n*Delta Ep."""
     value = _finite_float(n_delta_ep_mv)
     if not np.isfinite(value) or value <= 0:
@@ -482,13 +491,15 @@ def _nicholson_evidence(n_delta_ep_mv):
             "eligible": False,
             "reason": f"too reversible for Nicholson k0 (nDeltaEp={value:.4g} mV < 61 mV)",
         }
-    psi = (-0.6288 + 0.0021 * value) / (1 - 0.017 * value)
+    from .analysis_batch import _nicholson_psi_from_source
+
+    psi, _ = _nicholson_psi_from_source(value, options or {})
     if not np.isfinite(psi) or psi <= 0:
         return {
             "psi": np.nan,
             "Lambda": np.nan,
             "eligible": False,
-            "reason": "Nicholson conversion did not produce a positive finite psi",
+            "reason": "Outside the selected Nicholson conversion domain or no positive finite psi",
         }
     lambda_value = float(np.sqrt(np.pi) * psi)
     eligible = bool(0.1 <= psi <= 7 and value <= 212)
@@ -790,7 +801,7 @@ def _extract_wave_table(cv_list, typed, *, num_electrons):
             )
         delta_ep = abs(float(wave["Epa"]) - float(wave["Epc"]))
         n_delta_ep_mv = float(num_electrons) * delta_ep * 1000
-        nicholson = _nicholson_evidence(n_delta_ep_mv)
+        nicholson = _nicholson_evidence(n_delta_ep_mv, typed.to_options_dict())
         row = {
             "name": getattr(cv_obj, "name", f"CV {index + 1}"),
             "scan rate / V s^-1": float(cv_obj.scan_rate),
@@ -1142,6 +1153,8 @@ def _bulk_phase_evidence(cv_list, rate_means, resolved, *, num_electrons, temper
             np.isfinite(psi_values)
             & (psi_values >= 0.1)
             & (psi_values <= 7)
+            & (rate_means["n Delta Ep / mV"] >= 61)
+            & (rate_means["n Delta Ep / mV"] <= 212)
         )
         for _, row in rate_means.loc[nicholson_mask].iterrows():
             k0 = _k0_from_lambda(
@@ -1454,9 +1467,18 @@ def reversibility_analysis(cvs, options=None):
     mean_columns = [
         "E1/2 / V", "Delta Ep / V", "n Delta Ep / mV", "Epc / V", "ipc / A",
         "Epc-Epc/2 / V", "W1/2,c / V", "Epa / V", "ipa / A",
-        "Epa-Epa/2 / V", "W1/2,a / V", "|ipa/ipc|", "psi", "Lambda",
+        "Epa-Epa/2 / V", "W1/2,a / V", "|ipa/ipc|",
     ]
     rate_means = _rate_mean_table(table, mean_columns)
+    # Convert the same measured mean that is reported for each scan rate.
+    # Averaging per-scan psi would both change this nonlinear conversion and
+    # silently drop out-of-domain replicates while retaining their separation.
+    mean_evidence = [
+        _nicholson_evidence(value, resolved)
+        for value in rate_means["n Delta Ep / mV"]
+    ]
+    for column in ("psi", "Lambda"):
+        rate_means[column] = [evidence[column] for evidence in mean_evidence]
     chemical = _chemical_reversibility_decision(
         rate_means["scan rate / V s^-1"],
         rate_means["|ipa/ipc|"],
@@ -1491,6 +1513,8 @@ def reversibility_analysis(cvs, options=None):
     summary = {
         "analysis": "reversibility",
         "phase": resolved["phase"],
+        "psi source": ("agarwal table" if resolved["psi source"] == "agarwal table" else "lavagnini empirical"),
+        "Nicholson aggregation": "conversion of scan-rate mean peak separation",
         "num electrons": n,
         "temperature / K": temperature,
         "temperature source": temperature_source,

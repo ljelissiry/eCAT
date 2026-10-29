@@ -3,6 +3,17 @@ import pandas as pd
 import pytest
 import matplotlib.pyplot as plt
 import warnings
+from contextlib import contextmanager
+
+
+@contextmanager
+def _no_polarity_warning():
+    # Increasing-potential fixtures are oxidative; they must no longer trigger
+    # the reduction-only transform's spurious negative-slope warning.
+    with warnings.catch_warnings(record=True) as captured:
+        warnings.simplefilter("always")
+        yield
+    assert not any("non-positive slope" in str(item.message) for item in captured)
 
 
 class _PlateauDummyCV:
@@ -190,7 +201,7 @@ def test_fowa_table_includes_fit_range_when_ranges_differ(
         ),
     )
 
-    with pytest.warns(UserWarning, match="non-positive slope"):
+    with _no_polarity_warning():
         table = _analysis_table(ecat_module.fowa(
             cvs,
             {
@@ -238,6 +249,7 @@ def test_fowa_status_summarizes_all_issues_and_hides_warning_details(
                 "non-catalytic current": 1e-6,
                 "redox potential": 0.0,
                 "redox mode": "manual",
+                "reaction direction": "reduction",
                 "background correction": None,
                 "fit basis": "x",
                 "fit range": [0.1, 0.3],
@@ -316,7 +328,7 @@ def test_fowa_result_tables_include_unit_metadata(
         ),
     )
 
-    with pytest.warns(UserWarning, match="non-positive slope"):
+    with _no_polarity_warning():
         table = _analysis_table(ecat_module.fowa(
             [cv_obj],
             {
@@ -409,7 +421,7 @@ def test_fowa_plot_xlabel_uses_dynamic_reference_label(
     )
 
     plt.close("all")
-    with pytest.warns(UserWarning, match="non-positive slope"):
+    with _no_polarity_warning():
         ecat_module.fowa(
             [cv_obj],
             {
@@ -516,7 +528,7 @@ def test_fowa_accepts_manual_wave_range(
         ),
     )
 
-    with pytest.warns(UserWarning, match="non-positive slope"):
+    with _no_polarity_warning():
         table = _analysis_table(ecat_module.fowa(
             [cv_obj],
             {
@@ -567,7 +579,7 @@ def test_fowa_accepts_plural_per_cv_wave_ranges(
         ),
     )
 
-    with pytest.warns(UserWarning, match="non-positive slope"):
+    with _no_polarity_warning():
         table = _analysis_table(ecat_module.fowa(
             cvs,
             {
@@ -732,7 +744,7 @@ def test_fowa_manual_redox_still_reports_ecat_half_shift(
         lambda **kwargs: (0.12, 0.02),
     )
 
-    with pytest.warns(UserWarning, match="non-positive slope"):
+    with _no_polarity_warning():
         table = _analysis_table(ecat_module.fowa(
             [cv_obj],
             {
@@ -822,7 +834,7 @@ def test_fowa_prints_by_default_after_multiplot_defaults(
         ),
     )
 
-    with pytest.warns(UserWarning, match="non-positive slope"):
+    with _no_polarity_warning():
         ecat_module.fowa(
             [cv_obj],
             {
@@ -1050,7 +1062,7 @@ def test_fowa_accepts_option_dataclass(ecat_module, blank_echem_factory, monkeyp
         }
     )
 
-    with pytest.warns(UserWarning, match="non-positive slope"):
+    with _no_polarity_warning():
         table = _analysis_table(ecat_module.fowa([cv_obj], options))
 
     assert "FOWA Fit" in table.attrs["shared_summary"]
@@ -1077,7 +1089,7 @@ def test_fowa_table_combines_line_and_wave_range_columns(
         ),
     )
 
-    with pytest.warns(UserWarning, match="non-positive slope"):
+    with _no_polarity_warning():
         table = _analysis_table(ecat_module.fowa(
             [cv_obj],
             {
@@ -1137,7 +1149,7 @@ def test_fowa_shared_analysis_columns_move_to_summary(
         ),
     )
 
-    with pytest.warns(UserWarning, match="non-positive slope"):
+    with _no_polarity_warning():
         table = _analysis_table(ecat_module.fowa(
             cvs,
             {
@@ -1184,7 +1196,7 @@ def test_fowa_table_uses_operation_order_for_analysis_columns(
         ),
     )
 
-    with pytest.warns(UserWarning, match="non-positive slope"):
+    with _no_polarity_warning():
         table = _analysis_table(ecat_module.fowa(
             [cv_obj],
             {
@@ -1232,7 +1244,7 @@ def test_fowa_applies_per_cv_tangent_and_redox_potentials(
         ),
     )
 
-    with pytest.warns(UserWarning, match="non-positive slope"):
+    with _no_polarity_warning():
         table = _analysis_table(ecat_module.fowa(
             cvs,
             {
@@ -1274,7 +1286,7 @@ def test_fowa_print_accepts_per_cv_manual_ip0_values(
         ),
     )
 
-    with pytest.warns(UserWarning, match="non-positive slope"):
+    with _no_polarity_warning():
         result = ecat_module.fowa(
             cvs,
             {
@@ -1323,7 +1335,7 @@ def test_fowa_transformed_plot_respects_multiplot_legend_toggle(
         ),
     )
 
-    with pytest.warns(UserWarning, match="non-positive slope"):
+    with _no_polarity_warning():
         ecat_module.fowa(
             cvs,
             {
@@ -1369,7 +1381,7 @@ def test_fowa_plot_all_defaults_to_fowa_normalized_current(
         ),
     )
 
-    with pytest.warns(UserWarning, match="non-positive slope"):
+    with _no_polarity_warning():
         ecat_module.fowa(
             [cv_obj],
             {
@@ -1427,9 +1439,9 @@ def test_fowa_uses_raw_current_when_input_cv_is_already_normalized(
         "ecat shift warning threshold": False,
     }
 
-    with pytest.warns(UserWarning, match="non-positive slope"):
+    with _no_polarity_warning():
         raw_result = _analysis_table(ecat_module.fowa([cv_obj], common_options))
-    with pytest.warns(UserWarning, match="non-positive slope"):
+    with _no_polarity_warning():
         normalized_result = _analysis_table(ecat_module.fowa([normalized_cv], common_options))
 
     raw_full = raw_result.attrs["full_results_df"]
@@ -1460,7 +1472,7 @@ def test_fowa_accepts_ip0_alias_for_non_catalytic_current(
         ),
     )
 
-    with pytest.warns(UserWarning, match="non-positive slope"):
+    with _no_polarity_warning():
         table = _analysis_table(ecat_module.fowa(
             [cv_obj],
             {
@@ -1501,7 +1513,7 @@ def test_fowa_plot_all_current_diagnostic_y_axis_preserves_current_axis(
         ),
     )
 
-    with pytest.warns(UserWarning, match="non-positive slope"):
+    with _no_polarity_warning():
         ecat_module.fowa(
             [cv_obj],
             {
@@ -1548,7 +1560,7 @@ def test_fowa_plot_all_first_figure_is_normalized_multiplot_with_overlays(
         ),
     )
 
-    with pytest.warns(UserWarning, match="non-positive slope"):
+    with _no_polarity_warning():
         ecat_module.fowa(
             [cv_obj],
             {
@@ -1619,7 +1631,7 @@ def test_fowa_half_wave_redox_calculates_silently_then_redraws_normalized_diagno
         ),
     )
 
-    with pytest.warns(UserWarning, match="non-positive slope"):
+    with _no_polarity_warning():
         ecat_module.fowa(
             [cat_cv],
             {
@@ -1673,7 +1685,7 @@ def test_fowa_plot_all_redraws_half_wave_diagnostics_on_normalized_axis(
         ),
     )
 
-    with pytest.warns(UserWarning, match="non-positive slope"):
+    with _no_polarity_warning():
         ecat_module.fowa(
             [cat_cv],
             {
@@ -1728,7 +1740,7 @@ def test_fowa_plot_all_multiplot_lines_are_full_cvs_and_only_traces_in_legend(
         ),
     )
 
-    with pytest.warns(UserWarning, match="non-positive slope"):
+    with _no_polarity_warning():
         ecat_module.fowa(
             cvs,
             {
@@ -1780,7 +1792,7 @@ def test_fowa_plot_all_shows_multiplot_legend_by_default(
         ),
     )
 
-    with pytest.warns(UserWarning, match="non-positive slope"):
+    with _no_polarity_warning():
         ecat_module.fowa(
             cvs,
             {
@@ -1848,7 +1860,7 @@ def test_fowa_plot_all_leaves_auto_labels_to_multiplot(
         ),
     )
 
-    with pytest.warns(UserWarning, match="non-positive slope"):
+    with _no_polarity_warning():
         ecat_module.fowa(
             cvs,
             {
@@ -1897,7 +1909,7 @@ def test_fowa_plot_all_main_trace_uses_full_cv_not_analysis_segment(
         ),
     )
 
-    with pytest.warns(UserWarning, match="non-positive slope"):
+    with _no_polarity_warning():
         ecat_module.fowa(
             [cv_obj],
             {
@@ -1969,7 +1981,7 @@ def test_fowa_plot_all_plot_segments_controls_diagnostic_multiplot_only(
         ),
     )
 
-    with pytest.warns(UserWarning, match="non-positive slope"):
+    with _no_polarity_warning():
         ecat_module.fowa(
             [cv_obj],
             {
@@ -2025,7 +2037,7 @@ def test_fowa_plot_all_half_wave_diagnostics_do_not_duplicate_peak_markers(
         ),
     )
 
-    with pytest.warns(UserWarning, match="non-positive slope"):
+    with _no_polarity_warning():
         ecat_module.fowa(
             [cat_cv],
             {
@@ -2084,7 +2096,7 @@ def test_fowa_plot_all_redraws_peak_current_diagnostic_on_normalized_axis(
         ),
     )
 
-    with pytest.warns(UserWarning, match="non-positive slope"):
+    with _no_polarity_warning():
         ecat_module.fowa(
             [cat_cv],
             {
@@ -2151,7 +2163,7 @@ def test_fowa_transformed_plot_uses_user_plot_labels_not_filename_fallback(
         ),
     )
 
-    with pytest.warns(UserWarning, match="non-positive slope"):
+    with _no_polarity_warning():
         ecat_module.fowa(
             cvs,
             {
@@ -2208,7 +2220,7 @@ def test_fowa_transformed_plot_labels_ignore_reference_cv_when_finding_shared_te
         ),
     )
 
-    with pytest.warns(UserWarning, match="non-positive slope"):
+    with _no_polarity_warning():
         ecat_module.fowa(
             cvs,
             {
@@ -2352,7 +2364,7 @@ def test_fowa_transformed_plot_formats_formula_plot_labels(
         ),
     )
 
-    with pytest.warns(UserWarning, match="non-positive slope"):
+    with _no_polarity_warning():
         ecat_module.fowa(
             cvs,
             {
@@ -2401,7 +2413,7 @@ def test_fowa_transformed_plot_shows_multiplot_legend_by_default(
         ),
     )
 
-    with pytest.warns(UserWarning, match="non-positive slope"):
+    with _no_polarity_warning():
         ecat_module.fowa(
             cvs,
             {
@@ -2452,7 +2464,7 @@ def test_fowa_plot_all_overlays_do_not_expand_main_cv_axis_limits(
         ),
     )
 
-    with pytest.warns(UserWarning, match="non-positive slope"):
+    with _no_polarity_warning():
         ecat_module.fowa(
             [cv_obj],
             {
@@ -2503,7 +2515,7 @@ def test_fowa_plot_all_manual_tangent_potential_does_not_create_red_only_figure(
         ),
     )
 
-    with pytest.warns(UserWarning, match="non-positive slope"):
+    with _no_polarity_warning():
         ecat_module.fowa(
             [cv_obj],
             {
@@ -2609,7 +2621,7 @@ def test_fowa_transformed_fit_lines_extend_to_wave_y_limit_and_skip_legend(
         ),
     )
 
-    with pytest.warns(UserWarning, match="non-positive slope"):
+    with _no_polarity_warning():
         ecat_module.fowa(
             cvs,
             {
@@ -2644,7 +2656,86 @@ def test_fowa_transformed_fit_lines_extend_to_wave_y_limit_and_skip_legend(
     for fit_line, wave_line in zip(dashed_fit_lines, solid_wave_lines):
         fit_y = fit_line.get_ydata()
         wave_y = wave_line.get_ydata()
-        expected_endpoint = np.nanmax(wave_y) if fit_y[-1] >= fit_y[0] else np.nanmin(wave_y)
-        assert fit_y[-1] == pytest.approx(expected_endpoint, rel=1e-3)
+        assert np.max(np.abs(fit_y)) <= np.max(np.abs(wave_y)) + 1e-12
+        assert np.min(fit_line.get_xdata()) >= np.min(wave_line.get_xdata())
+        assert np.max(fit_line.get_xdata()) <= np.max(wave_line.get_xdata())
 
     plt.close(fig)
+
+@pytest.mark.parametrize("direction", [1, -1])
+@pytest.mark.parametrize("current_sign", [1, -1])
+def test_fowa_mirrored_polarities_recover_same_positive_slope(
+    ecat_module, blank_echem_factory, direction, current_sign
+):
+    potential = direction * np.linspace(-0.2, 0.2, 201)
+    factor = 96485 / (8.314 * 298)
+    transformed = 1 / (1 + np.exp(-direction * factor * potential))
+    ip0 = current_sign * 1e-6
+    data = pd.DataFrame({("raw", "Potential (V)"): potential,
+                         ("raw", "Current (A)"): ip0 * 3 * transformed})
+    cv = blank_echem_factory(ecat_module.cv)
+    cv.manual_init("100mVs_synthetic", data, options={})
+    result = ecat_module.fowa([cv], {
+        "plot": False, "print": False, "warnings": False,
+        "non-catalytic current": ip0, "redox mode": "manual",
+        "redox potential": 0, "background correction": None,
+        "wave range": [-0.2, 0.2], "fit range": [0.05, 0.2],
+        "min fit points": 5, "ecat shift warning threshold": False,
+    })
+    row = result.diagnostics["full results"].iloc[0]
+    assert row["Slope"] == pytest.approx(3, rel=0.002)
+    assert row["R2"] > 0.99999
+
+
+@pytest.mark.parametrize("slope,intercept", [(10, 2), (-10, -2), (0, 2), (5, -2), (-5, 2)])
+def test_fowa_fit_display_is_bounded_even_when_intercept_exceeds_wave(ecat_module, slope, intercept):
+    x, y = ecat_module._bounded_fowa_fit_line(slope, intercept, np.array([-0.3, 1.0]))
+    assert np.all(np.abs(y) <= 1 + 1e-12)
+    assert np.all((x >= 0) & (x <= 1))
+    np.testing.assert_allclose(y, slope * x + intercept)
+
+
+def test_fowa_direction_rejects_ambiguous_auto_but_accepts_explicit(ecat_module):
+    for potential in ([0, 1, 0], [0, 0, 0]):
+        with pytest.raises(ValueError, match="cannot infer reaction direction"):
+            ecat_module._resolve_fowa_direction(potential, {})
+        assert ecat_module._resolve_fowa_direction(potential, {"reaction direction": "oxidation"}) == ("oxidation", 1)
+
+
+def test_fowa_mixed_polarity_label_and_measured_display_domain(ecat_module):
+    label = ecat_module._format_fowa_x_axis_label([
+        {"reaction direction": "oxidation"}, {"reaction direction": "reduction"}])
+    assert "-s" in label and "oxidation" in label and "reduction" in label
+    x, y = ecat_module._bounded_fowa_fit_line(2, 0, [0, 1], [0.1, 0.3])
+    np.testing.assert_allclose(x, [0.1, 0.3])
+    np.testing.assert_allclose(y, [0.2, 0.6])
+
+
+def test_fowa_direction_uses_shared_segment_noise_tolerance(ecat_module):
+    potential = [0, 0.1, 0.1 - 1e-10, 0.2, 0.4]
+    assert ecat_module._resolve_fowa_direction(potential, {}) == ("oxidation", 1)
+
+
+def test_fowa_fit_display_respects_asymmetric_signed_current_extrema(ecat_module):
+    x, y = ecat_module._bounded_fowa_fit_line(-10, 2, [-3, 1], [.01, .9])
+    np.testing.assert_allclose(y, [1, -3])
+    np.testing.assert_allclose(y, -10*x + 2)
+
+
+def test_fowa_return_sweep_explicit_oxidation_overrides_scan_direction(
+    ecat_module, blank_echem_factory
+):
+    forward = np.linspace(-0.2, 0.2, 151)
+    reverse = np.linspace(0.199, -0.2, 151)
+    potential = np.r_[forward, reverse]
+    current = 3e-6 / (1 + np.exp(-96485 * potential / (8.314 * 298)))
+    cv = blank_echem_factory(ecat_module.cv)
+    cv.manual_init("100mVs_return_sweep", pd.DataFrame({
+        ("raw", "Potential (V)"): potential, ("raw", "Current (A)"): current}), {})
+    result = ecat_module.fowa([cv], {"segment": 2, "reaction direction": "oxidation",
+        "non-catalytic current": 1e-6, "redox mode": "manual", "redox potential": 0,
+        "background correction": None, "wave range": [-0.2, 0.19],
+        "fit range": [0.05, 0.2], "min fit points": 5,
+        "plot": False, "print": False, "ecat shift warning threshold": False})
+    assert result.diagnostics["full results"].iloc[0]["Slope"] == pytest.approx(3, rel=0.002)
+    assert result.diagnostics["plot data"][0]["reaction direction"] == "oxidation"

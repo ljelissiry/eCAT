@@ -18,7 +18,7 @@ python -m pip install --pre ecat-electrochemistry
 For a reproducible install of this exact beta, pin the release:
 
 ```bash
-python -m pip install "ecat-electrochemistry==0.1.0b7"
+python -m pip install "ecat-electrochemistry==0.1.0b8"
 ```
 
 On Windows PowerShell, activate the environment with:
@@ -30,7 +30,7 @@ On Windows PowerShell, activate the environment with:
 To install the current tagged beta directly from GitHub instead, first make sure [Git](https://git-scm.com/downloads) is installed:
 
 ```bash
-python -m pip install --upgrade "git+https://github.com/ljelissiry/eCAT.git@v0.1.0b7"
+python -m pip install --upgrade "git+https://github.com/ljelissiry/eCAT.git@v0.1.0b8"
 ```
 
 Confirm that the notebook kernel sees the same environment:
@@ -39,7 +39,7 @@ Confirm that the notebook kernel sees the same environment:
 python -c "import ecat as e; print(e.__version__)"
 ```
 
-The beta version is `0.1.0b7`.
+The beta version is `0.1.0b8`.
 
 ## Quickstart
 
@@ -184,3 +184,9 @@ pytest -q
 ```
 
 Release maintainers should follow the [release guide](https://github.com/ljelissiry/eCAT/blob/master/docs/releasing.md).
+
+## User guide and analysis methods
+
+- [User guide (PDF)](eCAT%20Guide.pdf) and [editable Word guide](eCAT%20Guide.docx)
+- [API reference](docs/api_reference.md), [analysis equations and options](docs/analysis_equations.md), and [method references](docs/analysis_reading.md)
+- [Guide maintenance](docs/guide-maintenance.md) and [development environments](docs/development-environments.md)

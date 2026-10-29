@@ -210,7 +210,7 @@ def test_get_data_from_name_uses_case_insensitive_default_aliases(
     obj.get_data_from_name()
 
     assert obj.gas == "CO2"
-    assert obj.solvent == "MeCN"
+    assert obj.solvent == "acn"
 
 
 def test_get_data_from_name_uses_case_insensitive_custom_gases_and_solvents(
@@ -223,4 +223,4 @@ def test_get_data_from_name_uses_case_insensitive_custom_gases_and_solvents(
     obj.get_data_from_name({"gases": ["CO2"], "solvents": ["MeCN"]})
 
     assert obj.gas == "CO2"
-    assert obj.solvent == "MeCN"
+    assert obj.solvent == "mecn"

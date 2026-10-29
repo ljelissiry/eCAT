@@ -380,9 +380,8 @@ def _detect_parser_tokens(name, values, kind):
         canonical = _canonicalize_parser_token(kind, token)
         pattern = rf"(?<![A-Za-z0-9\[\]]){re.escape(token)}(?![A-Za-z0-9\[\]])"
         for match in re.finditer(pattern, text, flags=re.IGNORECASE):
-            # Recognize the new DMA/DMAc aliases without rewriting the name
-            # supplied in the filename. Existing solvent conventions stay intact.
-            label = match.group(0) if kind == "solvents" and canonical == "DMAc" else canonical
+            # Recognition uses aliases; display preserves the supplied spelling.
+            label = match.group(0) if kind == "solvents" else canonical
             found.append((match.start(), label))
     found.sort(key=lambda item: item[0])
     ordered = []

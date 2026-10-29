@@ -88,6 +88,84 @@ def _coerce_reference_file(value):
     return normalized
 
 
+def _reference_failure_guidance(detected_candidates, total_pairs_checked, rejected_counts):
+    """Explain the recorded failure without changing candidate acceptance."""
+    separation_count = rejected_counts.get("delta ep exceeds maximum", 0)
+    all_separation = total_pairs_checked > 0 and separation_count == total_pairs_checked
+    if all_separation:
+        subject = (
+            "The checked candidate pair exceeds" if total_pairs_checked == 1
+            else f"All {total_pairs_checked} checked candidate pairs exceed"
+        )
+        summary = (
+            f"{subject} "
+            "'reference max delta ep'. No reference shift was accepted."
+        )
+    elif total_pairs_checked:
+        if rejected_counts.get("same extremum kind", 0) == total_pairs_checked:
+            summary = "All checked candidate pairs have the same extremum kind (two maxima or two minima)."
+        elif rejected_counts.get("Epa must be greater than Epc", 0) == total_pairs_checked:
+            summary = "All checked candidate pairs fail the ordering requirement: Epa must be greater than Epc."
+        else:
+            summary = "Candidate pairs failed multiple selection criteria; see the rejection counts below."
+    elif rejected_counts.get("guess not sampled", 0) and not rejected_counts.get("missing eligible extrema", 0):
+        summary = "No adjacent opposite-direction segment pair sampled the reference guess."
+    elif not detected_candidates:
+        summary = "No eligible extrema were found in the search region."
+    elif rejected_counts.get("missing eligible extrema", 0):
+        summary = "Eligible extrema are missing from one or more adjacent sweep segments."
+    else:
+        summary = "No eligible adjacent, opposite-direction sweep pair was available."
+
+    suggestions = [
+        "Set 'troubleshoot': True to inspect the paired sweep segments and diagnostic plot; "
+        "confirm that the extrema belong to the intended physical reference couple.",
+    ]
+    if not all_separation:
+        suggestions.append("Confirm that the file contains both sweeps of a reference couple.")
+        if rejected_counts.get("guess not sampled", 0):
+            suggestions.append("Move 'reference guess' to the intended reference region sampled by both sweeps.")
+        if not detected_candidates or rejected_counts.get("missing eligible extrema", 0):
+            suggestions.extend([
+                "Check 'reference window' against the waveform; increase it only if a real peak is outside the search region.",
+                "Adjust 'peak prominence' if real peaks are being missed or noise is selected.",
+            ])
+        if rejected_counts.get("same extremum kind", 0) or rejected_counts.get("Epa must be greater than Epc", 0):
+            suggestions.append("Inspect peak identity and sweep direction before changing acceptance limits.")
+    if separation_count:
+        suggestions.extend([
+            "Investigate measured uncompensated resistance, appropriate iR compensation, "
+            "electrode condition, and connections as possible causes of broad separation; this is not a diagnosis.",
+            "Increase 'reference max delta ep' (alias 'reference_max_delta_ep') only after "
+            "verifying a genuinely broader reference couple. This relaxes the acceptance check; "
+            "it does not validate the pair. Record the chosen cutoff and retain the file/pair "
+            "diagnostics. The cutoff is never relaxed automatically.",
+        ])
+    suggestions.append("Use a better reference file or an independently justified manual shift when no physical pair is established.")
+    return summary, suggestions
+
+
+def _rejected_reference_pair_lines(rejected_pairs, max_delta_ep):
+    if not rejected_pairs:
+        return []
+    lines = [
+        "  Unaccepted candidate pairs rejected by the separation cutoff:",
+        "    Segment numbers follow acquisition order; cycle identity is not inferred. "
+        "These midpoints do not establish a physical reference couple.",
+    ]
+    for pair in rejected_pairs[:12]:
+        lines.append(
+            f"    - segment {pair['anodic_segment']} (increasing, {pair['anodic_extremum_kind']} "
+            f"at {pair['Epa']:.6g} V) / segment {pair['cathodic_segment']} "
+            f"(decreasing, {pair['cathodic_extremum_kind']} at {pair['Epc']:.6g} V): "
+            f"ΔEp = {1000 * pair['delta_ep']:.6g} mV > cutoff {1000 * max_delta_ep:.6g} mV; "
+            f"unaccepted candidate midpoint = {pair['midpoint']:.6g} V"
+        )
+    if len(rejected_pairs) > 12:
+        lines.append(f"    - ... ({len(rejected_pairs)} separation-rejected pairs total)")
+    return lines
+
+
 def _build_reference_failure_message(
     ref_cv,
     guess,
@@ -101,6 +179,7 @@ def _build_reference_failure_message(
     rejected_pair_counts,
     failure_reason,
     smooth,
+    rejected_pairs=None,
 ):
     """
     Build a readable diagnostic message when reference finding fails.
@@ -112,6 +191,12 @@ def _build_reference_failure_message(
     lines = [
         f"Failed to identify a reference couple in: {ref_name}",
     ]
+    summary, suggestions = _reference_failure_guidance(
+        detected_candidates, total_pairs_checked, rejected_pair_counts,
+    )
+    lines.append(f"  Failure: {summary}")
+    if rejected_pair_counts.get("delta ep exceeds maximum", 0):
+        lines.append(f"  Separation cutoff: {1000 * max_delta_ep:.6g} mV ({max_delta_ep:.6g} V).")
 
     if ref_path:
         lines.append(
@@ -141,6 +226,8 @@ def _build_reference_failure_message(
             if count:
                 lines.append(f"    - {reason}: {count}")
 
+    lines.extend(_rejected_reference_pair_lines(rejected_pairs, max_delta_ep))
+
     if detected_candidates:
         lines.append("  Detected extrema:")
         for candidate in detected_candidates[:12]:
@@ -153,17 +240,7 @@ def _build_reference_failure_message(
         if len(detected_candidates) > 12:
             lines.append(f"    - ... ({len(detected_candidates)} total)")
 
-    lines.extend([
-        "",
-        "Suggestions:",
-        "  - Confirm that the file contains both sweeps of a reference couple.",
-        "  - Move 'reference guess' closer to the expected reference potential.",
-        "  - Increase 'reference window' if either sweep misses the search region.",
-        "  - Adjust 'peak prominence' if real peaks are being missed or noise is selected.",
-        "  - Increase 'reference max delta ep' only for a genuinely broader couple.",
-        "  - Set 'troubleshoot': True to inspect segment candidates and the diagnostic plot.",
-        "  - Use a better reference file or a manual shift when no physical pair is present.",
-    ])
+    lines.extend(["", "Suggestions:", *[f"  - {item}" for item in suggestions]])
 
     return "\n".join(lines)
 
@@ -290,7 +367,14 @@ def _print_reference_troubleshooting(
     rejected_counts,
     best=None,
     selection_message=None,
+    rejected_pairs=None,
+    max_delta_ep=None,
 ):
+    if best is None and selection_message:
+        print("Reference Pair Selection:")
+        print(selection_message)
+        for line in _rejected_reference_pair_lines(rejected_pairs, max_delta_ep):
+            print(line)
     print("Reference Segment Summary:")
     segment_table = pd.DataFrame(
         [
@@ -358,9 +442,6 @@ def _print_reference_troubleshooting(
             f"midpoint = {round_sigfigs(best['midpoint'], 5)} V, "
             f"ΔEp = {round_sigfigs(best['delta_ep'], 5)} V"
         )
-    elif selection_message:
-        print("Reference Pair Selection:")
-        print(selection_message)
 
 
 def _plot_reference_troubleshooting(
@@ -503,6 +584,7 @@ def find_reference_midpoint_from_cv(
         "delta ep exceeds maximum": 0,
     }
     valid_pairs = []
+    separation_rejected_pairs = []
     total_pairs_checked = 0
 
     for first, second in zip(segments, segments[1:]):
@@ -546,6 +628,14 @@ def find_reference_midpoint_from_cv(
                 delta_ep = Epa - Epc
                 if delta_ep > float(max_delta_ep):
                     rejected_counts["delta ep exceeds maximum"] += 1
+                    separation_rejected_pairs.append({
+                        "Epa": Epa, "Epc": Epc, "delta_ep": delta_ep,
+                        "midpoint": 0.5 * (Epa + Epc),
+                        "anodic_segment": int(anodic["segment"]),
+                        "cathodic_segment": int(cathodic["segment"]),
+                        "anodic_extremum_kind": anodic["extremum_kind"],
+                        "cathodic_extremum_kind": cathodic["extremum_kind"],
+                    })
                     continue
 
                 midpoint = 0.5 * (Epa + Epc)
@@ -602,11 +692,16 @@ def find_reference_midpoint_from_cv(
         if rejected_counts["Epa must be greater than Epc"]:
             reason += " Epa must be greater than Epc for every accepted pair."
         if troubleshoot:
+            summary, _suggestions = _reference_failure_guidance(
+                all_candidates, total_pairs_checked, rejected_counts,
+            )
             _print_reference_troubleshooting(
                 segment_summaries,
                 all_candidates,
                 rejected_counts,
-                selection_message=reason,
+                selection_message=f"{summary}\n{reason}",
+                rejected_pairs=separation_rejected_pairs,
+                max_delta_ep=max_delta_ep,
             )
             _plot_reference_troubleshooting(
                 x,
@@ -629,6 +724,7 @@ def find_reference_midpoint_from_cv(
                 rejected_pair_counts=rejected_counts,
                 failure_reason=reason,
                 smooth=smooth,
+                rejected_pairs=separation_rejected_pairs,
             )
         )
 
@@ -1028,13 +1124,15 @@ def _print_reference_correction_summary(
         folder_items = []
         for folder_abs in sorted(ref_mapping):
             rel_folder = os.path.relpath(folder_abs, root_abs)
-            folder_label = "Base Folder" if rel_folder == "." else rel_folder
+            folder_label = "Base Folder" if rel_folder == "." else rel_folder.replace(os.sep, "/")
             ref_file = ref_mapping[folder_abs]
             if ref_file is None:
                 folder_items.append((folder_label, "none"))
             else:
                 shift = ref_shift_guess.get(ref_file)
-                ref_text = _format_reference_display(ref_file, root_abs, quote=True)
+                # The folder is already printed on this line. Retain relative
+                # parent steps so an inherited reference remains unambiguous.
+                ref_text = _format_reference_display(ref_file, folder_abs, quote=True)
                 if shift is not None:
                     ref_text = f"{ref_text} = {round_sigfigs(shift, 4)} V"
                 folder_items.append((folder_label, ref_text))

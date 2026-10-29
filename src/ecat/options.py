@@ -749,6 +749,7 @@ _OPTION_CATEGORY_BY_KEY = {
     "min_r2": "Fitting/analysis",
     "min_fit_points": "Fitting/analysis",
     "redox_mode": "Fitting/analysis",
+    "reaction_direction": "Fitting/analysis",
     "diagnostic_y_axis": "Fitting/analysis",
     "catalyst_electrons": "Fitting/analysis",
     "turnover_electrons": "Fitting/analysis",
@@ -975,7 +976,10 @@ OPTION_DESCRIPTIONS = {
     "colorbar_tick_labels": "Which colorbar ticks receive text labels.",
     "colorbar_tick_pad": "Padding between colorbar ticks and labels.",
     "colorbar_trace_ticks": "Show tick marks for each trace value on gradient colorbars.",
-    "columns": "Number of columns expected in imported data files.",
+    "columns": "Legacy import hint retained for custom-reader compatibility; built-in text readers infer columns from the file. Not a display selector.",
+    "display_columns": "Additional metadata columns in object/conditions tables, or 'all'. Does not alter imported data or analysis result columns.",
+    "candidate_limit": "Maximum candidate values printed per field during inspection or after a failed filter; None prints all. Inspection returns all values regardless of this limit.",
+    "solvent_grouping": "Group/sort solvents by canonical identity (ACN and MeCN together) or by preserved label. Display labels are never rewritten.",
     "compounds": "Compound names associated with the electrochemical object.",
     "custom_formula": "Callable custom kinetic formula used instead of the built-in formula.",
     "custom_reader": "User-provided file reader for custom import formats.",
@@ -1156,12 +1160,13 @@ OPTION_DESCRIPTIONS = {
     "print": "Whether to emit output. False suppresses output; it is independent of pretty print.",
     "progress": "Whether to show a rendering/export progress bar when animations are displayed or saved.",
     "print_all": "Request detailed row-level Data or evidence in addition to the default output. Parent analyses keep nested helper reports suppressed.",
-    "print_conditions": "Whether to include condition columns in printed object tables.",
+    "print_conditions": "Print shared conditions, electrodes, and reference summaries above object tables. Known electrodes remain in table columns when this is False.",
     "print_local_slopes": "Whether to print local slope diagnostics.",
-    "psi_source": "Source used to resolve Nicholson psi values.",
+    "psi_source": "Nicholson conversion: Agarwal (2025) Table 4 by default; choose lavagnini or empirical for Lavagnini et al. (2004).",
     "recursive_search": "Recursively search subfolders during import.",
     "resample": "Whether to resample data before signal analysis.",
     "redox_mode": "Method used to resolve the reference redox potential.",
+    "reaction_direction": "FOWA reaction polarity: auto infers oxidation from an increasing-potential selected wave and reduction from a decreasing one, independently of current sign. Select one monotonic sweep, or explicitly choose oxidation/reduction for a return sweep.",
     "redox_potential": "Manual redox reference potential. In FOWA, the plural alias 'redox potentials' accepts per-CV values.",
     "reference_file": "Explicit file used as a reference-shift source.",
     "reference_guess": "Potential guess used to locate a reference wave.",
@@ -1279,6 +1284,7 @@ OPTION_CHOICES = {
     "fit_band": ["none", "confidence", "prediction", "both"],
     "psi_source": ["agarwal table", "empirical"],
     "redox_mode": ["half wave", "half peak", "manual"],
+    "reaction_direction": ["auto", "oxidation", "reduction"],
     "reference_mode": ["auto", "manual", "keyword", "file", "none"],
     "segment_color_mode": ["auto", "off", "discrete", "discrete gradient", "continuous gradient"],
     "transform_mode": ["log-log", "lineweaver-burk"],
@@ -1454,7 +1460,7 @@ def _build_option_metadata():
     for section in ("filter", "sort_group"):
         update(section, {
             "sig_figs": {
-                "description": "Numeric metadata matching precision: 'auto' (default) uses a deterministic 5-significant-digit fallback; None matches exactly; integers 1-17 set significant digits. A field mapping applies precision only to named continuous fields (omitted fields match exactly). Decimal rounding buckets are shared by filter/sort/group; they do not infer instrument resolution or alter stored data. Categorical fields and integer IDs remain exact.",
+                "description": "Numeric metadata matching precision: 'auto' (default) uses 3 significant digits for scan windows and 5 for other numeric fields; None matches exactly; integers 1-17 set significant digits. A field mapping applies precision only to named continuous fields (omitted fields match exactly). Decimal rounding buckets are shared by filter/sort/group; they do not infer instrument resolution or alter stored data. Categorical fields and integer IDs remain exact.",
             },
         })
 
@@ -2787,12 +2793,21 @@ def _validate_common_cv(opts):
             raise OptionError("'peak kind' must be 'both', 'infer', 'max', or 'min'.")
 
 
+def _validate_display_columns(value):
+    if value is None or isinstance(value, str):
+        return
+    if isinstance(value, (list, tuple)) and all(isinstance(item, str) for item in value):
+        return
+    raise OptionError("'display columns' must be a column name, a list/tuple of names, 'all', or None.")
+
+
 @dataclass(frozen=True, slots=True)
 class ImportOptions:
     folder_path: str = "."
     delimiter: str = ","
     decimal: str = "."
     columns: int = 3
+    display_columns: object = field(default_factory=list)
     software: str | None = None
     experiment_type: str | None = None
     custom_reader: object | None = None
@@ -2834,6 +2849,7 @@ class ImportOptions:
         return _coerce_options(cls, options, ["get_data"])
 
     def validate(self):
+        _validate_display_columns(self.display_columns)
         if not isinstance(self.recursive_search, bool):
             raise OptionError("'recursive search' must be True or False.")
         if self.sort_keys is not None and not isinstance(self.sort_keys, (str, list, tuple)):
@@ -4195,6 +4211,7 @@ class FOWAOptions:
     fit_alpha: int | float = 1
     min_r2: float = 0.98
     redox_mode: str = "half wave"
+    reaction_direction: str = "auto"
     min_fit_points: int = 20
     background_correction: str | None = "tangent"
     diagnostic_y_axis: str = "i/ip0"
@@ -4234,6 +4251,8 @@ class FOWAOptions:
         bad_fit_basis = [value for value in fit_basis_values if str(value).strip().lower() not in {"x", "y"}]
         if bad_fit_basis:
             raise OptionError("'fit basis' must be 'x' or 'y'.")
+        if str(self.reaction_direction).strip().lower() not in {"auto", "oxidation", "reduction"}:
+            raise OptionError("'reaction direction' must be 'auto', 'oxidation', or 'reduction'.")
         redox_mode = str(self.redox_mode).strip().lower()
         if redox_mode not in {"half wave", "half peak", "manual"}:
             raise OptionError("'redox mode' must be 'half wave', 'half peak', or 'manual'.")
@@ -4303,6 +4322,7 @@ class FOWAOptions:
         data["min fit points"] = self.min_fit_points
         data["min r2"] = self.min_r2
         data["redox mode"] = str(self.redox_mode).strip().lower()
+        data["reaction direction"] = str(self.reaction_direction).strip().lower()
         data["background correction"] = self.background_correction
         data["diagnostic y axis"] = str(self.diagnostic_y_axis).strip().lower()
         data["ecat shift warning threshold"] = self.ecat_shift_warning_threshold
@@ -4690,8 +4710,18 @@ class SevcikAnalysisOptions(PeakCurrentOptions):
         )
 
 
+def _canonical_nicholson_psi_source(value):
+    source = _choice_token(value)
+    if source in {"agarwal", "agarwal table", "table", "table 4"}:
+        return "agarwal table"
+    if source in {"lavagnini", "empirical", "empirical equation"}:
+        return "empirical"
+    raise OptionError("'psi source' must be 'agarwal table' or 'lavagnini' ('empirical').")
+
+
 @dataclass(frozen=True, slots=True)
 class ReversibilityAnalysisOptions(PeakCurrentOptions):
+    psi_source: str = "agarwal table"
     phase: str = "bulk"
     num_electrons: int | float = 1
     alpha: float = 0.5
@@ -4715,6 +4745,7 @@ class ReversibilityAnalysisOptions(PeakCurrentOptions):
 
     def validate(self):
         _validate_common_cv(self)
+        _canonical_nicholson_psi_source(self.psi_source)
         phase = _choice_token(self.phase)
         if phase not in {"bulk", "surface"}:
             raise OptionError("'phase' must be 'bulk' or 'surface'.")
@@ -4743,6 +4774,7 @@ class ReversibilityAnalysisOptions(PeakCurrentOptions):
         data = PeakCurrentOptions.to_options_dict(self)
         data.update({
             "phase": _choice_token(self.phase),
+            "psi source": _canonical_nicholson_psi_source(self.psi_source),
             "num electrons": self.num_electrons,
             "alpha": self.alpha,
             "D": self.d,
@@ -5044,6 +5076,7 @@ class NicholsonOptions(PeakCurrentOptions):
 
     def validate(self):
         _validate_common_cv(self)
+        _canonical_nicholson_psi_source(self.psi_source)
         if self.segment is None and self.segments is None:
             raise OptionError("'segment' or 'segments' is required for Nicholson.")
         if self.segments is not None:
@@ -5074,7 +5107,7 @@ class NicholsonOptions(PeakCurrentOptions):
         data["fit model"] = self.fit_model
         data["num electrons"] = self.num_electrons
         data["D"] = self.d
-        data["psi source"] = self.psi_source
+        data["psi source"] = _canonical_nicholson_psi_source(self.psi_source)
         data["nicholson delta ep min mv"] = self.nicholson_delta_ep_min_mv
         data["nicholson delta ep max mv"] = self.nicholson_delta_ep_max_mv
         data["fit through origin"] = self.fit_through_origin
@@ -5146,13 +5179,21 @@ class FilterOptions:
     mode: str = "include"
     logic: str | None = None
     sig_figs: int | str | dict[str, int | str | None] | None = "auto"
+    candidate_limit: int | None = 12
+    display_columns: object = field(default_factory=list)
 
     @classmethod
     def from_options(cls, options=None):
         return _coerce_options(cls, options, ["filter"])
 
     def validate(self):
+        _validate_display_columns(self.display_columns)
         _collection_precision_option(self.sig_figs)
+        if self.candidate_limit is not None and (
+            isinstance(self.candidate_limit, bool) or not isinstance(self.candidate_limit, Integral)
+            or self.candidate_limit < 1
+        ):
+            raise OptionError("'candidate limit' must be a positive integer or None (all values).")
         mode = str(self.mode).strip().lower()
         if mode not in {"include", "exclude"}:
             raise OptionError("'mode' must be 'include' or 'exclude'.")
@@ -5167,6 +5208,8 @@ class FilterOptions:
             "mode": str(self.mode).strip().lower(),
             "logic": None if self.logic is None else str(self.logic).strip().upper(),
             "sig figs": _collection_precision_option(self.sig_figs),
+            "candidate limit": self.candidate_limit,
+            "display columns": self.display_columns,
         }
 
 
@@ -5176,13 +5219,18 @@ class SortGroupOptions:
     pretty_print: bool = True
     print_conditions: bool = True
     sig_figs: int | str | dict[str, int | str | None] | None = "auto"
+    solvent_grouping: str = "identity"
+    display_columns: object = field(default_factory=list)
 
     @classmethod
     def from_options(cls, options=None):
         return _coerce_options(cls, options, ["sort_group"])
 
     def validate(self):
+        _validate_display_columns(self.display_columns)
         _collection_precision_option(self.sig_figs)
+        if str(self.solvent_grouping).strip().lower() not in {"identity", "label"}:
+            raise OptionError("'solvent grouping' must be 'identity' or 'label'.")
 
     def to_options_dict(self):
         return {
@@ -5190,6 +5238,8 @@ class SortGroupOptions:
             "pretty print": self.pretty_print,
             "print conditions": self.print_conditions,
             "sig figs": _collection_precision_option(self.sig_figs),
+            "solvent grouping": str(self.solvent_grouping).strip().lower(),
+            "display columns": self.display_columns,
         }
 
 
@@ -5200,13 +5250,15 @@ class GroupSummaryOptions:
     sig_figs: int = 3
     group_keys: object = None
     columns: object = field(default_factory=list)
+    solvent_grouping: str = "identity"
 
     @classmethod
     def from_options(cls, options=None):
         return _coerce_options(cls, options, ["group_summary"])
 
     def validate(self):
-        return None
+        if str(self.solvent_grouping).strip().lower() not in {"identity", "label"}:
+            raise OptionError("'solvent grouping' must be 'identity' or 'label'.")
 
     def to_options_dict(self):
         return {
@@ -5215,6 +5267,7 @@ class GroupSummaryOptions:
             "sig figs": self.sig_figs,
             "group keys": self.group_keys,
             "columns": self.columns,
+            "solvent grouping": str(self.solvent_grouping).strip().lower(),
         }
 
 

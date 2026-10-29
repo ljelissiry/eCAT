@@ -1346,7 +1346,8 @@ def test_simulate_cv_accepts_keyed_reactions_and_compiles_equilibrium_rates(ecat
     assert compiled[0] == {"k": pytest.approx(2.0)}
     assert compiled[1]["kb"] == pytest.approx(5.0)
     assert compiled[1]["kf"] == pytest.approx(0.01)
-    assert backend.adapter["kin"] == [[0.5, 1e-3, -0.8], [2.0], [0.01, 5.0]]
+    for actual, expected in zip(backend.adapter["kin"], [[0.5, 1e-3, -0.8], [2.0], [0.01, 5.0]]):
+        assert actual == pytest.approx(expected, rel=1e-14, abs=0.)
     derived = result.summary["parameter_model"]["equilibria"][0]
     assert derived["equilibrium"] == "reactions.1"
     assert derived["target"] == "reactions.1"

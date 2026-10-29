@@ -287,10 +287,14 @@ class SimulatedCV(_EcatCV):
         next_params = deepcopy(self.input_params)
         if params:
             next_params = _deep_merge_dicts(next_params, params)
-        if set:
-            for path, value in dict(set).items():
-                _set_param_path(next_params, _coerce_user_param_path(path), value)
         mechanism = self.mechanism if mechanism is None else mechanism
+        if set:
+            next_params = _normalize_mechanism_parameter_sections(
+                next_params, compile_mechanism(mechanism, next_params)
+            )
+            _apply_param_path_updates(next_params, {
+                _coerce_user_param_path(path): value for path, value in dict(set).items()
+            })
         input_obj = self.input if input is None else input
         backend = self.summary.get("backend", "electrokitty") if backend is None else backend
         options = {"plot": False} if options is None else options
@@ -2106,6 +2110,8 @@ def _expand_equilibrium_rate(entry, reactions, concentrations, activity):
         "kf": float(kf),
         "kb": float(kb),
         "K_concentration": float(k_concentration),
+        "K_dimensionless": _dimensionless_equilibrium_constant(entry, parsed, activity),
+        "logK": _equilibrium_log_constant(entry, parsed, activity),
         "derived_from": derived_from,
         "external_reference_factor": float(external_reference_factor),
     }
@@ -2124,30 +2130,55 @@ def _total_stoich(terms):
     return int(sum(coeff for _species, coeff in terms))
 
 
-def _dimensionless_equilibrium_constant(entry, parsed, activity):
-    value = float(entry.get("K"))
-    if value <= 0 or not np.isfinite(value):
-        raise ValueError("equilibrium K must be positive.")
-    unit = _canonical_k_unit(entry.get("K_unit", entry.get("K unit", entry.get("K units", "dimensionless"))))
+def _equilibrium_log_gamma(parsed, activity, phase):
+    return float(sum(coeff * np.log(_activity_gamma(activity, phase, species))
+                     for species, coeff in parsed["products"])
+                 - sum(coeff * np.log(_activity_gamma(activity, phase, species))
+                       for species, coeff in parsed["reactants"]))
+
+
+def _equilibrium_log_constant(entry, parsed, activity):
+    """ln(K) for K = product((gamma_i * c_i / c_standard)**nu_i).
+
+    A unit-bearing concentration quotient is converted to native concentration
+    units first. This release supports bulk inverse-concentration units only;
+    explicit 'native' uses the association order given by the stoichiometry.
+    """
+    fields = _coerce_equilibrium_constant_fields(entry.get("K"), entry)
+    value = fields["K"]
+    unit = _canonical_k_unit(fields.get("K_unit", "dimensionless"))
     if unit in {"", "dimensionless", "activity"}:
-        return value
-    if entry.get("phase", "bulk") == "surface":
+        return float(np.log(value))
+    phase = entry.get("phase", "bulk")
+    if phase == "surface":
         raise ValueError(
             "Unit-bearing K is only supported for bulk reactions; use dimensionless activity K "
             "with activity.standard_coverage for surface equilibria."
         )
-    reactant_order = _total_stoich(parsed["reactants"])
-    product_order = _total_stoich(parsed["products"])
-    power = reactant_order - product_order
+    power = _total_stoich(parsed["reactants"]) - _total_stoich(parsed["products"])
     if power <= 0:
         raise ValueError("concentration-quotient K_unit is only supported when reactant order exceeds product order.")
-    if unit in {"m^-1"}:
-        return value
-    if unit in {"mm^-1"}:
-        return value * (1000.0**power)
-    if unit in {"native", "m^3/mol", "m3/mol", "m3mol"}:
-        return value * (_activity_standard(activity, entry.get("phase", "bulk")) ** power)
-    raise ValueError(f"Unknown K_unit {entry.get('K_unit')!r}.")
+    if unit not in {"m^-1", "mm^-1", "native", "m^3/mol", "m3/mol", "m3mol"}:
+        raise ValueError(f"Unknown K_unit {fields.get('K_unit')!r}.")
+    if unit != "native" and power != 1:
+        raise ValueError("Inverse-concentration K units require stoichiometry with reactant order minus product order equal to one; use a dimensionless K or explicit native quotient.")
+    log_scale = -np.log(1000.) if unit == "m^-1" else 0.
+    return float(np.log(value) + log_scale
+                 + power * np.log(_activity_standard(activity, phase))
+                 + _equilibrium_log_gamma(parsed, activity, phase))
+
+
+def _positive_equilibrium_exponential(log_value, label):
+    with np.errstate(over="ignore", under="ignore"):
+        value = float(np.exp(log_value))
+    if not np.isfinite(value) or value <= 0:
+        raise ValueError(f"{label} is not representable as a positive finite number.")
+    return value
+
+
+def _dimensionless_equilibrium_constant(entry, parsed, activity):
+    return _positive_equilibrium_exponential(
+        _equilibrium_log_constant(entry, parsed, activity), "Dimensionless equilibrium K")
 
 
 def _canonical_k_unit(value):
@@ -2159,29 +2190,20 @@ def _canonical_k_unit(value):
         return "m^-1"
     if text in {"mm^-1", "mm-1", "1/mm"}:
         return "mm^-1"
-    if text in {"native", "m^3/mol", "m3/mol", "m3mol"}:
+    if text in {"m^3/mol", "m3/mol", "m3mol"}:
+        return "m^3/mol"
+    if text == "native":
         return text
     return text
 
 
 def _equilibrium_concentration_quotient(entry, parsed, activity):
-    k_dimless = _dimensionless_equilibrium_constant(entry, parsed, activity)
-    reactant_gamma = np.prod([
-        _activity_gamma(activity, entry.get("phase", "bulk"), species) ** coeff
-        for species, coeff in parsed["reactants"]
-    ])
-    product_gamma = np.prod([
-        _activity_gamma(activity, entry.get("phase", "bulk"), species) ** coeff
-        for species, coeff in parsed["products"]
-    ])
-    reactant_order = _total_stoich(parsed["reactants"])
-    product_order = _total_stoich(parsed["products"])
-    return float(
-        k_dimless
-        * reactant_gamma
-        / product_gamma
-        * (_activity_standard(activity, entry.get("phase", "bulk")) ** (product_order - reactant_order))
-    )
+    phase = entry.get("phase", "bulk")
+    power = _total_stoich(parsed["reactants"]) - _total_stoich(parsed["products"])
+    log_value = (_equilibrium_log_constant(entry, parsed, activity)
+                 - _equilibrium_log_gamma(parsed, activity, phase)
+                 - power * np.log(_activity_standard(activity, phase)))
+    return _positive_equilibrium_exponential(log_value, "Concentration equilibrium quotient")
 
 
 def _kinetics_with_fallbacks(kinetics):
@@ -2662,14 +2684,21 @@ def _normalize_reaction_param_entry(entry):
 
 def _coerce_equilibrium_constant_fields(value, entry=None):
     entry = {} if entry is None else entry
+    declared = [entry[key] for key in ("K_unit", "K unit", "K units")
+                if entry.get(key) not in (None, "")]
+    supplied_unit = None
     if isinstance(value, str):
-        parsed_value, parsed_unit = _parse_equilibrium_constant_string(value)
-        unit = entry.get("K_unit", entry.get("K unit", entry.get("K units", parsed_unit)))
-        out = {"K": parsed_value}
-        if unit not in (None, ""):
-            out["K_unit"] = str(unit)
-        return out
-    return {"K": float(value)}
+        value, supplied_unit = _parse_equilibrium_constant_string(value)
+    units = declared + ([supplied_unit] if supplied_unit else [])
+    if len({_canonical_k_unit(unit) for unit in units}) > 1:
+        raise ValueError("Conflicting equilibrium constant unit annotations.")
+    value = float(value)
+    if not np.isfinite(value) or value <= 0:
+        raise ValueError("equilibrium K must be positive and finite.")
+    out = {"K": value}
+    if units:
+        out["K_unit"] = str(supplied_unit or declared[0])
+    return out
 
 
 def _parse_equilibrium_constant_string(value):
@@ -4755,8 +4784,7 @@ def _fit_cvs_strategy(datasets, mechanism, params, fit, per_cv, options, backend
     fit_spec = _normalize_fit_spec(fit, shared_params, datasets[0]["input"])
     fixed_paths = fit_spec.get("fixed", {}) or {}
     for params_i in dataset_params:
-        for path, value in fixed_paths.items():
-            _set_param_path(params_i, path, value)
+        _apply_param_path_updates(params_i, fixed_paths)
 
     per_cv_paths = _normalize_per_cv_paths(per_cv, fit_spec["base_params"], dataset_params, datasets, options)
     group_fit_spec = _group_fit_spec(fit_spec, per_cv_paths, dataset_params, datasets)
@@ -4962,6 +4990,31 @@ def _dataset_param_values_differ(dataset_params, path):
 
 def _group_fit_spec(fit_spec, per_cv_paths, dataset_params, datasets):
     per_cv_set = set(per_cv_paths)
+    equilibrium_paths = [path for path in _flatten_fit_targets(fit_spec.get("vary", []))
+                         if _is_equilibrium_param_path(path)]
+    # Only K needs dataset-specific unit conversion. Other shared parameters
+    # retain the original group's bounds; per-CV parameters retain its bounds
+    # with each dataset's starting value, as before unit-aware K fitting.
+    local_fit = {"vary": equilibrium_paths, "fixed": fit_spec.get("fixed", {})}
+    for field in ("init", "bounds", "transform"):
+        mapping = _expand_fit_mapping(
+            _fit_mapping(fit_spec.get("_input_fit"), field), fit_spec["base_params"])
+        local_fit[field] = {path: value for path, value in mapping.items()
+                            if path in equilibrium_paths}
+    local_specs = [_normalize_fit_spec(local_fit, item, dataset["input"])
+                   for item, dataset in zip(dataset_params, datasets)]
+    dataset_params = [local["base_params"] for local in local_specs]
+    for target in fit_spec.get("vary", []):
+        if any(_is_equilibrium_param_path(path) and path not in per_cv_set
+               for path in _fit_target_paths(target)):
+            expected = fit_spec["entries"][target]
+            if any(candidate["transform"] != expected["transform"]
+                   or not _fit_values_equal(candidate["init"], expected["init"])
+                   or any(not _fit_values_equal(a, b)
+                          for a, b in zip(candidate["bounds"], expected["bounds"]))
+                   for candidate in (local["entries"][target] for local in local_specs)):
+                raise ValueError("Shared equilibrium K has incompatible dataset-specific init/bounds; "
+                                 "use explicit dimensionless K init/bounds or per_cv K.")
     group_spec = {
         "vary": [],
         "fixed": fit_spec.get("fixed", {}),
@@ -4983,12 +5036,15 @@ def _group_fit_spec(fit_spec, per_cv_paths, dataset_params, datasets):
                     continue
                 for index, params_i in enumerate(dataset_params):
                     group_target = ("per_cv", index, path)
-                    entry = deepcopy(fit_spec["entries"][target])
-                    try:
-                        init = _coerce_param_path_value(path, _get_param_path(params_i, path))
-                        entry["init"] = _fit_init_within_bounds(init, entry["bounds"], allow_clip=True)
-                    except Exception:
-                        pass
+                    if _is_equilibrium_param_path(path):
+                        entry = deepcopy(local_specs[index]["entries"][path])
+                    else:
+                        entry = deepcopy(fit_spec["entries"][target])
+                        try:
+                            init = _coerce_param_path_value(path, _get_param_path(params_i, path), params_i)
+                            entry["init"] = _fit_init_within_bounds(init, entry["bounds"], allow_clip=True)
+                        except (KeyError, IndexError, TypeError, ValueError):
+                            pass
                     group_spec["vary"].append(group_target)
                     group_spec["entries"][group_target] = entry
                     group_spec["per_cv_targets"].append(group_target)
@@ -5734,8 +5790,8 @@ def _normalize_fit_spec(fit, params, input_obj):
     base_params = _normalize_simulation_activity_params(base_params)
     fixed = _fit_mapping(fit, "fixed")
     fixed_paths = _expand_fit_mapping(fixed, base_params)
-    for path, value in fixed_paths.items():
-        _set_param_path(base_params, path, value)
+    _apply_param_path_updates(base_params, fixed_paths)
+    _canonicalize_fit_equilibria(base_params)
 
     vary = _fit_vary_paths(fit, base_params)
     vary_paths = _expand_fit_paths(vary, base_params)
@@ -5767,12 +5823,12 @@ def _normalize_fit_spec(fit, params, input_obj):
         init = (
             _auto_fit_init(primary_path, _get_param_path(base_params, primary_path), input_obj)
             if init_auto or not has_init
-            else _coerce_param_path_value(primary_path, init_value)
+            else _coerce_param_path_value(primary_path, init_value, base_params)
         )
         bounds = (
             _auto_fit_bounds(primary_path, init, input_obj)
             if bounds_auto or not has_bounds
-            else tuple(bounds_value)
+            else tuple(_coerce_param_path_value(primary_path, value, base_params) for value in bounds_value)
         )
         transform = (
             _auto_fit_transform(primary_path, bounds)
@@ -5795,6 +5851,7 @@ def _normalize_fit_spec(fit, params, input_obj):
         "fixed": fixed_paths,
         "entries": entries,
         "base_params": base_params,
+        "_input_fit": deepcopy(fit),
     }
 
 
@@ -6125,10 +6182,13 @@ def _get_param_path(params, path):
 
 
 def _set_param_path(params, path, value):
-    target = params
-    for part in path[:-1]:
-        target = target[part]
-    target[path[-1]] = float(_coerce_param_path_value(path, value))
+    target = _get_param_path(params, path[:-1])
+    converted = float(_coerce_param_path_value(path, value, params))
+    if _is_equilibrium_param_path(path):
+        for key in ("K unit", "K units"):
+            target.pop(key, None)
+        target["K_unit"] = "dimensionless"
+    target[path[-1]] = converted
 
 
 def _coerce_user_param_path(path):
@@ -6139,22 +6199,74 @@ def _coerce_user_param_path(path):
     raise ValueError(f"Invalid parameter path {path!r}.")
 
 
-def _deep_merge_dicts(base, updates):
+def _deep_merge_dicts(base, updates, _path=()):
     result = deepcopy(base)
+    if _is_equilibrium_param_path(_path + ("K",)) and "K" in updates:
+        # A replacement K carries its own convention; discard stale unit aliases.
+        for key in ("K_unit", "K unit", "K units"):
+            if key not in updates:
+                result.pop(key, None)
     for key, value in dict(updates).items():
         if isinstance(value, dict) and isinstance(result.get(key), dict):
-            result[key] = _deep_merge_dicts(result[key], value)
+            result[key] = _deep_merge_dicts(result[key], value, _path + (key,))
         else:
             result[key] = deepcopy(value)
     return result
 
 
-def _coerce_param_path_value(path, value):
+def _is_equilibrium_param_path(path):
+    return len(path) == 3 and path[0] == "reactions" and path[-1] == "K"
+
+
+def _equilibrium_path_context(params, path):
+    entry = dict(_get_param_path(params, path[:-1]))
+    reaction = entry.get("reaction")
+    if not reaction:
+        steps = ((params.get("_mechanism_steps", {}) or {}).get("reactions") or [])
+        if not isinstance(path[1], int) or path[1] >= len(steps):
+            raise ValueError("Unit-bearing equilibrium K requires reaction stoichiometry in its parameter context.")
+        reaction = steps[path[1]]["equation"]
+    parsed = _parse_equilibrium_reaction(reaction)
+    phase = _equilibrium_reaction_phase(parsed, _concentrations_from_params(params), entry)
+    return {**entry, "phase": phase}, parsed, _activity_config(params)
+
+
+def _canonicalize_fit_equilibria(params):
+    for index, entry in enumerate(params.get("reactions", []) or []):
+        if not isinstance(entry, dict) or "K" not in entry:
+            continue
+        fields = _coerce_equilibrium_constant_fields(entry["K"], entry)
+        value = fields["K"]
+        if _canonical_k_unit(fields.get("K_unit", "dimensionless")) != "dimensionless":
+            context, parsed, activity = _equilibrium_path_context(params, ("reactions", index, "K"))
+            value = _dimensionless_equilibrium_constant({**context, **fields}, parsed, activity)
+        _set_param_path(params, ("reactions", index, "K"), value)
+
+
+def _apply_param_path_updates(params, updates):
+    # Set standard states and gamma before converting any unit-bearing K.
+    for path, value in sorted(updates.items(), key=lambda item: _is_equilibrium_param_path(item[0])):
+        _set_param_path(params, path, value)
+
+
+def _coerce_param_path_value(path, value, params=None):
     if tuple(path)[-1] == "k0" and isinstance(value, str):
         return _resolve_k0_preset(value)
-    if str(tuple(path)[-1]).lower() == "k" and isinstance(value, str):
-        parsed, _unit = _parse_equilibrium_constant_string(value)
-        return parsed
+    if _is_equilibrium_param_path(path):
+        fields = _coerce_equilibrium_constant_fields(value)
+        if _canonical_k_unit(fields.get("K_unit", "dimensionless")) != "dimensionless":
+            if params is None:
+                raise ValueError("Unit-bearing equilibrium K requires parameter context.")
+            entry, parsed, activity = _equilibrium_path_context(params, path)
+            for key in ("K_unit", "K unit", "K units"):
+                entry.pop(key, None)
+            return _dimensionless_equilibrium_constant({**entry, **fields}, parsed, activity)
+        return fields["K"]
+    if tuple(path)[-1] == "k" and isinstance(value, str):
+        number, unit = _parse_equilibrium_constant_string(value)
+        if unit:
+            raise ValueError("Chemical rate k requires a numeric native-unit value.")
+        return number
     return value
 
 

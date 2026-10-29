@@ -73,7 +73,7 @@ python -m pip install --upgrade pip
 python -m pip install \
   --index-url https://test.pypi.org/simple/ \
   --extra-index-url https://pypi.org/simple/ \
-  "ecat-electrochemistry==0.1.0b7"
+  "ecat-electrochemistry==0.1.0b8"
 python -c "import ecat as e; print(e.__version__)"
 ```
 
@@ -85,7 +85,7 @@ the beta version.
 ## Production Publication
 
 Create and publish a GitHub Release whose tag exactly matches the package
-version, for example `v0.1.0b7`. The release event rebuilds and checks the
+version, for example `v0.1.0b8`. The release event rebuilds and checks the
 artifacts, verifies the tag, waits for approval in the protected `pypi`
 environment, and publishes through Trusted Publishing.
 

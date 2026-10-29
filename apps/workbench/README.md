@@ -83,6 +83,8 @@ they cannot find a usable Python environment. When launched from this checkout,
 the popup includes the exact `cd` command for the repository folder before the
 install command.
 
+The macOS source launcher also checks `~/.venvs/<lowercase-checkout-name>/bin/python` before in-repository environments. See [external development environments](../../docs/development-environments.md) for setup and recreation.
+
 If you use a specific Python environment, point the launcher at it:
 
 ```bash

@@ -180,3 +180,23 @@ def test_molar_prefixes_match_without_crossing_unit_dimensions(ecat_module, cv_f
     criterion = "1 mM Fc" if key == "species" else "1 mM"
     assert ecat_module.filter([a, b, c], {key: criterion}, options) == [a, b]
     assert ecat_module.filter([a, b, c], {"concentrations": 0.001}, options) == [a, b]
+
+
+def test_auto_scan_windows_tolerate_measured_endpoints_but_keep_different_limits(ecat_module, cv_factory):
+    a, b, c = [cv_factory() for _ in range(3)]
+    a.min_E, a.max_E = -1.0007325, 1.5999229
+    b.min_E, b.max_E = -1.0004255, 1.5998846
+    c.min_E, c.max_E = -1.0004636, 1.3997052
+    options = {'print':False}
+    assert ecat_module.filter([a,b,c], {'scan window':[-1,1.6]}, options) == [a,b]
+    assert ecat_module.filter([a,b,c], {'scan window':-1}, options) == [a,b,c]
+    assert ecat_module.group([a,b,c], 'scan window', options) == [[a,b],[c]]
+    assert ecat_module.filter([a,b,c], {'scan window':[-1,1.6]}, {'print':False,'sig figs':5}) == []
+    assert (a.min_E,a.max_E) == (-1.0007325,1.5999229)
+
+
+def test_filter_handles_objects_without_get_data_folder_attribute(ecat_module, cv_factory):
+    a,b = [cv_factory() for _ in range(2)]
+    del a.folderpath
+    del b.folderpath
+    assert ecat_module.filter([a,b], {'scan window':[-.25,.25]}, {'print':False}) == [a,b]

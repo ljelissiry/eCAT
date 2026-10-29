@@ -59,6 +59,25 @@ def test_browser_package_data_includes_static_assets():
     assert "assets/*.js" in package_data
 
 
+def test_browser_filter_inspection_retains_all_metadata_and_stays_quiet(cv_factory, capsys):
+    from ecat_app.adapters import available_filter_values
+
+    obj = cv_factory()
+    obj.working_electrode = "GC"
+    obj.reference_electrode = "Ag/AgCl (3 M KCl)"
+    obj.counter_electrode = "Pt"
+    capsys.readouterr()
+
+    values = available_filter_values([obj])
+
+    assert values["scan window"] == [[obj.min_E, obj.max_E]]
+    assert values["working electrode"] == ["GC"]
+    assert values["reference electrode"] == ["Ag/AgCl (3 M KCl)"]
+    assert values["counter electrode"] == ["Pt"]
+    assert available_filter_values([]) == {}
+    assert capsys.readouterr().out == ""
+
+
 def test_browser_local_path_loading_summarizes_supported_objects(fixtures_dir, tmp_path):
     from ecat_app.adapters import load_local_path, summarize_objects
 

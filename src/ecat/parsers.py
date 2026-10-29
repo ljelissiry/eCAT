@@ -522,7 +522,7 @@ def _assign_headerless_basi_columns(df_raw, technique):
     return renamed.rename(columns=rename_map)
 
 
-def _canonicalize_data(df_raw, technique, warnings):
+def _canonicalize_data(df_raw, technique, warnings, *, software=None):
     output = {}
     units = {}
     original_units = {}
@@ -585,17 +585,39 @@ def _canonicalize_data(df_raw, technique, warnings):
     }.get(technique, list(output))
     ordered += [name for name in output if name not in ordered]
     data = pd.DataFrame({name: output[name] for name in ordered if name in output})
-    if data.empty and not output:
-        data = df_raw.copy()
-        data.columns = [str(col).strip() for col in data.columns]
-        data = data.apply(pd.to_numeric, errors="coerce").dropna(how="all").reset_index(drop=True)
-        return data, units, original_units
     required = {
         "CV": ["Potential", "Current"],
         "DPV": ["Potential", "Current"],
         "CA": ["Time", "Current"],
         "CP": ["Time", "Potential"],
     }.get(technique, [])
+    missing = [name for name in required if name not in data.columns]
+    if missing:
+        context = f"{software} {technique}" if software else technique
+        message = (
+            f"{context} data table is missing required columns: {', '.join(missing)}. "
+            f"Available columns: {', '.join(str(col) for col in df_raw.columns)}. "
+        )
+        if software == "EC-Lab":
+            export_names = {
+                "Potential": "Ewe/V (or <Ewe>/V)",
+                "Current": "I/mA (or <I>/mA)",
+                "Time": "time/s",
+            }
+            message += (
+                "Re-export the original measurement from EC-Lab with "
+                + ", ".join(export_names[name] for name in required)
+                + " selected. I Range, power, resistance, and programmed control "
+                "columns do not replace the measured potential/current columns."
+            )
+        else:
+            message += "Export the measured axes with recognizable column names and units."
+        raise ValueError(message)
+    if data.empty and not output:
+        data = df_raw.copy()
+        data.columns = [str(col).strip() for col in data.columns]
+        data = data.apply(pd.to_numeric, errors="coerce").dropna(how="all").reset_index(drop=True)
+        return data, units, original_units
     if required:
         data = data.dropna(subset=required).reset_index(drop=True)
     else:
@@ -1104,7 +1126,9 @@ def _make_parse_result(
             exp_type, technique = _technique_from_columns(df_raw.columns, warnings, df_raw)
             inferred = True
 
-    data, units, original_units = _canonicalize_data(df_raw, technique, warnings)
+    data, units, original_units = _canonicalize_data(
+        df_raw, technique, warnings, software=software,
+    )
     step_table = _parse_step_table(header_lines)
     metadata = _base_metadata(filepath, software, exp_type, technique)
     metadata["experiment_subtype"] = technique_raw

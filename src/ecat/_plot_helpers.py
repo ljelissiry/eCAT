@@ -756,4 +756,6 @@ def _apply_plot_titles(fig, ax, title, subtitle, title_fs, subtitle_fs):
             ax.set_title(subtitle, fontsize=subtitle_fs, pad=float(subtitle_pad))
     elif title is not None:
         ax.set_title(title, fontsize=title_fs)
+    elif subtitle is not None:
+        ax.set_title(subtitle, fontsize=subtitle_fs)
     return ax

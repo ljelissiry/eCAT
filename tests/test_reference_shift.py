@@ -1165,3 +1165,58 @@ def test_reference_like_sample_falls_back_to_folder_reference_when_self_referenc
     assert sample.reference_shift == pytest.approx(0.0, abs=1e-12)
     assert "Failed to identify a reference couple" in sample.reference_failure_message
     assert "File: `sample_Fc_cv.txt`" in sample.reference_failure_message
+
+
+def test_folder_reference_summary_paths_are_relative_to_each_listed_folder(ecat_module, tmp_path, capsys):
+    local = tmp_path / 'series' / 'A'
+    deep = local / 'deep'
+    deep.mkdir(parents=True)
+    _write_ch_cv(tmp_path / 'Fc_root.txt', REFERENCE_ROWS)
+    _write_ch_cv(local / 'Fc_local.txt', REFERENCE_ROWS)
+    _write_ch_cv(deep / 'sample.txt', SAMPLE_ROWS)
+    objects = ecat_module.get_data({
+        'folder path': str(tmp_path), 'recursive search': True,
+        'reference mode': 'keyword', 'reference keyword': 'Fc',
+        'reference guess': 0.0, 'reference window': 0.3,
+        'peak prominence': 1e-6, 'reference smooth': False,
+        'allow self reference': False, 'print': True, 'pretty print': False,
+    })
+    assert len(objects) == 3
+    output = capsys.readouterr().out
+    assert '    Base Folder: `Fc_root.txt` = 0 V' in output
+    assert '    series/A: `Fc_local.txt` = 0 V' in output
+    assert '    series/A/deep: `../Fc_local.txt` = 0 V' in output
+    assert 'series/A: `series/A/' not in output
+    sample = next(obj for obj in objects if obj.filepath.endswith('sample.txt'))
+    assert sample.reference_source_file == str(local / 'Fc_local.txt')
+    assert sample.reference_shift == pytest.approx(0.0, abs=1e-12)
+
+
+@pytest.mark.parametrize("path_style", ["posix", "windows"])
+def test_folder_reference_summary_normalizes_native_separators(ecat_module, monkeypatch, capsys, path_style):
+    import ntpath
+    import posixpath
+    from types import SimpleNamespace
+
+    from ecat import reference
+
+    path = ntpath if path_style == "windows" else posixpath
+    root = r"C:\data" if path_style == "windows" else "/data"
+    local = path.join(root, "series", "A")
+    deep = path.join(local, "deep")
+    root_reference = path.join(root, "Fc_root.txt")
+    local_reference = path.join(local, "Fc_local.txt")
+    # Simulate native path operations without changing the process-wide os module.
+    monkeypatch.setattr(reference, "os", SimpleNamespace(path=path, sep=path.sep))
+    reference._print_reference_correction_summary(
+        {"mode": "keyword", "keyword": "Fc"},
+        reference_info={
+            "ref_mapping": {root: root_reference, local: local_reference, deep: local_reference},
+            "ref_shift_guess": {root_reference: 0.0, local_reference: 0.0},
+        },
+        root_abs=root,
+    )
+    output = capsys.readouterr().out
+    assert "    Base Folder: `Fc_root.txt` = 0 V" in output
+    assert "    series/A: `Fc_local.txt` = 0 V" in output
+    assert "    series/A/deep: `../Fc_local.txt` = 0 V" in output

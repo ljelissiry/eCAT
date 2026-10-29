@@ -950,7 +950,7 @@ def available_filter_values(objects) -> dict[str, list[object]]:
     if not objects:
         return {}
     try:
-        return e.get_available_filter_values(objects)
+        return e.filter(objects, "available", {"print": False})
     except Exception:
         keys = ("gas", "solvent", "scan rate", "type", "software")
         values = {}

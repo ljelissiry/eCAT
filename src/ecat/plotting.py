@@ -1412,7 +1412,10 @@ def _single_object_reference_source_display(echem_object, value):
 def _display_folder_path_value(value):
     if value in (None, "", "."):
         return ""
-    return _format_path_for_display(value)
+    if os.path.isabs(value):
+        return _format_path_for_display(value)
+    # Importer subfolders are already relative to the import root, not cwd.
+    return os.fspath(value).replace("\\", "/")
 
 
 def _object_info_table(echem_object, options=None):
@@ -1884,6 +1887,9 @@ def _object_table_column_aliases(available_columns):
             if key:
                 aliases.setdefault(key, column)
     chrono_aliases = {
+        "we": "working electrode",
+        "re": "reference electrode",
+        "ce": "counter electrode",
         "init potential v": "applied potential",
         "init potential": "applied potential",
         "run time s": "run time",
@@ -1946,21 +1952,45 @@ def _resolve_object_table_columns(requested_columns, available_columns):
     return resolved
 
 
-def _object_table_optional_metadata(obj):
-    electrode_parts = []
-    for label, attr in [
-        ("WE", "working_electrode"),
-        ("CE", "counter_electrode"),
-        ("RE", "reference_electrode"),
-    ]:
+_ELECTRODE_DISPLAY_FIELDS = (
+    ("working electrode", "working_electrode", "WE"),
+    ("reference electrode", "reference_electrode", "RE"),
+    ("counter electrode", "counter_electrode", "CE"),
+)
+
+
+def _electrode_display_values(obj):
+    """Preserve electrode details and use one display value for missing metadata."""
+    values = {}
+    for key, attr, _label in _ELECTRODE_DISPLAY_FIELDS:
         value = getattr(obj, attr, None)
-        if value not in (None, ""):
+        if (
+            value is None or value is pd.NA
+            or (isinstance(value, (float, np.floating)) and pd.isna(value))
+            or (isinstance(value, str) and not value.strip())
+        ):
+            value = "unspecified"
+        values[key] = value
+    return values
+
+
+def _object_table_optional_metadata(obj):
+    electrodes = _electrode_display_values(obj)
+    electrode_parts = []
+    for label, key in [
+        ("WE", "working electrode"),
+        ("CE", "counter electrode"),
+        ("RE", "reference electrode"),
+    ]:
+        value = electrodes[key]
+        if value != "unspecified":
             electrode_parts.append(f"{label}: {value}")
     return {
         "type": getattr(obj, "type", type(obj).__name__),
         "temperature": getattr(obj, "temperature", None),
         "electrode area": getattr(obj, "electrode_area", None),
         "electrode": "; ".join(electrode_parts) if electrode_parts else None,
+        **electrodes,
         "ir comp resistance": getattr(obj, "ir_comp_resistance", None),
         "ir uncomp resistance": getattr(obj, "ir_uncomp_resistance", None),
         "ir comp percent": getattr(obj, "ir_comp_percent", None),
@@ -1979,6 +2009,8 @@ def _object_has_reference_metadata(obj):
 def build_object_table(object_list, options=None):
     if options is None:
         options = {}
+    if "display columns" in options:
+        options = {**options, "columns": options["display columns"]}
 
     group_number = options.get("group number")
     plot_labels = options.get("labels")
@@ -2212,6 +2244,21 @@ def build_object_table(object_list, options=None):
         if col not in shared_reference_values
     ]
 
+    shared_electrodes = {}
+    electrode_columns = []
+    for key, _attr, _label in _ELECTRODE_DISPLAY_FIELDS:
+        if key not in df.columns:
+            continue
+        values = df[key].tolist()
+        known = [value for value in values if not is_blank(value) and value != "unspecified"]
+        if not known:
+            continue
+        if len(known) == len(values) and all(value == known[0] for value in known):
+            shared_electrodes[key] = known[0]
+        # Keep known metadata visible when its shared header is disabled.
+        if key not in shared_electrodes or not print_conditions:
+            electrode_columns.append(key)
+
     if print_conditions:
         condition_order = [
             "exp type",
@@ -2278,6 +2325,13 @@ def build_object_table(object_list, options=None):
         if common_parts:
             print("[Conditions] " + ", ".join(common_parts))
 
+        if shared_electrodes:
+            print("[Electrodes] " + ", ".join(
+                f"{label}: {shared_electrodes[key]}"
+                for key, _attr, label in _ELECTRODE_DISPLAY_FIELDS
+                if key in shared_electrodes
+            ))
+
         shared_reference_values = {}
         for col in requested_reference_columns:
             if col not in df.columns:
@@ -2330,6 +2384,10 @@ def build_object_table(object_list, options=None):
         if key in auto_excluded_columns:
             continue
         if key in df.columns and key not in auto_columns:
+            auto_columns.append(key)
+
+    for key in electrode_columns:
+        if key not in auto_columns:
             auto_columns.append(key)
 
     # User columns are additive, except shared requested reference columns,
@@ -2426,7 +2484,7 @@ def build_object_table(object_list, options=None):
     # If nothing remains, just return empty display df after Conditions
     if len(visible_columns) == 0:
         empty_df = pd.DataFrame(index=[_index_label(i) for i in range(len(object_list))])
-        meta = {"inline_reference_columns": inline_reference_columns}
+        meta = {"inline_reference_columns": inline_reference_columns, "inline_electrode_columns": []}
         return empty_df, meta
 
     preferred_stats_order = [
@@ -2467,7 +2525,12 @@ def build_object_table(object_list, options=None):
     display_df.index = [_index_label(i) for i in range(len(display_df))]
     display_df = display_df.rename(columns={c: pretty_key_label(c) for c in display_df.columns})
 
-    meta = {"inline_reference_columns": inline_reference_columns}
+    meta = {
+        "inline_reference_columns": inline_reference_columns,
+        "inline_electrode_columns": [
+            key for key, _attr, _label in _ELECTRODE_DISPLAY_FIELDS if key in visible_columns
+        ],
+    }
     return display_df, meta
 
 def display_object_table(display_df, options=None, *, title=None, plain_title=True):
@@ -2560,6 +2623,8 @@ def show_objects(object_list, options=None):
       is passed explicitly.
     - User-specified `columns` are additive: they can add columns, but cannot
       remove columns needed to distinguish entries.
+    - Shared known WE/RE/CE values print once on an ``[Electrodes]`` line.
+      Differing values appear in table columns (inline per object in plain text).
     """
     if options is None:
         options = {}
@@ -2573,7 +2638,7 @@ def show_objects(object_list, options=None):
             return f"[{i}]"
         return f"[{group_number}][{i}]"
 
-    def _show_objects_plain(objects, inline_reference_columns=None):
+    def _show_objects_plain(objects, inline_reference_columns=None, inline_electrode_columns=None):
         if inline_reference_columns is None:
             inline_reference_columns = []
 
@@ -2585,6 +2650,14 @@ def show_objects(object_list, options=None):
                 objects,
                 inline_reference_columns=inline_reference_columns,
             )
+            electrode_values = _electrode_display_values(echem_object)
+            electrode_parts = [
+                f"{label}: {electrode_values[key]}"
+                for key, _attr, label in _ELECTRODE_DISPLAY_FIELDS
+                if key in (inline_electrode_columns or [])
+            ]
+            if electrode_parts:
+                ref_text += " | " + ", ".join(electrode_parts)
             plot_label = plot_labels[i] if plot_labels is not None else None
             if plot_label not in (None, "", echem_object.name):
                 plot_label = format_chemical_formulas(plot_label, mode="unicode")
@@ -2606,6 +2679,7 @@ def show_objects(object_list, options=None):
         _show_objects_plain(
             object_list,
             inline_reference_columns=meta.get("inline_reference_columns", []),
+            inline_electrode_columns=meta.get("inline_electrode_columns", []),
         )
         return display_df if return_table else None
 
@@ -2658,7 +2732,7 @@ def echem_similar_different(echem_list, options=None, ignore=None, return_values
     all_keys = []
 
     for obj in echem_list:
-        stats = obj._display_stats(options).copy()
+        stats = _plot_display_stats(obj, options)
         stats_rows.append(stats)
         for key in stats:
             if key not in all_keys:
@@ -3091,7 +3165,7 @@ def _detect_scan_rate_gradient_groups(echem_list, options):
         if scan_rate in (None, ""):
             continue
 
-        stats = obj._display_stats(options).copy()
+        stats = _plot_display_stats(obj, options)
         for key in ["scan rate", "scan window", "exp type"]:
             stats.pop(key, None)
 
@@ -3268,7 +3342,7 @@ def _detect_concentration_gradient_groups(echem_list, options):
             if entry.get("is_zero_absent") or entry.get("value", 0) <= 0:
                 continue
 
-            stats = obj._display_stats(options).copy()
+            stats = _plot_display_stats(obj, options)
             for key in ["compounds", "scan window", "exp type"]:
                 stats.pop(key, None)
 
@@ -5116,7 +5190,7 @@ def _resolve_multiplot_labels_title_subtitle(echem_list, options):
         labels = []
 
         for echem_object in echem_list:
-            stats = echem_object._display_stats(options)
+            stats = _plot_display_stats(echem_object, options)
             parts = []
 
             for difference in differences:
@@ -5221,7 +5295,7 @@ def _resolve_multiplot_labels_title_subtitle(echem_list, options):
         else:
             title = title[:-8]
 
-        group_stats = echem_list[0]._display_stats(options)
+        group_stats = _plot_display_stats(echem_list[0], options)
         group_stats.pop('scan window', None)
         group_stats.pop('exp type', None)
 
@@ -5342,7 +5416,7 @@ def _deduplicate_multiplot_labels(echem_list, labels, options):
     normalized_fields = [str(field).strip().lower().replace("_", " ") for field in fields]
     if not validate_keys(normalized_fields, opt_dict, "deduplicate label"):
         return resolved
-    stats_by_index = [obj._display_stats(options) for obj in echem_list]
+    stats_by_index = [_plot_display_stats(obj, options) for obj in echem_list]
 
     label_to_indices = {}
     for idx, label in enumerate(resolved):
@@ -5462,7 +5536,37 @@ def _legend_fontsize(labels, default_size=None, min_size=6, max_size=None):
     size = default_size / penalty**0.35
     return float(np.clip(size, min_size, max_size))
 
+def _solvent_plot_labels(echem_list):
+    """Choose one supplied spelling per solvent identity, counting plotted entries.
+
+    Dictionary insertion order breaks count ties using the first encountered label.
+    This is presentation-only: individual objects keep their original metadata.
+    """
+    from .collection import _solvent_identity
+
+    counts = {}
+    for obj in echem_list:
+        label = getattr(obj, "solvent", None)
+        if not isinstance(label, str) or not label.strip():
+            continue
+        labels = counts.setdefault(_solvent_identity(label), {})
+        labels[label] = labels.get(label, 0) + 1
+    return {identity: max(labels, key=labels.get) for identity, labels in counts.items()}
+
+
+def _plot_display_stats(obj, options):
+    """Return fresh display metadata with the current plot's shared solvent names."""
+    from .collection import _solvent_identity
+
+    stats = obj._display_stats(options).copy()
+    labels = options.get("_solvent display labels", {})
+    if labels and stats.get("solvent"):
+        stats["solvent"] = labels.get(_solvent_identity(stats["solvent"]), stats["solvent"])
+    return stats
+
+
 def _prepare_multiplot_style(echem_list, options):
+    options["_solvent display labels"] = _solvent_plot_labels(echem_list)
     labels, title, subtitle, shared_compounds, similarities = (
         _resolve_multiplot_labels_title_subtitle(echem_list, options)
     )
@@ -5619,7 +5723,11 @@ def _resolve_multiplot_offsets(offset, trace_count):
 
 def multiplot(echem_list, options=None):
     """Plot a list of electrochemistry objects on one shared axes.
-    
+
+    Automatic labels combine known solvent aliases under the most-used supplied
+    spelling in this plot (first encountered on a tie). Original object metadata
+    and explicit user labels are preserved.
+
     Parameters
     ----------
     echem_list : sequence of echem
@@ -5670,6 +5778,10 @@ def multiplot(echem_list, options=None):
     for i, echem_object in enumerate(echem_list):
         plot_options = options.copy()
         plot_options['legend'] = False
+        # The complete collection owns titles; child traces must not leave their
+        # individual solvent labels behind when the shared title is empty.
+        plot_options['title'] = False
+        plot_options['subtitle'] = False
         plot_options["segment color mode"] = "off"
         plot_options["scale bar"] = False
         plot_options["offset"] = trace_offsets[i]
@@ -5700,6 +5812,7 @@ def multiplot(echem_list, options=None):
 
     if options.get("print"):
         print_options = options.copy()
+        print_options.pop("_solvent display labels", None)
         print_options["labels"] = style["display labels"]
         show_objects(echem_list, print_options)
 

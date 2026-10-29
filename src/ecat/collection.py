@@ -1,6 +1,7 @@
 """Filtering, sorting, grouping, and collection-summary helpers."""
 
 from collections.abc import Mapping
+import posixpath
 
 from .utils import *  # noqa: F401,F403
 from .options import (
@@ -21,10 +22,26 @@ from .plotting import (
 _NAN_MATCH_KEY = object()
 
 
+def _collection_key(key):
+    """Normalize metadata keys without altering labels or stored metadata."""
+    token = " ".join(str(key).strip().casefold().replace("_", " ").split())
+    return {"we": "working electrode", "re": "reference electrode",
+            "ce": "counter electrode"}.get(token, token)
+
+
+def _solvent_identity(value):
+    from .objects import _canonicalize_parser_token
+    return _canonicalize_parser_token("solvents", str(value)).casefold()
+
+
+def _subfolder_match_key(value):
+    return posixpath.normpath(str(value).replace("\\", "/") or ".").casefold()
+
+
 def _metadata_match_key(key, value, options):
     """Canonical decimal buckets shared by matching, grouping, and sorting.
 
-    Auto is a deterministic five-digit fallback, not inferred measurement
+    Auto uses three digits for scan windows and five elsewhere, not measurement
     precision. Formatting to significant digits avoids magnitude-dependent
     tolerances and gives transitive equivalence classes at rounding boundaries.
     """
@@ -32,9 +49,14 @@ def _metadata_match_key(key, value, options):
     if isinstance(precision, dict):
         precision = precision.get(key)
     if precision == "auto":
-        precision = 5
+        precision = 3 if key == "scan window" else 5
     if key not in _COLLECTION_PRECISION_FIELDS:
         precision = None
+    if key == "solvent":
+        return (_solvent_identity(value) if options.get("solvent grouping", "identity") == "identity"
+                else str(value).casefold())
+    if key == "subfolder":
+        return _subfolder_match_key(value)
 
     def canonical(item):
         if isinstance(item, (int, float, np.integer, np.floating)) and not isinstance(item, (bool, np.bool_)):
@@ -99,14 +121,17 @@ def _collection_display_options(options):
 
 def _print_matching_precision(options):
     policy = options["sig figs"]
-    def describe(value):
+    def describe(value, key=None):
         if value is None:
             return "exact"
         if value == "auto":
-            return "auto = 5 significant digits (fallback; not inferred instrument resolution)"
+            if key is not None:
+                digits = 3 if key == "scan window" else 5
+                return f"auto = {digits} significant digits (fallback; not inferred instrument resolution)"
+            return "auto = 3 significant digits for scan windows; 5 significant digits for other fields (fallback; not inferred instrument resolution)"
         return f"{value} significant digits"
     if isinstance(policy, dict):
-        description = "; ".join(f"{key}: {describe(value)}" for key, value in sorted(policy.items()))
+        description = "; ".join(f"{key}: {describe(value, key)}" for key, value in sorted(policy.items()))
         description += "; omitted fields: exact"
     else:
         description = describe(policy)
@@ -120,7 +145,8 @@ def get_sort_group_dict():
         return echem_object.name
 
     def get_folderpath(echem_object):
-        return echem_object.folderpath
+        # Direct cv/echem construction has no collection import root.
+        return getattr(echem_object, "folderpath", None)
 
     def get_compounds(echem_object):
         return getattr(echem_object, "compounds", [])
@@ -254,6 +280,9 @@ def get_sort_group_dict():
         'scan rate': get_scan_rate,
         'gas': get_gas,
         'solvent': get_solvent,
+        'working electrode': lambda obj: getattr(obj, 'working_electrode', None) or None,
+        'reference electrode': lambda obj: getattr(obj, 'reference_electrode', None) or None,
+        'counter electrode': lambda obj: getattr(obj, 'counter_electrode', None) or None,
         'ir comp resistance': get_ir_comp_resistance,
         'ir uncomp resistance': get_ir_uncomp_resistance,
         'ir comp percent': get_ir_comp_percent,
@@ -352,7 +381,7 @@ def _sort_filter_values(values):
         return values
 
 
-def get_available_filter_values(object_list, keys=None):
+def _get_available_filter_values(object_list, keys=None):
     """
     Collect the possible filter values present in the provided object set.
 
@@ -379,6 +408,9 @@ def get_available_filter_values(object_list, keys=None):
 
     if keys is None:
         keys = list(opt_dict.keys()) + ["replicate"]
+    elif isinstance(keys, str):
+        keys = [keys]
+    keys = [_collection_key(key) for key in keys]
 
     available = {}
     rep_num_map, rep_count_map = _build_replicate_lookup(flat_objects)
@@ -401,7 +433,9 @@ def get_available_filter_values(object_list, keys=None):
         for obj in flat_objects:
             stat_value = opt_dict[key](obj)
 
-            if isinstance(stat_value, list):
+            if key == "scan window" and isinstance(stat_value, (list, tuple)):
+                values.append(sorted(stat_value))
+            elif isinstance(stat_value, list):
                 values.extend(stat_value)
             else:
                 values.append(stat_value)
@@ -422,7 +456,7 @@ def _format_filter_value_list(values, max_items=12):
 
     values_str = [str(v) for v in values]
 
-    if len(values_str) <= max_items:
+    if max_items is None or len(values_str) <= max_items:
         return ", ".join(values_str)
 
     shown = ", ".join(values_str[:max_items])
@@ -617,36 +651,67 @@ def _build_replicate_lookup(items, compare_keys=None):
 
     return rep_num, rep_count
 
-def filter(object_list, filter_keys, options=None):
-    """Filter electrochemistry objects or groups using metadata keys.
+def filter(object_list, filter_keys=None, options=None):
+    """Filter electrochemistry objects or inspect available metadata values.
     
     Parameters
     ----------
     object_list : sequence
         Flat or nested list of eCAT objects.
-    filter_keys : dict
-        Metadata filters to include or exclude.
+    filter_keys : dict, list of str, tuple of str, or None, optional
+        A dictionary selects objects using metadata criteria. A list or tuple
+        of field names inspects available values. Omit this argument or pass
+        ``"available"`` to inspect all fields. An empty dictionary selects all
+        objects; an empty list inspects no fields.
     options : dict or FilterOptions, optional
         Filter logic, print, and ``sig figs`` matching options. Precision is
-        ``"auto"`` (five significant digits), ``None`` (exact), an integer
+        ``"auto"`` (three digits for scan windows, five elsewhere), ``None`` (exact), an integer
         from 1 to 17, or a per-field mapping (omitted fields match exactly).
         Auto is a fallback, not an estimate of instrument resolution.
         See ``e.describe_options("filter")``.
     
     Returns
     -------
-    list
-        Filtered objects or groups preserving the input nesting style.
+    list or dict
+        Dictionary criteria return filtered objects or groups preserving the
+        input nesting style. Inspection returns all distinct available values
+        under canonical field names; ``candidate limit`` limits printing only.
     
     Examples
     --------
     >>> ar_cvs = e.filter(cvs, {"gas": "Ar"})
+    >>> choices = e.filter(cvs, ["solvent", "scan window", "RE"])
     """
     options = FilterOptions.from_options(options).to_options_dict()
+
+    inspect_all = filter_keys is None or (
+        isinstance(filter_keys, str) and filter_keys.strip().casefold() == "available"
+    )
+    if inspect_all or isinstance(filter_keys, (list, tuple)):
+        keys = None if inspect_all else [_collection_key(key) for key in filter_keys]
+        if keys is not None:
+            valid_keys = set(get_sort_group_dict()) | {"replicate"}
+            unknown = [key for key in keys if key not in valid_keys]
+            if unknown:
+                raise ValueError(f"Unknown filter fields: {', '.join(unknown)}")
+        available = _get_available_filter_values(object_list, keys)
+        if options.get("print", True):
+            print("Available filter values:")
+            for key, values in available.items():
+                print(f"  {key}: {_format_filter_value_list(values, options['candidate limit'])}")
+        return available
 
     if not isinstance(filter_keys, dict):
         print("\033[91mError: filter_keys must be a dictionary where keys are attributes and values are criteria.\033[0m")
         return object_list
+
+    normalized_keys = {}
+    for key, value in filter_keys.items():
+        normalized = _collection_key(key)
+        if normalized in normalized_keys:
+            raise ValueError(f"Duplicate filter key '{normalized}'.")
+        normalized_keys[normalized] = value
+    filter_keys = normalized_keys
 
     opt_dict = get_sort_group_dict()
 
@@ -814,6 +879,14 @@ def filter(object_list, filter_keys, options=None):
 
         requested_norm = _normalize_filter_value(requested_value)
 
+        if key in {"solvent", "subfolder"}:
+            def normalized_text(value):
+                if key == "solvent":
+                    return _solvent_identity(value)
+                return _subfolder_match_key(value)
+            requested = requested_value if _is_iterable_filter_value(requested_value) else [requested_value]
+            return any(normalized_text(stat_value) == normalized_text(item) for item in requested)
+
         if isinstance(stat_value, list):
             stat_norm = _normalize_filter_value(stat_value)
             if key in _COLLECTION_FILTER_KEYS:
@@ -917,9 +990,11 @@ def filter(object_list, filter_keys, options=None):
             print("\033[91mNo objects matching your criteria were found.\033[0m")
 
             print("Possible values in this object set for the requested key(s):")
-            available = get_available_filter_values(object_list, keys=filter_keys.keys())
+            available = _get_available_filter_values(object_list, keys=filter_keys.keys())
             for key, values in available.items():
-                print(f"  {key}: {_format_filter_value_list(values)}")
+                print(f"  {key}: {_format_filter_value_list(values, options['candidate limit'])}")
+            if options['candidate limit'] is not None:
+                print("Use 'candidate limit': None or filter(objects, ['field'], {'candidate limit': None}) for all values.")
 
             print("All valid filter keys:")
             print("  " + ", ".join(valid_keys))
@@ -943,7 +1018,7 @@ def sort(object_list, sort_keys, options=None):
         Sort/group keys such as ``"timestamp"`` or ``"scan rate"``.
     options : dict or SortGroupOptions, optional
         Print and numeric matching options. ``sig figs`` uses decimal rounding
-        buckets: ``"auto"`` (default) means five significant digits, ``None``
+        buckets: ``"auto"`` (default) means three significant digits for scan windows and five elsewhere, ``None``
         means exact, and integers 1-17 or per-field mappings set precision.
         Ties preserve input order; this function sorts the input list in place.
         See ``e.describe_options("sort_group")``.
@@ -961,6 +1036,7 @@ def sort(object_list, sort_keys, options=None):
 
     if isinstance(sort_keys, str):
         sort_keys = [sort_keys]
+    sort_keys = [_collection_key(key) for key in sort_keys]
 
     opt_dict = get_sort_group_dict()
 
@@ -1006,8 +1082,7 @@ def group(object_list, group_keys, options=None):
         Sort/group keys used to form groups.
     options : dict or SortGroupOptions, optional
         Print and numeric matching options. ``sig figs`` uses the same decimal
-        rounding buckets as filter/sort: ``"auto"`` (default) means five
-        significant digits, ``None`` means exact, and integers 1-17 or per-field
+        rounding buckets as filter/sort: ``"auto"`` (default) means three significant digits for scan windows and five elsewhere, ``None`` means exact, and integers 1-17 or per-field
         mappings set precision. Stored metadata and data remain unchanged.
         See ``e.describe_options("sort_group")``.
     
@@ -1026,6 +1101,7 @@ def group(object_list, group_keys, options=None):
 
     if isinstance(group_keys, str):
         group_keys = [group_keys]
+    group_keys = [_collection_key(key) for key in group_keys]
 
     if not validate_keys(group_keys, opt_dict, "group"):
         return object_list
@@ -1149,8 +1225,10 @@ def group_summary(object_list, group_keys=None, options=None):
 
     if isinstance(resolved_group_keys, str):
         resolved_group_keys = [resolved_group_keys]
+    if resolved_group_keys is not None:
+        resolved_group_keys = [_collection_key(key) for key in resolved_group_keys]
 
-    requested_columns = _coerce_display_columns(options.get("columns", []))
+    requested_columns = [_collection_key(key) for key in _coerce_display_columns(options.get("columns", []))]
 
     if requested_columns and not validate_keys(requested_columns, opt_dict, "summary column"):
         raise ValueError(
@@ -1166,10 +1244,19 @@ def group_summary(object_list, group_keys=None, options=None):
             return pd.DataFrame()
 
         flat_objects = _flatten_object_list(object_list)
-        groups = group(flat_objects, resolved_group_keys, options={"print": False})
+        groups = group(flat_objects, resolved_group_keys, options={
+            "print": False, "solvent grouping": options["solvent grouping"],
+        })
+        def summary_key_value(key, grp):
+            if not grp:
+                return None
+            if key == "solvent":
+                labels = _unique_preserve_order([opt_dict[key](obj) for obj in grp])
+                return labels[0] if len(labels) == 1 else labels
+            return opt_dict[key](grp[0])
         group_key_values = [
             {
-                key: opt_dict[key](grp[0]) if len(grp) > 0 else None
+                key: summary_key_value(key, grp)
                 for key in resolved_group_keys
             }
             for grp in groups
@@ -1274,7 +1361,7 @@ def sort_and_group(object_list, sort_keys=None, group_keys=None, options=None):
         Keys used to form groups.
     options : dict or SortGroupOptions, optional
         Print and numeric matching options, including the shared ``sig figs``
-        policy (default ``"auto"``: five significant digits). See
+        policy (default ``"auto"``: three digits for scan windows, five elsewhere). See
         ``e.describe_options("sort_group")``.
     
     Returns
@@ -1315,6 +1402,5 @@ __all__ = [
     'group',
     'sort_and_group',
     'group_summary',
-    'get_available_filter_values',
     'get_sort_group_dict',
 ]

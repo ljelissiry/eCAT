@@ -82,12 +82,14 @@ run_installed_command() {
 
 run_repo_python() {
   local repo_root="$1"
+  local repo_name="${repo_root:t:l}"
   local candidates=()
 
   if [ -n "${ECAT_PYTHON:-}" ]; then
     candidates+=("$ECAT_PYTHON")
   fi
   candidates+=(
+    "$HOME/.venvs/$repo_name/bin/python"
     "$repo_root/.venv/bin/python"
     "$repo_root/venv/bin/python"
     "/Library/Frameworks/Python.framework/Versions/3.14/bin/python3"
