@@ -64,6 +64,8 @@ def ecat_module(repo_root):
     )
 
     class EcatTestProxy:
+        # Attributes live on the wrapped modules, never in proxy instance storage.
+        __slots__ = ()
         __name__ = "ecat"
 
         @property
@@ -71,6 +73,10 @@ def ecat_module(repo_root):
             return internal_modules
 
         def __getattr__(self, name):
+            if name == "__dict__":
+                # A module's dictionary is not this proxy's instance dictionary.
+                # pytest 9.2 uses that distinction when restoring monkeypatches.
+                raise AttributeError(name)
             if hasattr(ecat, name):
                 return getattr(ecat, name)
             for module in self._modules:
